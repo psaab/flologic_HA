@@ -1,0 +1,46 @@
+{
+  "entity": {
+    "sensor": {
+      "mode": { "name": "Mode" },
+      "flow_state": { "name": "Flow state" },
+      "current_flow": { "name": "Current flow" },
+      "temperature": { "name": "Temperature" },
+      "battery": { "name": "Battery" },
+      "signal_strength": { "name": "Signal strength" },
+      "flow_sensitivity": { "name": "Flow sensitivity" },
+      "home_flow_limit": { "name": "Home flow limit" },
+      "away_flow_limit": { "name": "Away flow limit" },
+      "bypass_time": { "name": "Bypass time" },
+      "auto_away": { "name": "Auto Away" },
+      "low_temperature_alert": { "name": "Low temperature alert" },
+      "low_temperature_shutoff": { "name": "Low temperature shutoff" },
+      "pre_alert_notice": { "name": "Pre-alert notice" },
+      "no_flow_notice": { "name": "No-flow notice" },
+      "shutoff_countdown": { "name": "Shutoff countdown" },
+      "flow_started_at": { "name": "Flow started at" },
+      "flow_elapsed": { "name": "Flow elapsed" },
+      "active_scheduler_events": { "name": "Active scheduled mode changes" },
+      "notification_history_count": { "name": "Notification history count" },
+      "last_update_source": { "name": "Last update source" }
+    },
+    "binary_sensor": {
+      "online": { "name": "Online" },
+      "advance_shutoff_warning": { "name": "Advance shutoff warning" },
+      "notification_always": { "name": "Notification always" },
+      "notification_never": { "name": "Notification never" },
+      "notification_mode_change": { "name": "Notification mode change" },
+      "notification_auto_shutoff": { "name": "Notification auto shutoff" },
+      "notification_auto_away": { "name": "Notification auto away" },
+      "notification_delay_away": { "name": "Notification delay away" },
+      "notification_advance_shutoff": { "name": "Notification advance shutoff" },
+      "notification_guest_mode": { "name": "Notification guest mode" },
+      "notification_connection_change": { "name": "Notification connection change" },
+      "notification_general_alert": { "name": "Notification general alert" },
+      "notification_critical_error": { "name": "Notification critical error" },
+      "notification_no_flow": { "name": "Notification no-flow" }
+    },
+    "select": {
+      "valve_mode": { "name": "Valve mode" }
+    }
+  }
+}

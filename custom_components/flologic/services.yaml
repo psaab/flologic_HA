@@ -1,0 +1,79 @@
+set_flow_sensitivity:
+  fields:
+    value:
+      required: true
+      selector:
+        number:
+          min: 0
+          mode: box
+          step: 0.1
+set_home_limit:
+  fields:
+    minutes:
+      required: true
+      selector:
+        number:
+          min: 0
+          mode: box
+          step: 1
+set_away_limit:
+  fields:
+    minutes:
+      required: true
+      selector:
+        number:
+          min: 0
+          mode: box
+          step: 0.5
+set_bypass_time:
+  fields:
+    minutes:
+      required: true
+      selector:
+        number:
+          min: 0
+          mode: box
+          step: 1
+set_auto_away:
+  fields:
+    hours:
+      required: true
+      selector:
+        number:
+          min: 0
+          mode: box
+          step: 1
+set_temp_alert:
+  fields:
+    temperature:
+      required: true
+      selector:
+        number:
+          mode: box
+          step: 1
+set_temp_shutoff:
+  fields:
+    temperature:
+      required: true
+      selector:
+        number:
+          mode: box
+          step: 1
+set_pre_alert_notice:
+  fields:
+    minutes:
+      required: true
+      selector:
+        number:
+          min: 0
+          mode: box
+          step: 1
+set_no_flow_notice:
+  fields:
+    seconds:
+      required: true
+      selector:
+        number:
+          min: 0
+          mode: box
+          step: 1
