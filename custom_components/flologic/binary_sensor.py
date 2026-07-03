@@ -130,7 +130,7 @@ class FloLogicLocallyTickingBinarySensor(FloLogicBinarySensor):
         self._unsub_tick = None
         if not self.coordinator.data.is_water_flowing:
             self._stop_tick_timer()
-            self.async_write_ha_state()
+            self.schedule_update_ha_state()
             return
-        self.async_write_ha_state()
+        self.schedule_update_ha_state()
         self._schedule_next_tick()
