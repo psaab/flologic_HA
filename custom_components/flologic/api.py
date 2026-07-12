@@ -13,7 +13,7 @@ from typing import Any
 
 import aiohttp
 
-from .const import MODE_NAMES, NOTIFICATION_FLAGS, VALVE_MODES
+from .const import MODE_FLAG_NAMES, MODE_NAMES, MODE_STATUS_PRIORITY, NOTIFICATION_FLAGS, VALVE_MODES, WATER_OFF_MODE_FLAGS
 from .exceptions import FloLogicAuthError, FloLogicError, FloLogicTimeoutError
 
 _LOGGER = logging.getLogger(__name__)
@@ -51,9 +51,47 @@ class FloLogicAccount:
 
     @property
     def mode_name(self) -> str | None:
-        """Return the current mode name."""
+        """Return the current controllable mode name."""
         mode = self.valve.get("mode")
-        return MODE_NAMES.get(mode)
+        mode_value = self._int_or_none(mode)
+        if mode_value is None:
+            return None
+        exact = MODE_NAMES.get(mode_value)
+        if exact is not None:
+            return exact
+        if self._has_any_mode_flag(mode_value, WATER_OFF_MODE_FLAGS):
+            return "shutoff"
+        if mode_value & VALVE_MODES["bypass"]:
+            return "bypass"
+        if mode_value & VALVE_MODES["away"]:
+            return "away"
+        if mode_value & VALVE_MODES["home"]:
+            return "home"
+        if mode_value & VALVE_MODES["disabled"]:
+            return "disabled"
+        return None
+
+    @property
+    def mode_status_name(self) -> str:
+        """Return the most specific current mode/status name."""
+        mode_value = self._int_or_none(self.valve.get("mode"))
+        if mode_value is None:
+            return "unknown"
+        exact = MODE_NAMES.get(mode_value)
+        if exact is not None:
+            return exact
+        for flag in MODE_STATUS_PRIORITY:
+            if mode_value & flag:
+                return MODE_FLAG_NAMES[flag]
+        return f"unknown_{mode_value}"
+
+    @property
+    def mode_flag_names(self) -> list[str]:
+        """Return every known mode flag currently set."""
+        mode_value = self._int_or_none(self.valve.get("mode"))
+        if mode_value is None:
+            return []
+        return [name for flag, name in MODE_FLAG_NAMES.items() if mode_value & flag]
 
     @property
     def notification_flags(self) -> dict[str, bool]:
@@ -142,6 +180,21 @@ class FloLogicAccount:
             return float(value)
         except (TypeError, ValueError):
             return None
+
+    @staticmethod
+    def _int_or_none(value: Any) -> int | None:
+        """Return an int or None."""
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _has_any_mode_flag(mode_value: int, flags: tuple[int, ...]) -> bool:
+        """Return whether any mode flag is set."""
+        return any(mode_value & flag for flag in flags)
 
     @staticmethod
     def _parse_datetime(value: Any) -> datetime | None:

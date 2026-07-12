@@ -13,7 +13,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, FLOW_STATE_NAMES, MODE_NAMES
+from .const import DOMAIN, FLOW_STATE_NAMES
 from .coordinator import FloLogicCoordinator
 from .entity import FloLogicEntity
 
@@ -34,7 +34,7 @@ SENSORS: tuple[FloLogicSensorDescription, ...] = (
     FloLogicSensorDescription(
         key="mode",
         translation_key="mode",
-        value_fn=lambda coordinator: MODE_NAMES.get(coordinator.data.valve.get("mode"), "other"),
+        value_fn=lambda coordinator: coordinator.data.mode_status_name,
     ),
     FloLogicSensorDescription(
         key="flow_state",
@@ -204,6 +204,12 @@ class FloLogicSensor(FloLogicEntity, SensorEntity):
             return {"events": self.coordinator.data.active_scheduler_events}
         if self.entity_description.key == "notification_history_count":
             return {"notifications": self.coordinator.data.notifications}
+        if self.entity_description.key == "mode":
+            return {
+                "raw_mode": self.coordinator.data.valve.get("mode"),
+                "mode_flags": self.coordinator.data.mode_flag_names,
+                "controllable_mode": self.coordinator.data.mode_name,
+            }
         return None
 
 

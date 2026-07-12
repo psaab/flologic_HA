@@ -31,6 +31,76 @@ VALVE_MODES = {
 
 MODE_NAMES = {value: key for key, value in VALVE_MODES.items()}
 
+VALVE_MODE_FLAGS = {
+    "home": 1,
+    "away": 2,
+    "bypass": 4,
+    "shutoff": 8,
+    "disabled": 16,
+    "flow_time_exceeded": 32,
+    "external_leak": 64,
+    "auto_away": 128,
+    "external_bypass": 256,
+    "delay_away": 512,
+    "external_away": 1024,
+    "override": 2048,
+    "ac_lost": 4096,
+    "change_battery": 8192,
+    "error": 16384,
+    "sensor_leak": 32768,
+    "system_down": 65536,
+    "valve_failure": 131072,
+    "communication_error": 262144,
+    "external_home": 524288,
+    "external_emergency_shutdown": 1048576,
+    "updating": 2097152,
+    "external_override": 4194304,
+    "low_temp_alert": 8388608,
+    "low_temp_shutoff": 16777216,
+    "humidity_sensor_shutoff": 33554432,
+    "low_temp_sensor_shutoff": 67108864,
+    "unknown": 268435456,
+}
+
+MODE_FLAG_NAMES = {value: key for key, value in VALVE_MODE_FLAGS.items()}
+
+WATER_OFF_MODE_FLAGS = (
+    VALVE_MODE_FLAGS["flow_time_exceeded"],
+    VALVE_MODE_FLAGS["external_leak"],
+    VALVE_MODE_FLAGS["sensor_leak"],
+    VALVE_MODE_FLAGS["shutoff"],
+    VALVE_MODE_FLAGS["external_emergency_shutdown"],
+    VALVE_MODE_FLAGS["low_temp_shutoff"],
+    VALVE_MODE_FLAGS["humidity_sensor_shutoff"],
+    VALVE_MODE_FLAGS["low_temp_sensor_shutoff"],
+)
+
+MODE_STATUS_PRIORITY = (
+    VALVE_MODE_FLAGS["flow_time_exceeded"],
+    VALVE_MODE_FLAGS["sensor_leak"],
+    VALVE_MODE_FLAGS["external_leak"],
+    VALVE_MODE_FLAGS["external_emergency_shutdown"],
+    VALVE_MODE_FLAGS["low_temp_shutoff"],
+    VALVE_MODE_FLAGS["humidity_sensor_shutoff"],
+    VALVE_MODE_FLAGS["low_temp_sensor_shutoff"],
+    VALVE_MODE_FLAGS["shutoff"],
+    VALVE_MODE_FLAGS["delay_away"],
+    VALVE_MODE_FLAGS["auto_away"],
+    VALVE_MODE_FLAGS["external_away"],
+    VALVE_MODE_FLAGS["away"],
+    VALVE_MODE_FLAGS["external_bypass"],
+    VALVE_MODE_FLAGS["bypass"],
+    VALVE_MODE_FLAGS["external_home"],
+    VALVE_MODE_FLAGS["home"],
+    VALVE_MODE_FLAGS["disabled"],
+    VALVE_MODE_FLAGS["updating"],
+    VALVE_MODE_FLAGS["communication_error"],
+    VALVE_MODE_FLAGS["valve_failure"],
+    VALVE_MODE_FLAGS["system_down"],
+    VALVE_MODE_FLAGS["error"],
+    VALVE_MODE_FLAGS["unknown"],
+)
+
 FLOW_STATE_NAMES = {
     1: "no_flow",
     2: "new_flow",
