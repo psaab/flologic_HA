@@ -6,11 +6,15 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from homeassistant.components.binary_sensor import BinarySensorDeviceClass, BinarySensorEntity, BinarySensorEntityDescription
+from homeassistant.components.binary_sensor import (
+    BinarySensorDeviceClass,
+    BinarySensorEntity,
+    BinarySensorEntityDescription,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.event import async_call_later
 
 from .const import (
     CRITICAL_MODE_FLAGS,
@@ -115,7 +119,9 @@ class FloLogicBinarySensor(FloLogicEntity, BinarySensorEntity):
             return self._has_any_mode_flag(WARNING_ALERT_MODE_FLAGS)
         if self.entity_description.source == "critical_fault_event":
             return self._has_any_mode_flag(CRITICAL_MODE_FLAGS)
-        return self.coordinator.data.notification_flags.get(self.entity_description.source)
+        return self.coordinator.data.notification_flags.get(
+            self.entity_description.source
+        )
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
@@ -139,9 +145,7 @@ class FloLogicBinarySensor(FloLogicEntity, BinarySensorEntity):
         """Return active mode flags for a grouped trouble sensor."""
         mode = self._mode_value
         active_flags = [
-            MODE_FLAG_NAMES[flag]
-            for flag in flags
-            if mode is not None and mode & flag
+            MODE_FLAG_NAMES[flag] for flag in flags if mode is not None and mode & flag
         ]
         return {
             "raw_mode": mode,

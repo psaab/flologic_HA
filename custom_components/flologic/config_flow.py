@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import voluptuous as vol
-
 from homeassistant import config_entries
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.data_entry_flow import FlowResult
@@ -34,7 +33,9 @@ class FloLogicConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
     @staticmethod
-    def async_get_options_flow(config_entry: config_entries.ConfigEntry) -> FloLogicOptionsFlow:
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> FloLogicOptionsFlow:
         """Create the options flow."""
         return FloLogicOptionsFlow(config_entry)
 
@@ -113,7 +114,9 @@ class FloLogicOptionsFlow(config_entries.OptionsFlow):
                 ): vol.All(vol.Coerce(int), vol.Range(min=MIN_POLL_INTERVAL)),
                 vol.Required(
                     CONF_KEEP_SESSION_ALIVE,
-                    default=options.get(CONF_KEEP_SESSION_ALIVE, DEFAULT_KEEP_SESSION_ALIVE),
+                    default=options.get(
+                        CONF_KEEP_SESSION_ALIVE, DEFAULT_KEEP_SESSION_ALIVE
+                    ),
                 ): bool,
             }
         )

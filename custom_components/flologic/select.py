@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -26,7 +28,7 @@ class FloLogicModeSelect(FloLogicEntity, SelectEntity):
     """FloLogic valve mode selector."""
 
     _attr_translation_key = "valve_mode"
-    _attr_options = list(VALVE_MODES)
+    _attr_options: ClassVar[list[str]] = list(VALVE_MODES)
 
     def __init__(self, coordinator: FloLogicCoordinator) -> None:
         """Initialize the select."""

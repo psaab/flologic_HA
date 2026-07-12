@@ -4,12 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
+import homeassistant.helpers.config_validation as cv
 import voluptuous as vol
-
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.core import HomeAssistant, ServiceCall
-import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import FloLogicClient
@@ -48,15 +47,23 @@ ATTR_SECONDS = "seconds"
 ATTR_TEMPERATURE = "temperature"
 
 WRITE_SERVICE_SCHEMAS = {
-    SERVICE_SET_FLOW_SENSITIVITY: vol.Schema({vol.Required(ATTR_VALUE): vol.Coerce(float)}),
+    SERVICE_SET_FLOW_SENSITIVITY: vol.Schema(
+        {vol.Required(ATTR_VALUE): vol.Coerce(float)}
+    ),
     SERVICE_SET_HOME_LIMIT: vol.Schema({vol.Required(ATTR_MINUTES): cv.positive_int}),
     SERVICE_SET_AWAY_LIMIT: vol.Schema({vol.Required(ATTR_MINUTES): vol.Coerce(float)}),
     SERVICE_SET_BYPASS_TIME: vol.Schema({vol.Required(ATTR_MINUTES): cv.positive_int}),
     SERVICE_SET_AUTO_AWAY: vol.Schema({vol.Required(ATTR_HOURS): cv.positive_int}),
-    SERVICE_SET_TEMP_ALERT: vol.Schema({vol.Required(ATTR_TEMPERATURE): vol.Coerce(int)}),
-    SERVICE_SET_TEMP_SHUTOFF: vol.Schema({vol.Required(ATTR_TEMPERATURE): vol.Coerce(int)}),
+    SERVICE_SET_TEMP_ALERT: vol.Schema(
+        {vol.Required(ATTR_TEMPERATURE): vol.Coerce(int)}
+    ),
+    SERVICE_SET_TEMP_SHUTOFF: vol.Schema(
+        {vol.Required(ATTR_TEMPERATURE): vol.Coerce(int)}
+    ),
     SERVICE_SET_PRE_ALERT: vol.Schema({vol.Required(ATTR_MINUTES): cv.positive_int}),
-    SERVICE_SET_NO_FLOW_NOTICE: vol.Schema({vol.Required(ATTR_SECONDS): cv.positive_int}),
+    SERVICE_SET_NO_FLOW_NOTICE: vol.Schema(
+        {vol.Required(ATTR_SECONDS): cv.positive_int}
+    ),
 }
 
 
@@ -71,7 +78,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         device_code=entry.data.get(CONF_DEVICE_CODE, DEFAULT_DEVICE_CODE),
         device_token=entry.data.get(CONF_DEVICE_TOKEN, DEFAULT_DEVICE_TOKEN),
         session_factory=lambda: session,
-        keep_session_alive=entry.options.get(CONF_KEEP_SESSION_ALIVE, DEFAULT_KEEP_SESSION_ALIVE),
+        keep_session_alive=entry.options.get(
+            CONF_KEEP_SESSION_ALIVE, DEFAULT_KEEP_SESSION_ALIVE
+        ),
     )
     coordinator = FloLogicCoordinator(
         hass,

@@ -29,5 +29,6 @@ class FloLogicEntity(CoordinatorEntity[FloLogicCoordinator]):
             name=self.coordinator.data.valve_name,
             manufacturer="FloLogic",
             model=valve.get("deviceTypeName"),
-            sw_version=valve.get("softwareVersion") or valve.get("valveAndCpFirmwareVersionString"),
+            sw_version=valve.get("softwareVersion")
+            or valve.get("valveAndCpFirmwareVersionString"),
         )

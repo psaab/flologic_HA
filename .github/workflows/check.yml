@@ -1,0 +1,39 @@
+name: Check
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install check tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ruff
+
+      - name: Run Ruff
+        run: ruff check .
+
+      - name: Compile Python files
+        run: python -m compileall -q custom_components/flologic
+
+      - name: Validate JSON files
+        run: |
+          python -m json.tool hacs.json > /dev/null
+          python -m json.tool custom_components/flologic/manifest.json > /dev/null
+          python -m json.tool custom_components/flologic/strings.json > /dev/null
+          python -m json.tool custom_components/flologic/translations/en.json > /dev/null

@@ -3,17 +3,25 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
 import json
 import logging
-from urllib.parse import quote
+from collections.abc import Awaitable, Callable
+from contextlib import suppress
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import quote
 
 import aiohttp
 
-from .const import MODE_FLAG_NAMES, MODE_NAMES, MODE_STATUS_PRIORITY, NOTIFICATION_FLAGS, VALVE_MODES, WATER_OFF_MODE_FLAGS
+from .const import (
+    MODE_FLAG_NAMES,
+    MODE_NAMES,
+    MODE_STATUS_PRIORITY,
+    NOTIFICATION_FLAGS,
+    VALVE_MODES,
+    WATER_OFF_MODE_FLAGS,
+)
 from .exceptions import FloLogicAuthError, FloLogicError, FloLogicTimeoutError
 
 _LOGGER = logging.getLogger(__name__)
@@ -168,7 +176,8 @@ class FloLogicAccount:
         return [
             event
             for event in self.scheduler
-            if event.get("action") is not None and event.get("actionPayload") is not None
+            if event.get("action") is not None
+            and event.get("actionPayload") is not None
         ]
 
     @staticmethod
@@ -251,9 +260,14 @@ class FloLogicConnection:
         if not token:
             raise FloLogicError("SignalR negotiate did not return a connection token")
 
-        ws_url = f"{self._hub_url.replace('https://', 'wss://').replace('http://', 'ws://')}?id={quote(token, safe='')}"
+        websocket_hub_url = self._hub_url.replace("https://", "wss://").replace(
+            "http://", "ws://"
+        )
+        ws_url = f"{websocket_hub_url}?id={quote(token, safe='')}"
         self._ws = await self._session.ws_connect(ws_url, headers=self._headers)
-        await self._ws.send_str(json.dumps({"protocol": "json", "version": 1}) + _RECORD_SEPARATOR)
+        await self._ws.send_str(
+            json.dumps({"protocol": "json", "version": 1}) + _RECORD_SEPARATOR
+        )
         self._reader_task = asyncio.create_task(self._reader())
         return self
 
@@ -267,10 +281,8 @@ class FloLogicConnection:
             await self._ws.close()
         if self._reader_task is not None:
             self._reader_task.cancel()
-            try:
+            with suppress(asyncio.CancelledError):
                 await self._reader_task
-            except asyncio.CancelledError:
-                pass
         for waiters in self._events.values():
             for waiter in waiters:
                 if not waiter.done():
@@ -293,7 +305,9 @@ class FloLogicConnection:
             "target": target,
             "arguments": list(arguments),
         }
-        await self._ws.send_str(json.dumps(frame, separators=(",", ":")) + _RECORD_SEPARATOR)
+        await self._ws.send_str(
+            json.dumps(frame, separators=(",", ":")) + _RECORD_SEPARATOR
+        )
 
     async def invoke_and_wait(
         self,
@@ -311,10 +325,14 @@ class FloLogicConnection:
         """Wait for a hub event."""
         future: asyncio.Future[list[Any]] = asyncio.get_running_loop().create_future()
         self._events.setdefault(event_name, []).append(future)
-        future.add_done_callback(lambda done_future: self._remove_waiter(event_name, done_future))
+        future.add_done_callback(
+            lambda done_future: self._remove_waiter(event_name, done_future)
+        )
         return future
 
-    def _remove_waiter(self, event_name: str, future: asyncio.Future[list[Any]]) -> None:
+    def _remove_waiter(
+        self, event_name: str, future: asyncio.Future[list[Any]]
+    ) -> None:
         """Remove a completed event waiter."""
         waiters = self._events.get(event_name, [])
         if future in waiters:
@@ -396,14 +414,18 @@ class FloLogicClient:
         self._reconnect_task: asyncio.Task | None = None
         self._closing = False
 
-    def set_push_callback(self, callback: Callable[[FloLogicAccount], None] | None) -> None:
+    def set_push_callback(
+        self, callback: Callable[[FloLogicAccount], None] | None
+    ) -> None:
         """Set a callback for pushed persistent SignalR valve updates."""
         self._push_callback = callback
 
     async def async_fetch_account(self) -> FloLogicAccount:
         """Fetch the current account/device snapshot."""
         if self._keep_session_alive:
-            account = await self._with_persistent_retry(self._async_fetch_account_persistent)
+            account = await self._with_persistent_retry(
+                self._async_fetch_account_persistent
+            )
         else:
             account = await self._with_session(self._async_fetch_account)
         self._last_account = account
@@ -417,7 +439,9 @@ class FloLogicClient:
     async def async_request_state_change(self, fields: dict[str, Any]) -> None:
         """Send a FloLogic state-change command."""
         if self._keep_session_alive:
-            await self._with_persistent_retry(lambda connection: self._async_send_state_change(connection, fields))
+            await self._with_persistent_retry(
+                lambda connection: self._async_send_state_change(connection, fields)
+            )
             return
 
         async def _send(session: aiohttp.ClientSession) -> None:
@@ -432,13 +456,13 @@ class FloLogicClient:
         self._closing = True
         if self._reconnect_task is not None:
             self._reconnect_task.cancel()
-            try:
+            with suppress(asyncio.CancelledError):
                 await self._reconnect_task
-            except asyncio.CancelledError:
-                pass
         await self._close_persistent()
 
-    async def _async_fetch_account(self, session: aiohttp.ClientSession) -> FloLogicAccount:
+    async def _async_fetch_account(
+        self, session: aiohttp.ClientSession
+    ) -> FloLogicAccount:
         """Fetch a snapshot using an existing session."""
         async with self._connection(session) as connection:
             user, valve, devices = await self._login(connection)
@@ -514,10 +538,12 @@ class FloLogicClient:
         """Log in and return user, selected valve, and device list."""
         login_waiter = connection.wait_for("LoggedIn")
         valve_waiter = connection.wait_for("ValveSent")
-        await connection.invoke("Login", self._email, self._password, self._device_name, None)
+        await connection.invoke(
+            "Login", self._email, self._password, self._device_name, None
+        )
         try:
             user_args = await asyncio.wait_for(login_waiter, 30)
-        except asyncio.TimeoutError as err:
+        except TimeoutError as err:
             raise FloLogicAuthError("FloLogic login did not return a user") from err
         user = user_args[0]
         self._relog_token = user.get("relogToken") or self._relog_token
@@ -528,7 +554,7 @@ class FloLogicClient:
             valve_args = await asyncio.wait_for(valve_waiter, 3)
             valve = valve_args[0]
             devices = [valve]
-        except asyncio.TimeoutError:
+        except TimeoutError:
             array_args = await connection.invoke_and_wait(
                 "RefreshValveArray",
                 "ValveArraySent",
@@ -559,10 +585,13 @@ class FloLogicClient:
                 user,
                 timeout=30,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return None
         accesses = args[0] if args else []
-        return next((access for access in accesses if access.get("valveId") == valve.get("id")), None)
+        return next(
+            (access for access in accesses if access.get("valveId") == valve.get("id")),
+            None,
+        )
 
     async def _fetch_scheduler(
         self,
@@ -579,7 +608,7 @@ class FloLogicClient:
                 valve["id"],
                 timeout=30,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return []
         return args[0] if args else []
 
@@ -598,7 +627,7 @@ class FloLogicClient:
                 [valve["id"]],
                 timeout=30,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return []
         notifications = args[0] if args else []
         if notifications:
@@ -611,11 +640,13 @@ class FloLogicClient:
                 [],
                 timeout=30,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return []
         return all_args[0] if all_args else []
 
-    async def _with_session(self, func: Callable[[aiohttp.ClientSession], Awaitable[Any]]) -> Any:
+    async def _with_session(
+        self, func: Callable[[aiohttp.ClientSession], Awaitable[Any]]
+    ) -> Any:
         """Run a function with a client session."""
         if self._session_factory is not None:
             session = self._session_factory()
@@ -633,9 +664,13 @@ class FloLogicClient:
             try:
                 connection = await self._ensure_persistent_connection()
                 return await func(connection)
-            except (FloLogicError, aiohttp.ClientError, asyncio.TimeoutError) as err:
+            except (TimeoutError, FloLogicError, aiohttp.ClientError) as err:
                 last_error = err
-                _LOGGER.debug("FloLogic persistent connection failed on attempt %s", attempt + 1, exc_info=err)
+                _LOGGER.debug(
+                    "FloLogic persistent connection failed on attempt %s",
+                    attempt + 1,
+                    exc_info=err,
+                )
                 await self._close_persistent()
         if last_error is not None:
             raise FloLogicError(str(last_error)) from last_error
@@ -644,7 +679,10 @@ class FloLogicClient:
     async def _ensure_persistent_connection(self) -> FloLogicConnection:
         """Open or return the persistent SignalR connection."""
         async with self._persistent_lock:
-            if self._persistent_connection is not None and not self._persistent_connection.closed:
+            if (
+                self._persistent_connection is not None
+                and not self._persistent_connection.closed
+            ):
                 return self._persistent_connection
 
             await self._close_persistent()
@@ -697,8 +735,12 @@ class FloLogicClient:
             try:
                 await self._close_persistent()
                 await self._ensure_persistent_connection()
-            except (FloLogicError, aiohttp.ClientError, asyncio.TimeoutError):
-                _LOGGER.debug("FloLogic persistent reconnect failed after %s seconds", delay, exc_info=True)
+            except (TimeoutError, FloLogicError, aiohttp.ClientError):
+                _LOGGER.debug(
+                    "FloLogic persistent reconnect failed after %s seconds",
+                    delay,
+                    exc_info=True,
+                )
                 continue
             return
 
@@ -732,7 +774,9 @@ class FloLogicClient:
         elif target == "ValveArraySent" and arguments:
             valves = arguments[0]
             if isinstance(valves, list):
-                self._handle_pushed_valves([valve for valve in valves if isinstance(valve, dict)])
+                self._handle_pushed_valves(
+                    [valve for valve in valves if isinstance(valve, dict)]
+                )
 
     def _handle_pushed_valves(self, valves: list[dict[str, Any]]) -> None:
         """Update the cached account from pushed valve data."""
@@ -788,8 +832,12 @@ class FloLogicClient:
                 "AppVer": "homeassistant",
                 "DeviceName": self._device_name,
             },
-            event_callback=self._handle_persistent_event if self._keep_session_alive else None,
-            closed_callback=self._handle_persistent_closed if self._keep_session_alive else None,
+            event_callback=self._handle_persistent_event
+            if self._keep_session_alive
+            else None,
+            closed_callback=self._handle_persistent_closed
+            if self._keep_session_alive
+            else None,
         )
 
 
@@ -803,7 +851,8 @@ def choose_valve(devices: list[dict[str, Any]]) -> dict[str, Any] | None:
             (
                 device
                 for device in devices
-                if device.get("isAnyConnect") is True and device.get("isZGateway") is not True
+                if device.get("isAnyConnect") is True
+                and device.get("isZGateway") is not True
             ),
             None,
         )
@@ -815,6 +864,8 @@ def choose_valve(devices: list[dict[str, Any]]) -> dict[str, Any] | None:
             ),
             None,
         )
-        or next((device for device in devices if device.get("isZGateway") is not True), None)
+        or next(
+            (device for device in devices if device.get("isZGateway") is not True), None
+        )
         or devices[0]
     )

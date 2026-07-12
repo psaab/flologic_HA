@@ -6,12 +6,22 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorEntityDescription, SensorStateClass
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorEntityDescription,
+    SensorStateClass,
+)
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EntityCategory, PERCENTAGE, UnitOfTemperature, UnitOfTime
+from homeassistant.const import (
+    PERCENTAGE,
+    EntityCategory,
+    UnitOfTemperature,
+    UnitOfTime,
+)
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.event import async_call_later
 
 from .const import DOMAIN, FLOW_STATE_NAMES
 from .coordinator import FloLogicCoordinator
@@ -39,7 +49,10 @@ SENSORS: tuple[FloLogicSensorDescription, ...] = (
     FloLogicSensorDescription(
         key="flow_state",
         translation_key="flow_state",
-        value_fn=lambda coordinator: FLOW_STATE_NAMES.get(coordinator.data.valve.get("flowState"), coordinator.data.valve.get("flowState")),
+        value_fn=lambda coordinator: FLOW_STATE_NAMES.get(
+            coordinator.data.valve.get("flowState"),
+            coordinator.data.valve.get("flowState"),
+        ),
     ),
     FloLogicSensorDescription(
         key="current_flow",
@@ -187,7 +200,9 @@ class FloLogicSensor(FloLogicEntity, SensorEntity):
 
     entity_description: FloLogicSensorDescription
 
-    def __init__(self, coordinator: FloLogicCoordinator, description: FloLogicSensorDescription) -> None:
+    def __init__(
+        self, coordinator: FloLogicCoordinator, description: FloLogicSensorDescription
+    ) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator, description.key)
         self.entity_description = description
