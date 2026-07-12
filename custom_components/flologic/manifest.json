@@ -1,10 +1,12 @@
 {
   "domain": "flologic",
   "name": "FloLogic",
-  "codeowners": [],
+  "codeowners": ["@technorat2"],
   "config_flow": true,
-  "documentation": "https://github.com/custom-components/flologic",
+  "documentation": "https://github.com/technorat2/flologic_HA",
+  "issue_tracker": "https://github.com/technorat2/flologic_HA/issues",
+  "integration_type": "hub",
   "iot_class": "cloud_polling",
   "requirements": [],
-  "version": "0.1.4"
+  "version": "0.1.5"
 }
