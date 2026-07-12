@@ -7,10 +7,7 @@
         "data": {
           "email": "Email",
           "password": "Password",
-          "hub_url": "Hub URL",
-          "device_name": "Device name",
-          "device_code": "Device code",
-          "device_token": "Device token"
+          "hub_url": "Hub URL"
         }
       },
       "init": {

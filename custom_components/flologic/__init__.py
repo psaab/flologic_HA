@@ -14,6 +14,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .api import FloLogicClient
 from .const import (
     CONF_DEVICE_CODE,
+    CONF_DEVICE_IDENTITY_VERSION,
     CONF_DEVICE_NAME,
     CONF_DEVICE_TOKEN,
     CONF_HUB_URL,
@@ -25,10 +26,12 @@ from .const import (
     DEFAULT_HUB_URL,
     DEFAULT_KEEP_SESSION_ALIVE,
     DEFAULT_POLL_INTERVAL,
+    DEVICE_IDENTITY_VERSION,
     DOMAIN,
     PLATFORMS,
 )
 from .coordinator import FloLogicCoordinator
+from .device_identity import build_device_identity
 
 SERVICE_SET_FLOW_SENSITIVITY = "set_flow_sensitivity"
 SERVICE_SET_HOME_LIMIT = "set_home_limit"
@@ -69,6 +72,7 @@ WRITE_SERVICE_SCHEMAS = {
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up FloLogic from a config entry."""
+    _async_migrate_device_identity(hass, entry)
     session = async_get_clientsession(hass)
     client = FloLogicClient(
         email=entry.data[CONF_EMAIL],
@@ -95,6 +99,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     _async_register_services(hass)
     return True
+
+
+def _async_migrate_device_identity(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Replace old user-editable client-device identity values once."""
+    if entry.data.get(CONF_DEVICE_IDENTITY_VERSION) == DEVICE_IDENTITY_VERSION:
+        return
+    hass.config_entries.async_update_entry(
+        entry,
+        data={
+            **entry.data,
+            **build_device_identity(hass),
+        },
+    )
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

@@ -15,15 +15,13 @@ from .const import (
     CONF_HUB_URL,
     CONF_KEEP_SESSION_ALIVE,
     CONF_POLL_INTERVAL,
-    DEFAULT_DEVICE_CODE,
-    DEFAULT_DEVICE_NAME,
-    DEFAULT_DEVICE_TOKEN,
     DEFAULT_HUB_URL,
     DEFAULT_KEEP_SESSION_ALIVE,
     DEFAULT_POLL_INTERVAL,
     DOMAIN,
     MIN_POLL_INTERVAL,
 )
+from .device_identity import build_device_identity
 from .exceptions import FloLogicAuthError, FloLogicError
 
 
@@ -44,13 +42,17 @@ class FloLogicConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
+            data = {
+                **user_input,
+                **build_device_identity(self.hass),
+            }
             client = FloLogicClient(
-                email=user_input[CONF_EMAIL],
-                password=user_input[CONF_PASSWORD],
-                hub_url=user_input[CONF_HUB_URL],
-                device_name=user_input[CONF_DEVICE_NAME],
-                device_code=user_input[CONF_DEVICE_CODE],
-                device_token=user_input[CONF_DEVICE_TOKEN],
+                email=data[CONF_EMAIL],
+                password=data[CONF_PASSWORD],
+                hub_url=data[CONF_HUB_URL],
+                device_name=data[CONF_DEVICE_NAME],
+                device_code=data[CONF_DEVICE_CODE],
+                device_token=data[CONF_DEVICE_TOKEN],
             )
             try:
                 account = await client.async_fetch_account()
@@ -63,7 +65,7 @@ class FloLogicConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 self._abort_if_unique_id_configured()
                 return self.async_create_entry(
                     title=account.valve_name,
-                    data=user_input,
+                    data=data,
                     options={
                         CONF_POLL_INTERVAL: DEFAULT_POLL_INTERVAL,
                         CONF_KEEP_SESSION_ALIVE: DEFAULT_KEEP_SESSION_ALIVE,
@@ -75,9 +77,6 @@ class FloLogicConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_EMAIL): str,
                 vol.Required(CONF_PASSWORD): str,
                 vol.Optional(CONF_HUB_URL, default=DEFAULT_HUB_URL): str,
-                vol.Optional(CONF_DEVICE_NAME, default=DEFAULT_DEVICE_NAME): str,
-                vol.Optional(CONF_DEVICE_CODE, default=DEFAULT_DEVICE_CODE): str,
-                vol.Optional(CONF_DEVICE_TOKEN, default=DEFAULT_DEVICE_TOKEN): str,
             }
         )
         return self.async_show_form(
