@@ -12,7 +12,14 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, NOTIFICATION_FLAGS
+from .const import (
+    CRITICAL_MODE_FLAGS,
+    DOMAIN,
+    MODE_FLAG_NAMES,
+    NOTIFICATION_FLAGS,
+    WARNING_ALERT_MODE_FLAGS,
+    WATER_OFF_MODE_FLAGS,
+)
 from .coordinator import FloLogicCoordinator
 from .entity import FloLogicEntity
 
@@ -36,6 +43,24 @@ BINARY_SENSORS: tuple[FloLogicBinarySensorDescription, ...] = (
         translation_key="advance_shutoff_warning",
         device_class=BinarySensorDeviceClass.PROBLEM,
         source="advance_shutoff_warning",
+    ),
+    FloLogicBinarySensorDescription(
+        key="water_off_event",
+        translation_key="water_off_event",
+        device_class=BinarySensorDeviceClass.PROBLEM,
+        source="water_off_event",
+    ),
+    FloLogicBinarySensorDescription(
+        key="warning_alert_event",
+        translation_key="warning_alert_event",
+        device_class=BinarySensorDeviceClass.PROBLEM,
+        source="warning_alert_event",
+    ),
+    FloLogicBinarySensorDescription(
+        key="critical_fault_event",
+        translation_key="critical_fault_event",
+        device_class=BinarySensorDeviceClass.PROBLEM,
+        source="critical_fault_event",
     ),
     *(
         FloLogicBinarySensorDescription(
@@ -84,7 +109,53 @@ class FloLogicBinarySensor(FloLogicEntity, BinarySensorEntity):
             return self.coordinator.data.valve.get("online")
         if self.entity_description.source == "advance_shutoff_warning":
             return self.coordinator.data.advance_shutoff_warning
+        if self.entity_description.source == "water_off_event":
+            return self._has_any_mode_flag(WATER_OFF_MODE_FLAGS)
+        if self.entity_description.source == "warning_alert_event":
+            return self._has_any_mode_flag(WARNING_ALERT_MODE_FLAGS)
+        if self.entity_description.source == "critical_fault_event":
+            return self._has_any_mode_flag(CRITICAL_MODE_FLAGS)
         return self.coordinator.data.notification_flags.get(self.entity_description.source)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return diagnostic details for grouped trouble sensors."""
+        if self.entity_description.source == "water_off_event":
+            return self._trouble_attributes(WATER_OFF_MODE_FLAGS)
+        if self.entity_description.source == "warning_alert_event":
+            return self._trouble_attributes(WARNING_ALERT_MODE_FLAGS)
+        if self.entity_description.source == "critical_fault_event":
+            return self._trouble_attributes(CRITICAL_MODE_FLAGS)
+        return None
+
+    def _has_any_mode_flag(self, flags: tuple[int, ...]) -> bool:
+        """Return whether the current valve mode contains any provided flag."""
+        mode = self._mode_value
+        if mode is None:
+            return False
+        return any(mode & flag for flag in flags)
+
+    def _trouble_attributes(self, flags: tuple[int, ...]) -> dict[str, Any]:
+        """Return active mode flags for a grouped trouble sensor."""
+        mode = self._mode_value
+        active_flags = [
+            MODE_FLAG_NAMES[flag]
+            for flag in flags
+            if mode is not None and mode & flag
+        ]
+        return {
+            "raw_mode": mode,
+            "active_mode_flags": active_flags,
+        }
+
+    @property
+    def _mode_value(self) -> int | None:
+        """Return the current raw valve mode as an integer."""
+        mode = self.coordinator.data.valve.get("mode")
+        try:
+            return int(mode)
+        except (TypeError, ValueError):
+            return None
 
 
 class FloLogicLocallyTickingBinarySensor(FloLogicBinarySensor):

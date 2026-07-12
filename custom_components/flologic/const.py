@@ -75,6 +75,21 @@ WATER_OFF_MODE_FLAGS = (
     VALVE_MODE_FLAGS["low_temp_sensor_shutoff"],
 )
 
+WARNING_ALERT_MODE_FLAGS = (
+    VALVE_MODE_FLAGS["low_temp_alert"],
+    VALVE_MODE_FLAGS["change_battery"],
+    VALVE_MODE_FLAGS["ac_lost"],
+    VALVE_MODE_FLAGS["communication_error"],
+    VALVE_MODE_FLAGS["updating"],
+)
+
+CRITICAL_MODE_FLAGS = (
+    VALVE_MODE_FLAGS["error"],
+    VALVE_MODE_FLAGS["system_down"],
+    VALVE_MODE_FLAGS["valve_failure"],
+    VALVE_MODE_FLAGS["unknown"],
+)
+
 MODE_STATUS_PRIORITY = (
     VALVE_MODE_FLAGS["flow_time_exceeded"],
     VALVE_MODE_FLAGS["sensor_leak"],

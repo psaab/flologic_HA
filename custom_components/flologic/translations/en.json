@@ -26,6 +26,9 @@
     "binary_sensor": {
       "online": { "name": "Online" },
       "advance_shutoff_warning": { "name": "Advance shutoff warning" },
+      "water_off_event": { "name": "Water-off event" },
+      "warning_alert_event": { "name": "Warning or alert event" },
+      "critical_fault_event": { "name": "Critical fault event" },
       "notification_always": { "name": "Notification always" },
       "notification_never": { "name": "Notification never" },
       "notification_mode_change": { "name": "Notification mode change" },
