@@ -9,6 +9,7 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import FloLogicClient
@@ -17,6 +18,7 @@ from .const import (
     CONF_DEVICE_IDENTITY_VERSION,
     CONF_DEVICE_NAME,
     CONF_DEVICE_TOKEN,
+    CONF_HIDDEN_ENTITY_DEFAULTS_VERSION,
     CONF_HUB_URL,
     CONF_KEEP_SESSION_ALIVE,
     CONF_POLL_INTERVAL,
@@ -28,6 +30,7 @@ from .const import (
     DEFAULT_POLL_INTERVAL,
     DEVICE_IDENTITY_VERSION,
     DOMAIN,
+    HIDDEN_ENTITY_DEFAULTS_VERSION,
     PLATFORMS,
 )
 from .coordinator import FloLogicCoordinator
@@ -48,6 +51,22 @@ ATTR_MINUTES = "minutes"
 ATTR_HOURS = "hours"
 ATTR_SECONDS = "seconds"
 ATTR_TEMPERATURE = "temperature"
+
+HIDDEN_BY_DEFAULT_UNIQUE_ID_SUFFIXES = {
+    "active_scheduler_events",
+    "flow_started_at",
+    "notification_always",
+    "notification_auto_away",
+    "notification_auto_shutoff",
+    "notification_critical_error",
+    "notification_delay_away",
+    "notification_general_alert",
+    "notification_guest_mode",
+    "notification_history_count",
+    "notification_never",
+    "notification_no_flow",
+    "signal_strength",
+}
 
 WRITE_SERVICE_SCHEMAS = {
     SERVICE_SET_FLOW_SENSITIVITY: vol.Schema(
@@ -96,6 +115,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    _async_migrate_hidden_entity_defaults(hass, entry, coordinator)
 
     _async_register_services(hass)
     return True
@@ -110,6 +130,46 @@ def _async_migrate_device_identity(hass: HomeAssistant, entry: ConfigEntry) -> N
         data={
             **entry.data,
             **build_device_identity(hass),
+        },
+    )
+
+
+def _async_migrate_hidden_entity_defaults(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    coordinator: FloLogicCoordinator,
+) -> None:
+    """Disable newly hidden default entities for existing installs once."""
+    if (
+        entry.data.get(CONF_HIDDEN_ENTITY_DEFAULTS_VERSION)
+        == HIDDEN_ENTITY_DEFAULTS_VERSION
+    ):
+        return
+
+    registry = er.async_get(hass)
+    unique_id_prefix = f"{coordinator.data.unique_id_prefix}_"
+    for entity_id, entity_entry in list(registry.entities.items()):
+        if (
+            entity_entry.platform != DOMAIN
+            or entity_entry.config_entry_id != entry.entry_id
+            or not entity_entry.unique_id.startswith(unique_id_prefix)
+        ):
+            continue
+
+        unique_id_suffix = entity_entry.unique_id.removeprefix(unique_id_prefix)
+        if unique_id_suffix not in HIDDEN_BY_DEFAULT_UNIQUE_ID_SUFFIXES:
+            continue
+
+        registry.async_update_entity(
+            entity_id,
+            disabled_by=er.RegistryEntryDisabler.INTEGRATION,
+        )
+
+    hass.config_entries.async_update_entry(
+        entry,
+        data={
+            **entry.data,
+            CONF_HIDDEN_ENTITY_DEFAULTS_VERSION: HIDDEN_ENTITY_DEFAULTS_VERSION,
         },
     )
 
