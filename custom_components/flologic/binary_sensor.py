@@ -27,6 +27,18 @@ from .const import (
 from .coordinator import FloLogicCoordinator
 from .entity import FloLogicEntity
 
+HIDDEN_BY_DEFAULT_NOTIFICATION_FLAGS = {
+    "always",
+    "auto_away",
+    "auto_shutoff",
+    "critical_error",
+    "delay_away",
+    "general_alert",
+    "guest_mode",
+    "never",
+    "no_flow",
+}
+
 
 @dataclass(frozen=True, kw_only=True)
 class FloLogicBinarySensorDescription(BinarySensorEntityDescription):
@@ -70,6 +82,9 @@ BINARY_SENSORS: tuple[FloLogicBinarySensorDescription, ...] = (
         FloLogicBinarySensorDescription(
             key=f"notification_{name}",
             translation_key=f"notification_{name}",
+            entity_registry_enabled_default=(
+                name not in HIDDEN_BY_DEFAULT_NOTIFICATION_FLAGS
+            ),
             source=name,
         )
         for name in NOTIFICATION_FLAGS

@@ -81,6 +81,7 @@ SENSORS: tuple[FloLogicSensorDescription, ...] = (
         key="signal_strength",
         translation_key="signal_strength",
         device_class=SensorDeviceClass.SIGNAL_STRENGTH,
+        entity_registry_enabled_default=False,
         native_unit_of_measurement="dBm",
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=valve_value("signalStrength"),
@@ -152,6 +153,7 @@ SENSORS: tuple[FloLogicSensorDescription, ...] = (
         key="flow_started_at",
         translation_key="flow_started_at",
         device_class=SensorDeviceClass.TIMESTAMP,
+        entity_registry_enabled_default=False,
         value_fn=lambda coordinator: coordinator.data.flow_started_at,
     ),
     FloLogicSensorDescription(
@@ -164,11 +166,13 @@ SENSORS: tuple[FloLogicSensorDescription, ...] = (
     FloLogicSensorDescription(
         key="active_scheduler_events",
         translation_key="active_scheduler_events",
+        entity_registry_enabled_default=False,
         value_fn=lambda coordinator: len(coordinator.data.active_scheduler_events),
     ),
     FloLogicSensorDescription(
         key="notification_history_count",
         translation_key="notification_history_count",
+        entity_registry_enabled_default=False,
         value_fn=lambda coordinator: len(coordinator.data.notifications),
     ),
     FloLogicSensorDescription(
