@@ -9,6 +9,7 @@ CONF_DEVICE_CODE = "device_code"
 CONF_DEVICE_TOKEN = "device_token"
 CONF_DEVICE_IDENTITY_VERSION = "device_identity_version"
 CONF_HIDDEN_ENTITY_DEFAULTS_VERSION = "hidden_entity_defaults_version"
+CONF_OPTIONS_DEFAULTS_VERSION = "options_defaults_version"
 CONF_HUB_URL = "hub_url"
 CONF_POLL_INTERVAL = "poll_interval"
 CONF_KEEP_SESSION_ALIVE = "keep_session_alive"
@@ -18,10 +19,11 @@ DEFAULT_DEVICE_CODE = "AND-ha-custom-001"
 DEFAULT_DEVICE_TOKEN = "ha-custom-token"
 DEVICE_IDENTITY_VERSION = 1
 HIDDEN_ENTITY_DEFAULTS_VERSION = 1
+OPTIONS_DEFAULTS_VERSION = 1
 DEFAULT_HUB_URL = "https://hub-cloudapps-prod.azurewebsites.net"
 DEFAULT_POLL_INTERVAL = 60
 MIN_POLL_INTERVAL = 1
-DEFAULT_KEEP_SESSION_ALIVE = False
+DEFAULT_KEEP_SESSION_ALIVE = True
 
 PLATFORMS = ["sensor", "binary_sensor", "select"]
 

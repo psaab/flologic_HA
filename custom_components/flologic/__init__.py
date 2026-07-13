@@ -21,6 +21,7 @@ from .const import (
     CONF_HIDDEN_ENTITY_DEFAULTS_VERSION,
     CONF_HUB_URL,
     CONF_KEEP_SESSION_ALIVE,
+    CONF_OPTIONS_DEFAULTS_VERSION,
     CONF_POLL_INTERVAL,
     DEFAULT_DEVICE_CODE,
     DEFAULT_DEVICE_NAME,
@@ -31,6 +32,7 @@ from .const import (
     DEVICE_IDENTITY_VERSION,
     DOMAIN,
     HIDDEN_ENTITY_DEFAULTS_VERSION,
+    OPTIONS_DEFAULTS_VERSION,
     PLATFORMS,
 )
 from .coordinator import FloLogicCoordinator
@@ -92,6 +94,7 @@ WRITE_SERVICE_SCHEMAS = {
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up FloLogic from a config entry."""
     _async_migrate_device_identity(hass, entry)
+    _async_migrate_options_defaults(hass, entry)
     session = async_get_clientsession(hass)
     client = FloLogicClient(
         email=entry.data[CONF_EMAIL],
@@ -130,6 +133,24 @@ def _async_migrate_device_identity(hass: HomeAssistant, entry: ConfigEntry) -> N
         data={
             **entry.data,
             **build_device_identity(hass),
+        },
+    )
+
+
+def _async_migrate_options_defaults(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Apply updated integration option defaults once for existing installs."""
+    if entry.data.get(CONF_OPTIONS_DEFAULTS_VERSION) == OPTIONS_DEFAULTS_VERSION:
+        return
+
+    hass.config_entries.async_update_entry(
+        entry,
+        data={
+            **entry.data,
+            CONF_OPTIONS_DEFAULTS_VERSION: OPTIONS_DEFAULTS_VERSION,
+        },
+        options={
+            **entry.options,
+            CONF_KEEP_SESSION_ALIVE: DEFAULT_KEEP_SESSION_ALIVE,
         },
     )
 
