@@ -119,10 +119,10 @@ MODE_STATUS_PRIORITY = (
 )
 
 FLOW_STATE_NAMES = {
-    1: "no_flow",
-    2: "new_flow",
-    4: "flow",
-    8: "valve_closed",
+    1: "No flow",
+    2: "New flow",
+    4: "Flow",
+    8: "Valve closed",
 }
 
 NOTIFICATION_FLAGS = {

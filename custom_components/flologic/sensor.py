@@ -233,6 +233,20 @@ class FloLogicLocallyTickingFlowSensor(FloLogicSensor):
 
     _unsub_tick: Callable[[], None] | None = None
 
+    @property
+    def native_value(self) -> Any:
+        """Return a numeric duration value."""
+        if not self.coordinator.data.is_water_flowing:
+            return 0
+        return super().native_value
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return flow status details."""
+        return {
+            "status": "Flowing" if self.coordinator.data.is_water_flowing else "No flow"
+        }
+
     async def async_added_to_hass(self) -> None:
         """Start local ticking when added to Home Assistant."""
         await super().async_added_to_hass()
