@@ -1,0 +1,273 @@
+-- ============================================================================
+-- c4/src/websocket.lua — RFC 6455 client codec and handshake helpers.
+--
+-- Pure logic. Defines the global WS table only. No require, no return, no
+-- top-level execution. Lua 5.1 safe (arithmetic-only bit handling).
+--
+-- Crypto and randomness are injected by the caller: on Control4 use
+-- C4:Hash("SHA1", ...) and C4:Base64Encode; tests inject pure-Lua versions.
+-- The actual socket belongs to the caller (a Director-managed TLS network
+-- connection); this module only builds/parses bytes.
+-- ============================================================================
+
+WS = WS or {}
+
+WS.GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+WS.OP_CONT = 0
+WS.OP_TEXT = 1
+WS.OP_BINARY = 2
+WS.OP_CLOSE = 8
+WS.OP_PING = 9
+WS.OP_PONG = 10
+
+local function bxor_byte(a, b)
+  local result, bit = 0, 1
+  for _ = 1, 8 do
+    if (a % 2) ~= (b % 2) then
+      result = result + bit
+    end
+    a = math.floor(a / 2)
+    b = math.floor(b / 2)
+    bit = bit * 2
+  end
+  return result
+end
+
+function WS.xor_mask(payload, mask)
+  local out = {}
+  for i = 1, #payload do
+    out[i] = string.char(bxor_byte(payload:byte(i), mask[((i - 1) % 4) + 1]))
+  end
+  return table.concat(out)
+end
+
+-- Build the HTTP Upgrade request. key must be the Base64 of 16 random bytes.
+function WS.build_handshake_request(host, path, key, extra_headers)
+  local lines = {
+    "GET " .. path .. " HTTP/1.1",
+    "Host: " .. host,
+    "Upgrade: websocket",
+    "Connection: Upgrade",
+    "Sec-WebSocket-Key: " .. key,
+    "Sec-WebSocket-Version: 13",
+  }
+  if extra_headers ~= nil then
+    for _, line in ipairs(extra_headers) do
+      lines[#lines + 1] = line
+    end
+  end
+  return table.concat(lines, "\r\n") .. "\r\n\r\n"
+end
+
+-- Expected Sec-WebSocket-Accept for a client key. sha1_fn(data) returns raw
+-- bytes; b64_fn(data) returns Base64 text.
+function WS.expected_accept(key, sha1_fn, b64_fn)
+  return b64_fn(sha1_fn(key .. WS.GUID))
+end
+
+-- Parse a server handshake response. Returns accept_key, bytes_consumed on
+-- success; nil, "need_more" when the headers are incomplete; nil, err otherwise.
+function WS.parse_handshake_response(buffer)
+  local cut = buffer:find("\r\n\r\n", 1, true)
+  if cut == nil then
+    return nil, "need_more"
+  end
+  local head = buffer:sub(1, cut - 1)
+  local status = head:match("^HTTP/%S+%s+(%d+)")
+  if status ~= "101" then
+    return nil, "websocket upgrade rejected: " .. (status or "?")
+  end
+  -- Match the header name case-insensitively but keep the original value:
+  -- Base64 is case-sensitive.
+  local accept = nil
+  for line in (head .. "\r\n"):gmatch("([^\r\n]*)\r\n") do
+    local name, value = line:match("^([^:]+):%s*(.-)%s*$")
+    if name ~= nil and name:lower() == "sec-websocket-accept" then
+      accept = value
+      break
+    end
+  end
+  if accept == nil or accept == "" then
+    return nil, "websocket upgrade missing Sec-WebSocket-Accept"
+  end
+  return accept, cut + 3
+end
+
+-- Build a single masked client frame (FIN set). mask is 4 byte numbers.
+function WS.build_client_frame(payload, mask, opcode)
+  opcode = opcode or WS.OP_TEXT
+  local len = #payload
+  local head
+  if len < 126 then
+    head = string.char(128 + opcode, 128 + len)
+  elseif len < 65536 then
+    head = string.char(
+      128 + opcode, 128 + 126,
+      math.floor(len / 256) % 256, len % 256
+    )
+  else
+    local high = math.floor(len / 4294967296)
+    local low = len % 4294967296
+    head = string.char(
+      128 + opcode, 128 + 127,
+      0, 0, 0, 0,
+      math.floor(low / 16777216) % 256,
+      math.floor(low / 65536) % 256,
+      math.floor(low / 256) % 256,
+      low % 256
+    )
+    if high ~= 0 then
+      error("websocket payload too large")
+    end
+  end
+  return head
+    .. string.char(mask[1], mask[2], mask[3], mask[4])
+    .. WS.xor_mask(payload, mask)
+end
+
+function WS.build_close_payload(code, reason)
+  code = code or 1000
+  return string.char(math.floor(code / 256) % 256, code % 256) .. (reason or "")
+end
+
+-- Incremental server-frame parser. Callbacks:
+--   on_message(payload, is_binary)  -- reassembled text/binary message
+--   on_ping(payload) -> true to auto-send pong via send_frame
+--   on_pong(payload)
+--   on_close(code, reason)
+--   on_error(message)
+--   send_frame(payload, opcode) -- masked client-frame sender; nil disables pong
+function WS.new_parser(callbacks)
+  callbacks = callbacks or {}
+  local self = { _buffer = "", _frag_opcode = nil, _frag_parts = {} }
+
+  local function parse_one()
+    local buf, blen = self._buffer, #self._buffer
+    if blen < 2 then
+      return nil -- need more
+    end
+    local b1, b2 = buf:byte(1), buf:byte(2)
+    local fin = b1 >= 128
+    local opcode = b1 % 16
+    if b1 % 128 >= 16 then
+      return nil, "websocket RSV bits set without negotiated extensions"
+    end
+    local masked = b2 >= 128
+    local len = b2 % 128
+    local pos = 3
+    if len == 126 then
+      if blen < 4 then
+        return nil
+      end
+      len = buf:byte(3) * 256 + buf:byte(4)
+      pos = 5
+    elseif len == 127 then
+      if blen < 10 then
+        return nil
+      end
+      local high = buf:byte(3) * 16777216 + buf:byte(4) * 65536
+        + buf:byte(5) * 256 + buf:byte(6)
+      local low = buf:byte(7) * 16777216 + buf:byte(8) * 65536
+        + buf:byte(9) * 256 + buf:byte(10)
+      if high ~= 0 then
+        return nil, "websocket frame too large"
+      end
+      len = low
+      pos = 11
+    end
+    local mask = nil
+    if masked then
+      if blen < pos + 3 then
+        return nil
+      end
+      mask = { buf:byte(pos, pos + 3) }
+      pos = pos + 4
+    end
+    if blen < pos + len - 1 then
+      return nil -- need more
+    end
+    local payload = buf:sub(pos, pos + len - 1)
+    if mask ~= nil then
+      payload = WS.xor_mask(payload, mask)
+    end
+    self._buffer = buf:sub(pos + len)
+    return { fin = fin, opcode = opcode, payload = payload }
+  end
+
+  function self.feed(data)
+    self._buffer = self._buffer .. data
+    while true do
+      local frame, err = parse_one()
+      if err ~= nil then
+        if callbacks.on_error ~= nil then
+          callbacks.on_error(err)
+        end
+        return
+      end
+      if frame == nil then
+        return -- need more data
+      end
+      local op, payload = frame.opcode, frame.payload
+      if op == WS.OP_CONT then
+        if self._frag_opcode == nil then
+          if callbacks.on_error ~= nil then
+            callbacks.on_error("stray websocket continuation frame")
+          end
+          return
+        end
+        self._frag_parts[#self._frag_parts + 1] = payload
+        if frame.fin then
+          local message = table.concat(self._frag_parts)
+          local is_binary = self._frag_opcode == WS.OP_BINARY
+          self._frag_opcode, self._frag_parts = nil, {}
+          if callbacks.on_message ~= nil then
+            callbacks.on_message(message, is_binary)
+          end
+        end
+      elseif op == WS.OP_TEXT or op == WS.OP_BINARY then
+        if self._frag_opcode ~= nil then
+          if callbacks.on_error ~= nil then
+            callbacks.on_error("interleaved websocket data frame")
+          end
+          return
+        end
+        if frame.fin then
+          if callbacks.on_message ~= nil then
+            callbacks.on_message(payload, op == WS.OP_BINARY)
+          end
+        else
+          self._frag_opcode, self._frag_parts = op, { payload }
+        end
+      elseif op == WS.OP_PING then
+        local want_pong = true
+        if callbacks.on_ping ~= nil then
+          want_pong = callbacks.on_ping(payload)
+        end
+        if want_pong and callbacks.send_frame ~= nil then
+          callbacks.send_frame(payload, WS.OP_PONG)
+        end
+      elseif op == WS.OP_PONG then
+        if callbacks.on_pong ~= nil then
+          callbacks.on_pong(payload)
+        end
+      elseif op == WS.OP_CLOSE then
+        local code, reason = 1005, ""
+        if #payload >= 2 then
+          code = payload:byte(1) * 256 + payload:byte(2)
+          reason = payload:sub(3)
+        end
+        if callbacks.on_close ~= nil then
+          callbacks.on_close(code, reason)
+        end
+        return
+      else
+        if callbacks.on_error ~= nil then
+          callbacks.on_error("unknown websocket opcode " .. tostring(op))
+        end
+        return
+      end
+    end
+  end
+
+  return self
+end

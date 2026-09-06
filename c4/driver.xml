@@ -1,0 +1,457 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<devicedata>
+  <agent>false</agent>
+  <copyright>Copyright 2026 Paul Saab. All rights reserved.</copyright>
+  <creator>Paul Saab</creator>
+  <name>FloLogic Valve</name>
+  <model>FloLogic Connect</model>
+  <manufacturer>FloLogic</manufacturer>
+  <driver>DriverWorks</driver>
+  <control>lua_gen</control>
+  <version>2026090601</version>
+  <created>09/06/2026 12:00 PM</created>
+  <modified>09/06/2026 12:00 PM</modified>
+  <!-- Self-distributed via GitHub; Control4's native driver-update database
+       will never carry this driver, so disable that path. -->
+  <auto_update>false</auto_update>
+  <minimum_auto_update_version>1</minimum_auto_update_version>
+  <states/>
+  <config>
+    <properties>
+      <property>
+        <name>Driver Version</name>
+        <type>STRING</type>
+        <default>2026090601</default>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>Email</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>false</readonly>
+        <description>FloLogic account email, same as the mobile app.</description>
+      </property>
+      <property>
+        <name>Password</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>false</readonly>
+        <description>FloLogic account password.</description>
+      </property>
+      <property>
+        <name>Hub URL</name>
+        <type>STRING</type>
+        <default>https://hub-cloudapps-prod.azurewebsites.net</default>
+        <readonly>false</readonly>
+        <description>Cloud hub URL. Leave unchanged unless FloLogic moves it.</description>
+      </property>
+      <property>
+        <name>Poll Interval</name>
+        <type>RANGED_INTEGER</type>
+        <minimum>30</minimum>
+        <maximum>3600</maximum>
+        <default>60</default>
+        <readonly>false</readonly>
+        <description>Seconds between cloud polls.</description>
+      </property>
+      <property>
+        <name>Select Valve</name>
+        <type>DYNAMIC_LIST</type>
+        <readonly>false</readonly>
+        <description>Valve this driver monitors, populated from the account after the first poll. Blank means the primary valve.</description>
+      </property>
+      <property>
+        <name>Valve ID Override</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>false</readonly>
+        <description>Valve id or uuid. Wins over Select Valve when non-blank.</description>
+      </property>
+      <property>
+        <name>Debug Mode</name>
+        <type>LIST</type>
+        <items>
+          <item>Off</item>
+          <item>On</item>
+        </items>
+        <default>Off</default>
+        <readonly>false</readonly>
+      </property>
+      <property>
+        <name>Connection</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>Valve Name</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>Mode</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>Flow State</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>Water Flowing</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>Temperature</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+        <description>Valve temperature in Fahrenheit.</description>
+      </property>
+      <property>
+        <name>Battery Level</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+        <description>Battery percent.</description>
+      </property>
+      <property>
+        <name>Signal Strength</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+        <description>Signal strength in dBm.</description>
+      </property>
+      <property>
+        <name>Current Flow</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+        <description>Current flow in oz/min.</description>
+      </property>
+      <property>
+        <name>Home Limit</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+        <description>Continuous-flow limit in home mode, minutes.</description>
+      </property>
+      <property>
+        <name>Away Limit</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+        <description>Continuous-flow limit in away mode, minutes.</description>
+      </property>
+      <property>
+        <name>Bypass Time</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+        <description>Bypass duration in minutes.</description>
+      </property>
+      <property>
+        <name>Auto Away</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+        <description>Idle time before automatic away mode, hours.</description>
+      </property>
+      <property>
+        <name>Temp Alert</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+        <description>Low-temperature alert threshold in Fahrenheit.</description>
+      </property>
+      <property>
+        <name>Temp Shutoff</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+        <description>Low-temperature shutoff threshold in Fahrenheit.</description>
+      </property>
+      <property>
+        <name>Pre-Alert</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+        <description>Advance shutoff warning window in minutes.</description>
+      </property>
+      <property>
+        <name>No-Flow Notice</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+        <description>No-flow notice interval in seconds.</description>
+      </property>
+      <property>
+        <name>Flow Sensitivity</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+        <description>Flow sensitivity in oz/min.</description>
+      </property>
+      <property>
+        <name>Shutoff Countdown</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+        <description>Estimated seconds until automatic shutoff while flowing.</description>
+      </property>
+      <property>
+        <name>Flow Elapsed</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+        <description>Seconds since the current flow started.</description>
+      </property>
+      <property>
+        <name>Scheduler Events</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+        <description>Count of active scheduled mode changes.</description>
+      </property>
+      <property>
+        <name>Notifications</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+        <description>Count of notification history rows.</description>
+      </property>
+      <property>
+        <name>Available Valves</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+        <description>Valves found on the account, as id: name pairs.</description>
+      </property>
+      <property>
+        <name>Last Update</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+      </property>
+    </properties>
+    <commands>
+      <command>
+        <name>Refresh</name>
+        <description>Poll the FloLogic cloud now.</description>
+      </command>
+      <command>
+        <name>Refresh Valve List</name>
+        <description>Re-poll and rebuild the Select Valve list.</description>
+      </command>
+      <command>
+        <name>Set Mode Home</name>
+        <description>Put the valve in home mode.</description>
+      </command>
+      <command>
+        <name>Set Mode Away</name>
+        <description>Put the valve in away mode.</description>
+      </command>
+      <command>
+        <name>Set Mode Bypass</name>
+        <description>Put the valve in bypass mode.</description>
+      </command>
+      <command>
+        <name>Set Mode Shutoff</name>
+        <description>Shut the water off.</description>
+      </command>
+      <command>
+        <name>Set Mode Disabled</name>
+        <description>Disable automatic control.</description>
+      </command>
+      <command>
+        <name>Set Home Limit</name>
+        <description>Continuous-flow limit in home mode, minutes.</description>
+        <params>
+          <param>
+            <name>Minutes</name>
+            <type>RANGED_INTEGER</type>
+            <minimum>1</minimum>
+            <maximum>10080</maximum>
+          </param>
+        </params>
+      </command>
+      <command>
+        <name>Set Away Limit</name>
+        <description>Continuous-flow limit in away mode, minutes.</description>
+        <params>
+          <param>
+            <name>Minutes</name>
+            <type>NUMBER</type>
+          </param>
+        </params>
+      </command>
+      <command>
+        <name>Set Bypass Time</name>
+        <description>Bypass duration in minutes.</description>
+        <params>
+          <param>
+            <name>Minutes</name>
+            <type>RANGED_INTEGER</type>
+            <minimum>1</minimum>
+            <maximum>10080</maximum>
+          </param>
+        </params>
+      </command>
+      <command>
+        <name>Set Auto Away</name>
+        <description>Idle time before automatic away mode, hours.</description>
+        <params>
+          <param>
+            <name>Hours</name>
+            <type>RANGED_INTEGER</type>
+            <minimum>1</minimum>
+            <maximum>8760</maximum>
+          </param>
+        </params>
+      </command>
+      <command>
+        <name>Set Temp Alert</name>
+        <description>Low-temperature alert threshold in Fahrenheit.</description>
+        <params>
+          <param>
+            <name>Temperature</name>
+            <type>RANGED_INTEGER</type>
+            <minimum>-50</minimum>
+            <maximum>150</maximum>
+          </param>
+        </params>
+      </command>
+      <command>
+        <name>Set Temp Shutoff</name>
+        <description>Low-temperature shutoff threshold in Fahrenheit.</description>
+        <params>
+          <param>
+            <name>Temperature</name>
+            <type>RANGED_INTEGER</type>
+            <minimum>-50</minimum>
+            <maximum>150</maximum>
+          </param>
+        </params>
+      </command>
+      <command>
+        <name>Set Pre-Alert</name>
+        <description>Advance shutoff warning window in minutes.</description>
+        <params>
+          <param>
+            <name>Minutes</name>
+            <type>RANGED_INTEGER</type>
+            <minimum>1</minimum>
+            <maximum>10080</maximum>
+          </param>
+        </params>
+      </command>
+      <command>
+        <name>Set No-Flow Notice</name>
+        <description>No-flow notice interval in seconds.</description>
+        <params>
+          <param>
+            <name>Seconds</name>
+            <type>RANGED_INTEGER</type>
+            <minimum>1</minimum>
+            <maximum>604800</maximum>
+          </param>
+        </params>
+      </command>
+      <command>
+        <name>Set Flow Sensitivity</name>
+        <description>Flow sensitivity in oz/min (0-1000).</description>
+        <params>
+          <param>
+            <name>Value</name>
+            <type>NUMBER</type>
+          </param>
+        </params>
+      </command>
+    </commands>
+    <actions>
+      <action>
+        <name>Refresh</name>
+        <command>Refresh</command>
+      </action>
+      <action>
+        <name>Refresh Valve List</name>
+        <command>Refresh Valve List</command>
+      </action>
+    </actions>
+    <script file="driver.lua" encryption="0" jit="1"/>
+  </config>
+  <!-- Combo self-proxy: with no static connections, this is what makes the
+       driver searchable and room-addable (same pattern as generic_http). -->
+  <combo>true</combo>
+  <proxies>
+    <proxy>flologic_valve</proxy>
+  </proxies>
+  <events>
+    <event>
+      <id>1</id>
+      <name>Flow Started</name>
+      <description>Water started flowing.</description>
+    </event>
+    <event>
+      <id>2</id>
+      <name>Flow Stopped</name>
+      <description>Water stopped flowing.</description>
+    </event>
+    <event>
+      <id>3</id>
+      <name>Water Off Detected</name>
+      <description>A water-off mode flag became active (shutoff, leak, freeze).</description>
+    </event>
+    <event>
+      <id>4</id>
+      <name>Water Off Cleared</name>
+      <description>All water-off mode flags cleared.</description>
+    </event>
+    <event>
+      <id>5</id>
+      <name>Warning Alert</name>
+      <description>A warning mode flag became active.</description>
+    </event>
+    <event>
+      <id>6</id>
+      <name>Warning Cleared</name>
+      <description>All warning mode flags cleared.</description>
+    </event>
+    <event>
+      <id>7</id>
+      <name>Critical Fault</name>
+      <description>A critical fault flag became active.</description>
+    </event>
+    <event>
+      <id>8</id>
+      <name>Critical Cleared</name>
+      <description>All critical fault flags cleared.</description>
+    </event>
+    <event>
+      <id>9</id>
+      <name>Mode Changed</name>
+      <description>The valve mode changed.</description>
+    </event>
+    <event>
+      <id>10</id>
+      <name>Advance Shutoff Warning</name>
+      <description>Continuous flow entered the pre-alert shutoff window.</description>
+    </event>
+    <event>
+      <id>11</id>
+      <name>Connection Lost</name>
+      <description>Cloud polling started failing.</description>
+    </event>
+    <event>
+      <id>12</id>
+      <name>Connection Restored</name>
+      <description>Cloud polling recovered.</description>
+    </event>
+  </events>
+</devicedata>
