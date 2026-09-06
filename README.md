@@ -118,12 +118,16 @@ The integration registers these service actions under the `flologic` domain:
 Every action accepts the same optional targeting fields: `valve_id`
 (FloLogic valve id or uuid), `device_id` (Home Assistant device id), or
 `entity_id` (one or more FloLogic entities, whose valves are controlled).
-Give at most one of them.
+Give at most one of them. `valve_uuid` is also accepted as an alias for
+`valve_id`. Empty or conflicting targets are rejected.
 
-- With a single valve, the target may be omitted.
+- With exactly one loaded valve across all configured accounts, the target
+  may be omitted.
 - With multiple valves, an explicit target is required. Actions never fan
   out to valves the caller did not name: an unknown or missing target is a
   validation error, not a broadcast.
+- Targets resolve across all loaded accounts. If a cloud valve ID matches
+  more than one account, use `device_id` or `entity_id` to identify its owner.
 - If several valves are targeted via `entity_id` and some fail, the failure
   is logged with the affected valves; if all fail, the action raises.
 
@@ -154,3 +158,9 @@ The estimate uses FloLogic valve state, flow state, `lastNewFlow`, mode-specific
 Open issues at:
 
 https://github.com/technorat2/flologic_HA/issues
+
+## Development
+
+Tests use the real Home Assistant harness with mocked cloud clients. With Python
+3.14, install `requirements_test.txt` into a virtual environment and run
+`python -m pytest -q`. CI runs the same suite, Ruff, and Python/JSON checks.

@@ -7,13 +7,15 @@ from typing import Any
 
 import homeassistant.helpers.config_validation as cv
 import voluptuous as vol
+from aiohttp import ClientError
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.core import HomeAssistant, ServiceCall
-from homeassistant.exceptions import ServiceValidationError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.typing import ConfigType
 
 from .api import FloLogicClient
 from .const import (
@@ -40,6 +42,7 @@ from .const import (
 )
 from .coordinator import FloLogicCoordinator
 from .device_identity import build_device_identity
+from .exceptions import FloLogicError
 
 SERVICE_SET_FLOW_SENSITIVITY = "set_flow_sensitivity"
 SERVICE_SET_HOME_LIMIT = "set_home_limit"
@@ -107,7 +110,7 @@ _TARGET_FIELDS = {
 }
 
 
-def _targeted_schema(value_field: dict) -> vol.Schema:
+def _targeted_schema(value_field: dict[Any, Any]) -> vol.Schema:
     """Build a write-service schema with valve targeting fields."""
     return vol.Schema({**value_field, **_TARGET_FIELDS})
 
@@ -135,6 +138,12 @@ WRITE_SERVICE_SCHEMAS = {
 }
 
 
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Register actions even when no config entry can be loaded."""
+    _async_register_services(hass)
+    return True
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up FloLogic from a config entry."""
     _async_migrate_device_identity(hass, entry)
@@ -160,11 +169,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await coordinator.async_config_entry_first_refresh()
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
-    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     _async_migrate_hidden_entity_defaults(hass, entry, coordinator)
+    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
 
-    _async_register_services(hass)
     return True
 
 
@@ -211,37 +219,31 @@ def _async_migrate_hidden_entity_defaults(
     ):
         return
 
-    # Support multi-valve: collect all prefixes from current coordinator data.
-    prefixes: list[str] = [f"{key}_" for key in coordinator.accounts]
+    prefixes = [f"{key}_" for key in coordinator.accounts]
     if not prefixes:
-        # No valve data loaded yet; do NOT bump the version so the migration
-        # retries on the next setup instead of silently never running.
+        # Leave the version unchanged so migration retries on the next setup.
         _LOGGER.debug(
             "Skipping hidden-entity migration for entry %s: no valves loaded",
             entry.entry_id,
         )
         return
     registry = er.async_get(hass)
-    for entity_id, entity_entry in list(registry.entities.items()):
-        if (
-            entity_entry.platform != DOMAIN
-            or entity_entry.config_entry_id != entry.entry_id
-        ):
+    for entity_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
+        if entity_entry.platform != DOMAIN:
             continue
-        if not any(entity_entry.unique_id.startswith(p) for p in prefixes):
-            continue
-
-        # Extract suffix after the matched prefix
-        suffix: str | None = None
-        for prefix in prefixes:
-            if entity_entry.unique_id.startswith(prefix):
-                suffix = entity_entry.unique_id.removeprefix(prefix)
-                break
-        if suffix is None or suffix not in HIDDEN_BY_DEFAULT_UNIQUE_ID_SUFFIXES:
+        suffix = next(
+            (
+                entity_entry.unique_id.removeprefix(prefix)
+                for prefix in prefixes
+                if entity_entry.unique_id.startswith(prefix)
+            ),
+            None,
+        )
+        if suffix not in HIDDEN_BY_DEFAULT_UNIQUE_ID_SUFFIXES:
             continue
 
         registry.async_update_entity(
-            entity_id,
+            entity_entry.entity_id,
             disabled_by=er.RegistryEntryDisabler.INTEGRATION,
         )
 
@@ -274,37 +276,27 @@ def _async_register_services(hass: HomeAssistant) -> None:
         return
 
     async def handle_service(call: ServiceCall) -> None:
-        coordinator = _get_first_coordinator(hass)
         fields = _service_call_to_command(call)
-        # Target resolution raises before any cloud call on unknown targets,
-        # so a typo can never fan out to valves the user did not intend.
-        targets = _resolve_service_targets(hass, coordinator, call)
-        failures: dict[str, Exception] = {}
-        for valve_id in targets:
+        # Resolve the entire request before sending any commands.
+        targets = _resolve_service_targets(hass, call)
+        failures: list[str] = []
+        refreshed: set[FloLogicCoordinator] = set()
+        for coordinator, valve_id in targets:
             try:
                 await coordinator.client.async_request_state_change_for_valve(
                     valve_id, fields
                 )
-            except Exception as err:
-                if len(targets) == 1:
-                    raise
-                failures[valve_id] = err
-                _LOGGER.debug(
-                    "FloLogic service %s failed for valve %s",
-                    call.service,
-                    valve_id,
-                    exc_info=True,
-                )
+            except (FloLogicError, TimeoutError, ClientError) as err:
+                failures.append(f"{valve_id}: {err}")
+            else:
+                refreshed.add(coordinator)
+        for coordinator in refreshed:
+            await coordinator.async_request_refresh()
         if failures:
+            message = f"FloLogic action {call.service} failed for {', '.join(failures)}"
             if len(failures) == len(targets):
-                # Every target failed: surface the failure, never silent success.
-                raise next(iter(failures.values()))
-            _LOGGER.warning(
-                "FloLogic service %s partially failed: %s",
-                call.service,
-                {vid: str(err) for vid, err in failures.items()},
-            )
-        await coordinator.async_request_refresh()
+                raise HomeAssistantError(message)
+            _LOGGER.warning("%s", message)
 
     for service, schema in WRITE_SERVICE_SCHEMAS.items():
         hass.services.async_register(DOMAIN, service, handle_service, schema=schema)
@@ -313,101 +305,103 @@ def _async_register_services(hass: HomeAssistant) -> None:
 
 
 def _resolve_service_targets(
-    hass: HomeAssistant, coordinator: FloLogicCoordinator, call: ServiceCall
-) -> list[str]:
-    """Return valve prefixes the service should affect.
-
-    Raises ServiceValidationError for unknown or ambiguous targets before
-    any cloud call is made. With a single loaded valve the target may be
-    omitted; with multiple valves an explicit target is required — services
-    never fan out to valves the caller did not name.
-    """
-    data = call.data
-    known = list(coordinator.accounts)
-    valve_ref = data.get("valve_id") or data.get("valve_uuid") or data.get("device_id")
-    entity_ids = data.get("entity_id")
-
-    if valve_ref and entity_ids:
-        raise ServiceValidationError(
-            "Specify only one valve target: valve_id/valve_uuid/device_id "
-            "or entity_id, not both"
-        )
-
-    if valve_ref:
-        needle = str(valve_ref)
-        # Accept a Home Assistant device registry id...
-        dev_entry = dr.async_get(hass).async_get(needle)
-        if dev_entry is not None:
-            for ident_domain, ident in dev_entry.identifiers:
-                if ident_domain == DOMAIN and ident in coordinator.accounts:
-                    return [ident]
-        # ...or a FloLogic valve id/uuid directly.
-        if needle in coordinator.accounts:
-            return [needle]
-        for prefix, acct in coordinator.accounts.items():
-            if (
-                str(acct.valve.get("id")) == needle
-                or str(acct.valve.get("uuid")) == needle
-            ):
-                return [prefix]
-        raise ServiceValidationError(
-            f"Unknown FloLogic valve {valve_ref!r}; loaded valves: {known or 'none'}"
-        )
-
-    if entity_ids:
-        eids = [entity_ids] if isinstance(entity_ids, str) else list(entity_ids)
-        ent_reg = er.async_get(hass)
-        prefixes: list[str] = []
-        unresolved: list[str] = []
-        for eid in eids:
-            ent = ent_reg.async_get(eid)
-            # unique_id is "<prefix>_<key>"
-            match = None
-            if ent is not None and ent.unique_id:
-                match = next(
-                    (
-                        prefix
-                        for prefix in coordinator.accounts
-                        if ent.unique_id.startswith(f"{prefix}_")
-                    ),
-                    None,
-                )
-            if match is None:
-                unresolved.append(eid)
-            else:
-                prefixes.append(match)
-        if unresolved:
-            raise ServiceValidationError(
-                f"Could not resolve a FloLogic valve for {unresolved}; "
-                f"loaded valves: {known or 'none'}"
-            )
-        return list(dict.fromkeys(prefixes))
-
-    if len(known) == 1:
-        return known
-    if not known:
-        raise ServiceValidationError("No FloLogic valves are loaded")
-    raise ServiceValidationError(
-        f"Multiple FloLogic valves are loaded ({len(known)}); specify "
-        "valve_id, device_id, or entity_id to choose which valve to control"
-    )
-
-
-def _get_first_coordinator(hass: HomeAssistant) -> FloLogicCoordinator:
-    """Return the first configured FloLogic coordinator."""
-    coordinators = [
-        value
-        for key, value in hass.data.get(DOMAIN, {}).items()
-        if key != "_services_registered"
+    hass: HomeAssistant, call: ServiceCall
+) -> list[tuple[FloLogicCoordinator, str]]:
+    """Resolve explicit targets across loaded entries before issuing commands."""
+    coordinators: dict[str, FloLogicCoordinator] = {
+        entry_id: coordinator
+        for entry_id, coordinator in hass.data.get(DOMAIN, {}).items()
+        if entry_id != "_services_registered"
+    }
+    target_fields = [
+        field
+        for field in ("valve_id", "valve_uuid", "device_id", "entity_id")
+        if field in call.data
     ]
-    if not coordinators:
-        raise ServiceValidationError("No FloLogic config entry is loaded")
-    if len(coordinators) > 1:
-        _LOGGER.warning(
-            "Multiple FloLogic config entries are loaded; service calls "
-            "only target valves from the first entry"
+    if len(target_fields) > 1:
+        raise ServiceValidationError(
+            "Specify only one of valve_id, valve_uuid, device_id, or entity_id"
         )
-    return coordinators[0]
+    if target_fields:
+        field = target_fields[0]
+        value = call.data[field]
+        if not value or (isinstance(value, str) and not value.strip()):
+            raise ServiceValidationError("A valve target must not be empty")
+    else:
+        targets = [
+            (coordinator, valve_id)
+            for coordinator in coordinators.values()
+            for valve_id in coordinator.accounts
+        ]
+        if len(targets) == 1:
+            return targets
+        if not targets:
+            raise ServiceValidationError("No FloLogic valves are loaded")
+        raise ServiceValidationError(
+            "Multiple FloLogic valves are loaded; specify a valve target"
+        )
+
+    device_registry = dr.async_get(hass)
+
+    def resolve_device(
+        device_id: str, config_entry_id: str | None = None
+    ) -> tuple[FloLogicCoordinator, str]:
+        """Match registry ownership and identifiers to one loaded valve."""
+        device = device_registry.async_get(device_id)
+        matches = []
+        if device is not None:
+            matches = [
+                (coordinator, valve_id)
+                for entry_id, coordinator in coordinators.items()
+                if entry_id in device.config_entries
+                and (config_entry_id is None or entry_id == config_entry_id)
+                for valve_id in coordinator.accounts
+                if (DOMAIN, valve_id) in device.identifiers
+            ]
+        if len(matches) != 1:
+            raise ServiceValidationError(
+                f"Unknown or ambiguous FloLogic device {device_id!r}"
+            )
+        return matches[0]
+
+    if field == "device_id":
+        return [resolve_device(value)]
+    if field == "entity_id":
+        entity_registry = er.async_get(hass)
+        entity_ids = [value] if isinstance(value, str) else value
+        targets = []
+        for entity_id in entity_ids:
+            entity = entity_registry.async_get(entity_id)
+            if (
+                entity is None
+                or entity.platform != DOMAIN
+                or entity.config_entry_id not in coordinators
+                or entity.device_id is None
+            ):
+                raise ServiceValidationError(
+                    f"Cannot resolve a loaded FloLogic valve for {entity_id!r}"
+                )
+            target = resolve_device(entity.device_id, entity.config_entry_id)
+            if target not in targets:
+                targets.append(target)
+        return targets
+
+    matches = [
+        (coordinator, valve_id)
+        for coordinator in coordinators.values()
+        for valve_id, account in coordinator.accounts.items()
+        if value == valve_id
+        or any(
+            reference is not None and str(reference).casefold() == value.casefold()
+            for reference in (account.valve.get("id"), account.valve.get("uuid"))
+        )
+    ]
+    if len(matches) != 1:
+        raise ServiceValidationError(
+            f"Unknown or ambiguous FloLogic valve {value!r}; "
+            "use device_id or entity_id to select a valve from a specific account"
+        )
+    return matches
 
 
 def _service_call_to_command(call: ServiceCall) -> dict[str, Any]:

@@ -118,13 +118,17 @@ async def async_setup_entry(
 
     def _async_add_new_valves() -> None:
         """Add entities for valves discovered after setup."""
-        new_ids = [vid for vid in coordinator.accounts if vid not in known_valves]
-        if not new_ids:
+        new_valve_ids = [
+            valve_id
+            for valve_id in coordinator.accounts
+            if valve_id not in known_valves
+        ]
+        if not new_valve_ids:
             return
         entities: list[FloLogicBinarySensor] = []
-        for valve_id in new_ids:
+        for valve_id in new_valve_ids:
             entities.extend(_entities_for_valve(coordinator, valve_id))
-        known_valves.update(new_ids)
+        known_valves.update(new_valve_ids)
         async_add_entities(entities)
 
     _async_add_new_valves()
@@ -149,20 +153,20 @@ class FloLogicBinarySensor(FloLogicEntity, BinarySensorEntity):
     @property
     def is_on(self) -> bool | None:
         """Return the binary sensor state."""
-        acct = self._account
-        if acct is None:
+        account = self._account
+        if account is None:
             return None
         if self.entity_description.source == "online":
-            return acct.valve.get("online")
+            return account.valve.get("online")
         if self.entity_description.source == "advance_shutoff_warning":
-            return acct.advance_shutoff_warning
+            return account.advance_shutoff_warning
         if self.entity_description.source == "water_off_event":
             return self._has_any_mode_flag(WATER_OFF_MODE_FLAGS)
         if self.entity_description.source == "warning_alert_event":
             return self._has_any_mode_flag(WARNING_ALERT_MODE_FLAGS)
         if self.entity_description.source == "critical_fault_event":
             return self._has_any_mode_flag(CRITICAL_MODE_FLAGS)
-        return acct.notification_flags.get(self.entity_description.source)
+        return account.notification_flags.get(self.entity_description.source)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
@@ -196,10 +200,10 @@ class FloLogicBinarySensor(FloLogicEntity, BinarySensorEntity):
     @property
     def _mode_value(self) -> int | None:
         """Return the current raw valve mode as an integer."""
-        acct = self._account
-        if acct is None:
+        account = self._account
+        if account is None:
             return None
-        mode = acct.valve.get("mode")
+        mode = account.valve.get("mode")
         try:
             return int(mode)
         except (TypeError, ValueError):
@@ -230,8 +234,8 @@ class FloLogicLocallyTickingBinarySensor(FloLogicBinarySensor):
     def _sync_tick_timer(self) -> None:
         """Start or stop the local one-second tick."""
         self._last_tick_value = self.is_on
-        acct = self._account
-        if acct is not None and acct.is_water_flowing:
+        account = self._account
+        if account is not None and account.is_water_flowing:
             if self._unsub_tick is None:
                 self._schedule_next_tick()
         else:
@@ -250,8 +254,8 @@ class FloLogicLocallyTickingBinarySensor(FloLogicBinarySensor):
     def _handle_tick(self, _now: Any) -> None:
         """Refresh the local warning value."""
         self._unsub_tick = None
-        acct = self._account
-        if acct is None or not acct.is_water_flowing:
+        account = self._account
+        if account is None or not account.is_water_flowing:
             self._stop_tick_timer()
             self.schedule_update_ha_state()
             return

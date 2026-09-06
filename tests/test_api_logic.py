@@ -1,14 +1,16 @@
 """Pure-logic tests for the FloLogic cloud client.
 
-These tests deliberately avoid importing Home Assistant: api.py, const.py and
-exceptions.py only need aiohttp, so valve selection, account decoding and the
-push-cache state machine can be covered without a HA test harness.
+Synthetic payloads and mocked connections exercise valve selection, account
+decoding, and push/poll ordering without contacting the cloud. Integration
+behavior is covered separately using the Home Assistant harness.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -100,7 +102,8 @@ def test_controllable_empty_and_gateway_only() -> None:
     assert controllable_valves([]) == []
     assert choose_valve([]) is None
     gateway = make_valve(isZConnect=False, isZGateway=True, deviceTypeName="Hub")
-    assert controllable_valves([gateway]) == [gateway]
+    assert controllable_valves([gateway]) == []
+    assert choose_valve([gateway]) is None
 
 
 # --- FloLogicAccount decoding ---
@@ -395,3 +398,74 @@ def test_persistent_event_routes_single_vs_array() -> None:
     updated = make_valve(mode=2)
     client._handle_persistent_event("ValveArraySent", [[updated]])
     assert set(received[-1]) == {"uuid-1"}
+
+
+def test_mixed_connect_types_are_all_discovered() -> None:
+    """Selecting a primary valve must not filter out other Connect types."""
+    zconnect = make_valve()
+    anyconnect = make_valve(id=22, uuid="uuid-2", isZConnect=False, isAnyConnect=True)
+    legacy = make_valve(
+        id=33, uuid="uuid-3", isZConnect=False, deviceTypeName="G-Connect"
+    )
+    gateway = make_valve(id=99, uuid="gw", isZConnect=False, isZGateway=True)
+    assert controllable_valves([anyconnect, gateway, legacy, zconnect]) == [
+        anyconnect,
+        legacy,
+        zconnect,
+    ]
+    assert choose_valve([anyconnect, gateway, legacy, zconnect]) == zconnect
+
+
+@pytest.mark.parametrize("event", ["state", "addition", "removal"])
+async def test_push_during_poll_keeps_latest_state_and_membership(event) -> None:
+    """Metadata requests must not roll back state, additions, or removals."""
+    client = make_client()
+    first = make_valve()
+    second = make_valve(id=22, uuid="uuid-2")
+    seed_push_cache(client, first, second)
+    pushes = []
+    client.set_push_accounts_callback(pushes.append)
+
+    async def invoke(target, *args, **kwargs):
+        if target == "RefreshValveArray":
+            return [[first, second]]
+        if target == "RequestUserAccesses":
+            if event == "state":
+                client._handle_persistent_event("ValveSent", [make_valve(mode=2)])
+            elif event == "addition":
+                client._handle_persistent_event(
+                    "ValveSent", [make_valve(id=33, uuid="uuid-3")]
+                )
+            else:
+                client._handle_persistent_event("ValveArraySent", [[second]])
+            return [[{"valveId": 11, "notificationsList": 64}]]
+        return [[]]
+
+    connection = SimpleNamespace(invoke_and_wait=invoke)
+    client._ensure_persistent_connection = AsyncMock(return_value=connection)
+    accounts = await client.async_fetch_accounts()
+    assert set(accounts) == set(pushes[-1])
+    assert {key: account.valve for key, account in accounts.items()} == {
+        key: account.valve for key, account in pushes[-1].items()
+    }
+    assert client._last_accounts == accounts
+    if event == "state":
+        assert accounts["uuid-1"].valve["mode"] == 2
+        assert accounts["uuid-1"].access == {"valveId": 11, "notificationsList": 64}
+    elif event == "addition":
+        assert "uuid-3" in accounts
+    else:
+        assert "uuid-1" not in accounts
+
+
+async def test_legacy_account_fetch_preserves_primary_valve() -> None:
+    """Discovering other Connect types must not change config-flow identity."""
+    client = make_client()
+    primary = make_account(make_valve())
+    other = make_account(
+        make_valve(id=22, uuid="uuid-2", isZConnect=False, isAnyConnect=True)
+    )
+    client.async_fetch_accounts = AsyncMock(
+        return_value={"uuid-2": other, "uuid-1": primary}
+    )
+    assert await client.async_fetch_account() is primary

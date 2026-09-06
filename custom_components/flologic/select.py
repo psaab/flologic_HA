@@ -25,12 +25,16 @@ async def async_setup_entry(
 
     def _async_add_new_valves() -> None:
         """Add entities for valves discovered after setup."""
-        new_ids = [vid for vid in coordinator.accounts if vid not in known_valves]
-        if not new_ids:
+        new_valve_ids = [
+            valve_id
+            for valve_id in coordinator.accounts
+            if valve_id not in known_valves
+        ]
+        if not new_valve_ids:
             return
-        known_valves.update(new_ids)
+        known_valves.update(new_valve_ids)
         async_add_entities(
-            [FloLogicModeSelect(coordinator, valve_id) for valve_id in new_ids]
+            [FloLogicModeSelect(coordinator, valve_id) for valve_id in new_valve_ids]
         )
 
     _async_add_new_valves()
@@ -52,10 +56,10 @@ class FloLogicModeSelect(FloLogicEntity, SelectEntity):
     @property
     def current_option(self) -> str | None:
         """Return the current option."""
-        acct = self._account
-        if acct is None:
+        account = self._account
+        if account is None:
             return None
-        return acct.mode_name
+        return account.mode_name
 
     async def async_select_option(self, option: str) -> None:
         """Set the valve mode."""

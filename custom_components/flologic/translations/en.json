@@ -45,5 +45,205 @@
     "select": {
       "valve_mode": { "name": "Valve mode" }
     }
+  },
+  "services": {
+    "set_flow_sensitivity": {
+      "name": "Set flow sensitivity",
+      "description": "Set this value for the selected FloLogic valve. Omit the target only when exactly one valve is loaded across all accounts. Specify only one target field.",
+      "fields": {
+        "value": {
+          "name": "Value",
+          "description": "Flow sensitivity in oz/min (0-1000)."
+        },
+        "valve_id": {
+          "name": "FloLogic valve ID or UUID",
+          "description": "FloLogic valve id or uuid to control."
+        },
+        "device_id": {
+          "name": "Device",
+          "description": "Home Assistant device id of the FloLogic valve."
+        },
+        "entity_id": {
+          "name": "Entities",
+          "description": "One or more FloLogic entities; their valves are controlled."
+        }
+      }
+    },
+    "set_home_limit": {
+      "name": "Set home limit",
+      "description": "Set this value for the selected FloLogic valve. Omit the target only when exactly one valve is loaded across all accounts. Specify only one target field.",
+      "fields": {
+        "minutes": {
+          "name": "Minutes",
+          "description": "Continuous-flow limit in home mode, in minutes."
+        },
+        "valve_id": {
+          "name": "FloLogic valve ID or UUID",
+          "description": "FloLogic valve id or uuid to control."
+        },
+        "device_id": {
+          "name": "Device",
+          "description": "Home Assistant device id of the FloLogic valve."
+        },
+        "entity_id": {
+          "name": "Entities",
+          "description": "One or more FloLogic entities; their valves are controlled."
+        }
+      }
+    },
+    "set_away_limit": {
+      "name": "Set away limit",
+      "description": "Set this value for the selected FloLogic valve. Omit the target only when exactly one valve is loaded across all accounts. Specify only one target field.",
+      "fields": {
+        "minutes": {
+          "name": "Minutes",
+          "description": "Continuous-flow limit in away mode, in minutes."
+        },
+        "valve_id": {
+          "name": "FloLogic valve ID or UUID",
+          "description": "FloLogic valve id or uuid to control."
+        },
+        "device_id": {
+          "name": "Device",
+          "description": "Home Assistant device id of the FloLogic valve."
+        },
+        "entity_id": {
+          "name": "Entities",
+          "description": "One or more FloLogic entities; their valves are controlled."
+        }
+      }
+    },
+    "set_bypass_time": {
+      "name": "Set bypass time",
+      "description": "Set this value for the selected FloLogic valve. Omit the target only when exactly one valve is loaded across all accounts. Specify only one target field.",
+      "fields": {
+        "minutes": {
+          "name": "Minutes",
+          "description": "Bypass duration in minutes."
+        },
+        "valve_id": {
+          "name": "FloLogic valve ID or UUID",
+          "description": "FloLogic valve id or uuid to control."
+        },
+        "device_id": {
+          "name": "Device",
+          "description": "Home Assistant device id of the FloLogic valve."
+        },
+        "entity_id": {
+          "name": "Entities",
+          "description": "One or more FloLogic entities; their valves are controlled."
+        }
+      }
+    },
+    "set_auto_away": {
+      "name": "Set auto away",
+      "description": "Set this value for the selected FloLogic valve. Omit the target only when exactly one valve is loaded across all accounts. Specify only one target field.",
+      "fields": {
+        "hours": {
+          "name": "Hours",
+          "description": "Idle time before automatic away mode, in hours."
+        },
+        "valve_id": {
+          "name": "FloLogic valve ID or UUID",
+          "description": "FloLogic valve id or uuid to control."
+        },
+        "device_id": {
+          "name": "Device",
+          "description": "Home Assistant device id of the FloLogic valve."
+        },
+        "entity_id": {
+          "name": "Entities",
+          "description": "One or more FloLogic entities; their valves are controlled."
+        }
+      }
+    },
+    "set_temp_alert": {
+      "name": "Set temp alert",
+      "description": "Set this value for the selected FloLogic valve. Omit the target only when exactly one valve is loaded across all accounts. Specify only one target field.",
+      "fields": {
+        "temperature": {
+          "name": "Temperature",
+          "description": "Low-temperature alert threshold in Fahrenheit."
+        },
+        "valve_id": {
+          "name": "FloLogic valve ID or UUID",
+          "description": "FloLogic valve id or uuid to control."
+        },
+        "device_id": {
+          "name": "Device",
+          "description": "Home Assistant device id of the FloLogic valve."
+        },
+        "entity_id": {
+          "name": "Entities",
+          "description": "One or more FloLogic entities; their valves are controlled."
+        }
+      }
+    },
+    "set_temp_shutoff": {
+      "name": "Set temp shutoff",
+      "description": "Set this value for the selected FloLogic valve. Omit the target only when exactly one valve is loaded across all accounts. Specify only one target field.",
+      "fields": {
+        "temperature": {
+          "name": "Temperature",
+          "description": "Low-temperature shutoff threshold in Fahrenheit."
+        },
+        "valve_id": {
+          "name": "FloLogic valve ID or UUID",
+          "description": "FloLogic valve id or uuid to control."
+        },
+        "device_id": {
+          "name": "Device",
+          "description": "Home Assistant device id of the FloLogic valve."
+        },
+        "entity_id": {
+          "name": "Entities",
+          "description": "One or more FloLogic entities; their valves are controlled."
+        }
+      }
+    },
+    "set_pre_alert_notice": {
+      "name": "Set pre alert notice",
+      "description": "Set this value for the selected FloLogic valve. Omit the target only when exactly one valve is loaded across all accounts. Specify only one target field.",
+      "fields": {
+        "minutes": {
+          "name": "Minutes",
+          "description": "Advance shutoff warning window in minutes."
+        },
+        "valve_id": {
+          "name": "FloLogic valve ID or UUID",
+          "description": "FloLogic valve id or uuid to control."
+        },
+        "device_id": {
+          "name": "Device",
+          "description": "Home Assistant device id of the FloLogic valve."
+        },
+        "entity_id": {
+          "name": "Entities",
+          "description": "One or more FloLogic entities; their valves are controlled."
+        }
+      }
+    },
+    "set_no_flow_notice": {
+      "name": "Set no flow notice",
+      "description": "Set this value for the selected FloLogic valve. Omit the target only when exactly one valve is loaded across all accounts. Specify only one target field.",
+      "fields": {
+        "seconds": {
+          "name": "Seconds",
+          "description": "No-flow notice interval in seconds."
+        },
+        "valve_id": {
+          "name": "FloLogic valve ID or UUID",
+          "description": "FloLogic valve id or uuid to control."
+        },
+        "device_id": {
+          "name": "Device",
+          "description": "Home Assistant device id of the FloLogic valve."
+        },
+        "entity_id": {
+          "name": "Entities",
+          "description": "One or more FloLogic entities; their valves are controlled."
+        }
+      }
+    }
   }
 }

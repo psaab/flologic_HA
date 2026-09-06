@@ -52,14 +52,14 @@ class FloLogicEntity(CoordinatorEntity[FloLogicCoordinator]):
     @property
     def device_info(self) -> DeviceInfo:
         """Return device information."""
-        acct = self._account
-        if acct is None:
+        account = self._account
+        if account is None:
             # Valve data not loaded (yet): keep the device linkable by id only.
             return DeviceInfo(identifiers={(DOMAIN, self._valve_id)})
-        valve = acct.valve
+        valve = account.valve
         return DeviceInfo(
             identifiers={(DOMAIN, self._valve_id)},
-            name=acct.valve_name,
+            name=account.valve_name,
             manufacturer="FloLogic",
             model=valve.get("deviceTypeName"),
             sw_version=valve.get("softwareVersion")
