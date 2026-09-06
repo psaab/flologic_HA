@@ -12,7 +12,7 @@
       },
       "select_valves": {
         "title": "Select valves",
-        "description": "Choose which valves this Home Assistant install monitors. Only one home usually needs each valve; pick more only if this install is responsible for several.",
+        "description": "Select the valves installed at this site. No valves are selected automatically when the account has multiple valves.",
         "data": {
           "monitored_valves": "Monitored valves"
         }
@@ -34,14 +34,15 @@
       "unknown_valve_selected": "The valve selection is no longer valid. Go back and try again."
     },
     "abort": {
-      "already_configured": "This FloLogic device is already configured."
+      "already_configured": "This FloLogic account is already configured.",
+      "no_valves": "This FloLogic account has no controllable valves."
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "FloLogic options",
-        "description": "Choose how often Home Assistant refreshes FloLogic data. Keep session alive reuses one cloud websocket, listens for pushed valve updates, and reconnects automatically if FloLogic closes it. Monitored valves controls which valves this install tracks; changing it reloads the integration.",
+        "description": "Choose how often Home Assistant refreshes FloLogic data. Keep session alive reuses one cloud websocket, listens for pushed valve updates, and reconnects automatically if FloLogic closes it. Monitored valves controls which valves this install tracks; changing it reloads the integration. Previously selected valves remain selectable if temporarily missing. Reopen this form to refresh the valve list.",
         "data": {
           "poll_interval": "Polling interval in seconds",
           "keep_session_alive": "Keep cloud session alive",
@@ -254,6 +255,12 @@
           "description": "One or more FloLogic entities; their valves are controlled."
         }
       }
+    }
+  },
+  "issues": {
+    "select_valves": {
+      "title": "Select valves for {name}",
+      "description": "No previously registered FloLogic valves could be identified for {name}. Open the integration options and select the valves installed at this site. No valves will be monitored or controlled until you choose a selection."
     }
   }
 }

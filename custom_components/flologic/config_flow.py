@@ -10,6 +10,7 @@ from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 
+from .account_identity import account_unique_id, normalize_hub_url
 from .api import FloLogicAccount, FloLogicClient
 from .const import (
     CONF_DEVICE_CODE,
@@ -72,15 +73,33 @@ class FloLogicConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 device_token=data[CONF_DEVICE_TOKEN],
             )
             try:
-                accounts = await client.async_fetch_accounts()
+                accounts = await client.async_discover_accounts()
             except FloLogicAuthError:
                 errors["base"] = "invalid_auth"
             except FloLogicError:
                 errors["base"] = "cannot_connect"
             else:
+                if not accounts:
+                    return self.async_abort(reason="no_valves")
                 first = next(iter(accounts.values()))
-                await self.async_set_unique_id(str(first.valve["id"]))
+                identity = account_unique_id(data[CONF_HUB_URL], first.user["id"])
+                await self.async_set_unique_id(identity)
                 self._abort_if_unique_id_configured()
+                # Recognize legacy entries before a reload has migrated their ID.
+                for entry in self._async_current_entries():
+                    same_hub = normalize_hub_url(
+                        entry.data.get(CONF_HUB_URL, DEFAULT_HUB_URL)
+                    ) == normalize_hub_url(data[CONF_HUB_URL])
+                    same_login = (
+                        entry.data.get(CONF_EMAIL, "").strip().casefold()
+                        == data[CONF_EMAIL].strip().casefold()
+                    )
+                    is_legacy = entry.unique_id is None or "::" not in entry.unique_id
+                    if same_hub and same_login and is_legacy:
+                        self.hass.config_entries.async_update_entry(
+                            entry, unique_id=identity
+                        )
+                        return self.async_abort(reason="already_configured")
                 self._entry_data = data
                 self._discovered = accounts
                 if len(accounts) == 1:
@@ -123,13 +142,12 @@ class FloLogicConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             selector.SelectOptionDict(value=key, label=valve_option_label(acct))
             for key, acct in self._discovered.items()
         ]
-        # Default to the first valve only: this install may be one of several
-        # homes on the account, so never assume every valve belongs here.
+        # Cloud ordering gives no indication of which valve belongs to this site.
         schema = vol.Schema(
             {
                 vol.Required(
                     CONF_MONITORED_VALVES,
-                    default=[next(iter(self._discovered))],
+                    default=[],
                 ): selector.SelectSelector(
                     selector.SelectSelectorConfig(
                         options=options,
@@ -167,12 +185,19 @@ class FloLogicOptionsFlow(config_entries.OptionsFlow):
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         """Initialize the options flow."""
         self._config_entry = config_entry
+        self._discovered: dict[str, FloLogicAccount] | None = None
+        self._discovery_attempted = False
 
     async def async_step_init(self, user_input: dict | None = None) -> FlowResult:
         """Manage FloLogic options."""
         errors: dict[str, str] = {}
         options = self._config_entry.options
-        discovered = await self._async_discover_valves()
+        if not self._discovery_attempted:
+            self._discovered = await self._async_discover_valves()
+            self._discovery_attempted = True
+        discovered = self._discovered
+        currently_monitored = list(options.get(CONF_MONITORED_VALVES) or [])
+        allowed = set(currently_monitored) | (discovered or {}).keys()
 
         if user_input is not None:
             poll_interval = user_input[CONF_POLL_INTERVAL]
@@ -181,14 +206,17 @@ class FloLogicOptionsFlow(config_entries.OptionsFlow):
                 errors[CONF_POLL_INTERVAL] = "interval_too_low"
             elif not monitored:
                 errors["base"] = "no_valve_selected"
-            elif discovered is not None and any(
-                key not in discovered for key in monitored
-            ):
+            elif any(key not in allowed for key in monitored):
                 errors["base"] = "unknown_valve_selected"
             else:
-                return self.async_create_entry(title="", data=user_input)
-
-        currently_monitored = list(options.get(CONF_MONITORED_VALVES) or [])
+                return self.async_create_entry(
+                    title="",
+                    data={
+                        **options,
+                        **user_input,
+                        CONF_MONITORED_VALVES: list(dict.fromkeys(monitored)),
+                    },
+                )
         if discovered is not None:
             valve_options = [
                 selector.SelectOptionDict(value=key, label=valve_option_label(acct))
@@ -203,15 +231,11 @@ class FloLogicOptionsFlow(config_entries.OptionsFlow):
                 for key in currently_monitored
                 if key not in discovered
             )
-            default_monitored = [
-                key
-                for key in currently_monitored
-                if any(opt["value"] == key for opt in valve_options)
-            ] or [next(iter(discovered))]
+            default_monitored = currently_monitored
         else:
             # Cloud unreachable: only offer the current selection so other
             # options stay editable without destroying it.
-            errors["base"] = "cannot_connect"
+            errors.setdefault("base", "cannot_connect")
             valve_options = [
                 selector.SelectOptionDict(value=key, label=key)
                 for key in currently_monitored
@@ -260,6 +284,6 @@ class FloLogicOptionsFlow(config_entries.OptionsFlow):
             device_token=data.get(CONF_DEVICE_TOKEN, ""),
         )
         try:
-            return await client.async_fetch_accounts()
+            return await client.async_discover_accounts()
         except FloLogicError:
             return None

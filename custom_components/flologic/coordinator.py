@@ -49,6 +49,8 @@ class FloLogicCoordinator(DataUpdateCoordinator[dict[str, FloLogicAccount]]):
         )
         self.client = client
         self.monitored_valves = monitored_valves
+        self.client.monitored_valves = monitored_valves
+        self._missing_valves: set[str] = set()
         self.client.set_push_accounts_callback(self._handle_pushed_accounts)
 
     async def _async_update_data(self) -> dict[str, FloLogicAccount]:
@@ -58,15 +60,7 @@ class FloLogicCoordinator(DataUpdateCoordinator[dict[str, FloLogicAccount]]):
         except FloLogicError as err:
             raise UpdateFailed(str(err)) from err
         selected = select_monitored_accounts(accounts, self.monitored_valves)
-        if self.monitored_valves is not None:
-            missing = self.monitored_valves - accounts.keys()
-            if missing:
-                _LOGGER.warning(
-                    "FloLogic is configured to monitor valves %s, but the "
-                    "cloud did not return them; their entities are unavailable "
-                    "until the selection is fixed in the integration options",
-                    sorted(missing),
-                )
+        self._log_missing_valves(accounts)
         return selected
 
     @property
@@ -88,10 +82,27 @@ class FloLogicCoordinator(DataUpdateCoordinator[dict[str, FloLogicAccount]]):
 
         The client always pushes its full known valve set, so the push
         replaces the data: valves removed cloud-side disappear instead of
-        lingering as stale ghosts. Empty pushes are ignored. Only monitored
-        valves are kept; pushes for other valves are dropped.
+        lingering as stale ghosts. An empty selection must also be published
+        so the last monitored valve becomes unavailable when removed.
         """
-        selected = select_monitored_accounts(accounts, self.monitored_valves)
-        if not selected:
-            return
-        self.async_set_updated_data(selected)
+        self._log_missing_valves(accounts)
+        self.async_set_updated_data(
+            select_monitored_accounts(accounts, self.monitored_valves)
+        )
+
+    def _log_missing_valves(self, accounts: dict[str, FloLogicAccount]) -> None:
+        """Log each disappearance and recovery once, for both polls and pushes."""
+        missing = (self.monitored_valves or set()) - accounts.keys()
+        newly_missing = missing - self._missing_valves
+        recovered = self._missing_valves - missing
+        if newly_missing:
+            _LOGGER.warning(
+                "FloLogic cloud did not return monitored valves %s; their "
+                "entities are unavailable until the valves return",
+                sorted(newly_missing),
+            )
+        if recovered:
+            _LOGGER.info(
+                "FloLogic monitored valves are available again: %s", sorted(recovered)
+            )
+        self._missing_valves = missing

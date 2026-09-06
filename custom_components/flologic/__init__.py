@@ -14,6 +14,7 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.typing import ConfigType
 
@@ -162,15 +163,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             CONF_KEEP_SESSION_ALIVE, DEFAULT_KEEP_SESSION_ALIVE
         ),
     )
-    monitored = entry.options.get(CONF_MONITORED_VALVES)
+    _async_migrate_monitored_valves(hass, entry)
+    monitored = entry.options[CONF_MONITORED_VALVES]
     coordinator = FloLogicCoordinator(
         hass,
         client,
         entry.options.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL),
-        monitored_valves=set(monitored) if monitored is not None else None,
+        monitored_valves=set(monitored or []),
     )
     await coordinator.async_config_entry_first_refresh()
-    _async_migrate_monitored_valves(hass, entry, coordinator)
+    identity = client.account_unique_id
+    if isinstance(identity, str) and not any(
+        other.entry_id != entry.entry_id and other.unique_id == identity
+        for other in hass.config_entries.async_entries(DOMAIN)
+    ):
+        hass.config_entries.async_update_entry(entry, unique_id=identity)
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -211,26 +218,36 @@ def _async_migrate_options_defaults(hass: HomeAssistant, entry: ConfigEntry) -> 
     )
 
 
-def _async_migrate_monitored_valves(
-    hass: HomeAssistant,
-    entry: ConfigEntry,
-    coordinator: FloLogicCoordinator,
-) -> None:
-    """Record an explicit valve selection for entries created before it existed.
-
-    Legacy entries monitored every valve the cloud returned. Freezing the
-    current set preserves their behavior exactly, while new valves are never
-    auto-added afterwards. Runs before the update listener is registered, so
-    persisting options here does not trigger a reload.
-    """
-    if CONF_MONITORED_VALVES in entry.options:
-        return
-    monitored = sorted(coordinator.accounts)
-    coordinator.monitored_valves = set(monitored)
-    hass.config_entries.async_update_entry(
-        entry,
-        options={**entry.options, CONF_MONITORED_VALVES: monitored},
-    )
+def _async_migrate_monitored_valves(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Preserve registered valves, including missing ones, before discovery."""
+    issue_id = f"select_valves_{entry.entry_id}"
+    if CONF_MONITORED_VALVES not in entry.options:
+        registry = dr.async_get(hass)
+        monitored = sorted(
+            {
+                identifier
+                for device in dr.async_entries_for_config_entry(
+                    registry, entry.entry_id
+                )
+                for domain, identifier in device.identifiers
+                if domain == DOMAIN
+            }
+        )
+        hass.config_entries.async_update_entry(
+            entry, options={**entry.options, CONF_MONITORED_VALVES: monitored}
+        )
+    if entry.options[CONF_MONITORED_VALVES]:
+        ir.async_delete_issue(hass, DOMAIN, issue_id)
+    else:
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            issue_id,
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="select_valves",
+            translation_placeholders={"name": entry.title},
+        )
 
 
 def _async_migrate_hidden_entity_defaults(

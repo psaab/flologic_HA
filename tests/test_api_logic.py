@@ -10,10 +10,12 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
+import aiohttp
 import pytest
 
+from custom_components.flologic.account_identity import account_unique_id
 from custom_components.flologic.api import (
     FloLogicAccount,
     FloLogicClient,
@@ -24,6 +26,7 @@ from custom_components.flologic.api import (
 from custom_components.flologic.config_flow import valve_option_label
 from custom_components.flologic.const import VALVE_MODES
 from custom_components.flologic.coordinator import select_monitored_accounts
+from custom_components.flologic.exceptions import FloLogicError
 
 
 def make_valve(**overrides: Any) -> dict[str, Any]:
@@ -360,14 +363,16 @@ def test_full_array_push_prunes_removed_valve() -> None:
     assert client._persistent_devices == [updated, gateway]
 
 
-def test_full_array_push_empty_is_ignored() -> None:
+def test_full_array_push_empty_removes_last_valve() -> None:
     client = make_client()
     seed_push_cache(client, make_valve())
     received: list[dict[str, FloLogicAccount]] = []
     client.set_push_accounts_callback(received.append)
     client._handle_pushed_valves([], full_replace=True)
-    assert received == []
-    assert set(client._last_accounts or {}) == {"uuid-1"}
+    assert received == [{}]
+    assert client._last_accounts == {}
+    assert client._last_account is None
+    assert client._persistent_devices == []
 
 
 def test_push_ignored_without_session_or_user() -> None:
@@ -418,7 +423,7 @@ def test_mixed_connect_types_are_all_discovered() -> None:
     assert choose_valve([anyconnect, gateway, legacy, zconnect]) == zconnect
 
 
-@pytest.mark.parametrize("event", ["state", "addition", "removal"])
+@pytest.mark.parametrize("event", ["state", "addition", "removal", "empty_removal"])
 async def test_push_during_poll_keeps_latest_state_and_membership(event) -> None:
     """Metadata requests must not roll back state, additions, or removals."""
     client = make_client()
@@ -438,6 +443,8 @@ async def test_push_during_poll_keeps_latest_state_and_membership(event) -> None
                 client._handle_persistent_event(
                     "ValveSent", [make_valve(id=33, uuid="uuid-3")]
                 )
+            elif event == "empty_removal":
+                client._handle_persistent_event("ValveArraySent", [[]])
             else:
                 client._handle_persistent_event("ValveArraySent", [[second]])
             return [[{"valveId": 11, "notificationsList": 64}]]
@@ -500,3 +507,95 @@ def test_valve_option_label_includes_id_once() -> None:
     assert (
         valve_option_label(make_account(make_valve(id=None, uuid="uuid-9"))) == "uuid-9"
     )
+
+
+async def test_discovery_does_not_request_valve_metadata() -> None:
+    client = make_client(keep_session_alive=False)
+    first = make_valve()
+    second = make_valve(id=22, uuid="uuid-2")
+    connection = MagicMock()
+    connection.__aenter__.return_value = connection
+    connection.invoke_and_wait = AsyncMock()
+    client._connection = MagicMock(return_value=connection)
+    client._login = AsyncMock(return_value=({"id": 7}, first, [first, second]))
+    client._ensure_full_devices = AsyncMock(return_value=[first, second])
+    accounts = await client.async_discover_accounts()
+    assert set(accounts) == {"uuid-1", "uuid-2"}
+    connection.invoke_and_wait.assert_not_awaited()
+    connection.__aexit__.assert_awaited_once()
+
+
+@pytest.mark.parametrize("persistent", [True, False])
+@pytest.mark.parametrize("selection", [{"uuid-2"}, set()])
+async def test_poll_requests_metadata_only_for_selected_valves(
+    persistent, selection
+) -> None:
+    client = make_client(keep_session_alive=persistent)
+    client.monitored_valves = selection
+    first = make_valve()
+    second = make_valve(id=22, uuid="uuid-2")
+    seed_push_cache(client, first, second)
+    connection = MagicMock()
+    connection.__aenter__.return_value = connection
+
+    async def invoke(target, *args, **kwargs):
+        return [[first, second]] if target == "RefreshValveArray" else [[]]
+
+    connection.invoke_and_wait = AsyncMock(side_effect=invoke)
+    client._connection = MagicMock(return_value=connection)
+    client._login = AsyncMock(return_value=({"id": 7}, first, [first, second]))
+    client._ensure_persistent_connection = AsyncMock(return_value=connection)
+    accounts = await client.async_fetch_accounts()
+    assert set(accounts) == {"uuid-1", "uuid-2"}
+    calls = connection.invoke_and_wait.await_args_list
+    scheduler_calls = [
+        call for call in calls if call.args[0] == "RequestSchedulerEvents"
+    ]
+    history_calls = [
+        call for call in calls if call.args[0] == "RefreshValvesNotificationsHistory"
+    ]
+    if selection:
+        assert len(scheduler_calls) == len(history_calls) == 1
+        assert scheduler_calls[0].args[3] == 22
+        assert history_calls[0].args[3] == [22]
+    else:
+        assert scheduler_calls == history_calls == []
+        assert not any(call.args[0] == "RequestUserAccesses" for call in calls)
+
+
+@pytest.mark.parametrize(
+    "error", [TimeoutError(), aiohttp.ClientConnectionError("offline")]
+)
+async def test_temporary_client_normalizes_transport_errors(error) -> None:
+    client = make_client(keep_session_alive=False)
+    operation = AsyncMock(side_effect=error)
+    with pytest.raises(FloLogicError) as raised:
+        await client._with_session(operation)
+    assert raised.value.__cause__ is error
+
+
+def test_account_identity_is_scoped_to_normalized_endpoint() -> None:
+    assert account_unique_id("https://EXAMPLE.test/signalr/", 7) == account_unique_id(
+        "https://example.test", 7
+    )
+    assert account_unique_id("https://example.test", 7) != account_unique_id(
+        "https://other.test", 7
+    )
+    assert account_unique_id("https://example.test", 7) != account_unique_id(
+        "https://example.test", 8
+    )
+
+
+@pytest.mark.parametrize("payload", [None, ["invalid"], [{"id": 11}, "invalid"]])
+async def test_malformed_inventory_does_not_clear_existing_valves(payload) -> None:
+    client = make_client()
+    seed_push_cache(client, make_valve())
+    received = []
+    client.set_push_accounts_callback(received.append)
+    client._handle_persistent_event("ValveArraySent", [payload])
+    assert received == []
+    assert set(client._last_accounts) == {"uuid-1"}
+    connection = SimpleNamespace(invoke_and_wait=AsyncMock(return_value=[payload]))
+    with pytest.raises(FloLogicError, match="invalid valve inventory"):
+        await client._refresh_persistent_valves(connection)
+    assert set(client._persistent_valves) == {"uuid-1"}

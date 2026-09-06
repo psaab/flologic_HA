@@ -1,5 +1,6 @@
 """Exercise actions and entity lifecycles with real Home Assistant registries."""
 
+import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -8,6 +9,7 @@ from homeassistant.const import STATE_UNAVAILABLE
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -285,6 +287,10 @@ async def test_legacy_entry_freezes_selection_and_ignores_new_valves(hass):
         unique_id="account-legacy",
     )
     entry.add_to_hass(hass)
+    for valve_id in ("uuid-1", "uuid-2"):
+        dr.async_get(hass).async_get_or_create(
+            config_entry_id=entry.entry_id, identifiers={(DOMAIN, valve_id)}
+        )
     accounts = {
         "uuid-1": make_account(make_valve(id=11, uuid="uuid-1")),
         "uuid-2": make_account(make_valve(id=22, uuid="uuid-2")),
@@ -322,4 +328,79 @@ async def test_missing_monitored_valve_is_unavailable(hass, monitored_entry, cap
     await coordinator.async_refresh()
     await hass.async_block_till_done()
     assert hass.states.get(entity_id).state == STATE_UNAVAILABLE
-    assert "did not return them" in caplog.text
+    assert "did not return monitored valves" in caplog.text
+
+
+async def test_push_removal_and_recovery_log_once(hass, monitored_entry, caplog):
+    """An unrelated-only inventory immediately invalidates the selected valve."""
+    entry, client, accounts = monitored_entry
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    entity_id = er.async_get(hass).async_get_entity_id(
+        "select", DOMAIN, "uuid-1_valve_mode"
+    )
+    push = client.set_push_accounts_callback.call_args.args[0]
+    caplog.set_level(logging.INFO)
+    for _ in range(2):
+        push({"uuid-2": accounts["uuid-2"]})
+    client.async_fetch_accounts.return_value = {"uuid-2": accounts["uuid-2"]}
+    await coordinator.async_refresh()
+    assert hass.states.get(entity_id).state == STATE_UNAVAILABLE
+    assert caplog.text.count("did not return monitored valves") == 1
+    for _ in range(2):
+        push(accounts)
+    assert hass.states.get(entity_id).state == "home"
+    assert caplog.text.count("available again") == 1
+
+
+async def test_legacy_migration_preserves_missing_registered_valve(hass):
+    """Cloud inventory must neither drop missing devices nor add new ones."""
+    entry = MockConfigEntry(
+        domain=DOMAIN, unique_id="11", data={"email": "u@example.com", "password": "pw"}
+    )
+    entry.add_to_hass(hass)
+    for key in ("uuid-1", "uuid-2"):
+        dr.async_get(hass).async_get_or_create(
+            config_entry_id=entry.entry_id, identifiers={(DOMAIN, key)}
+        )
+    client = MagicMock(spec=FloLogicClient)
+    client.account_unique_id = "https://example.test::7"
+    first = make_account(make_valve())
+    new = make_account(make_valve(id=33, uuid="uuid-3"))
+    client.async_fetch_accounts.return_value = {"uuid-1": first, "uuid-3": new}
+    with patch("custom_components.flologic.FloLogicClient", return_value=client):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    assert entry.options["monitored_valves"] == ["uuid-1", "uuid-2"]
+    assert entry.unique_id == "https://example.test::7"
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    assert (
+        coordinator.monitored_valves == client.monitored_valves == {"uuid-1", "uuid-2"}
+    )
+    second = make_account(make_valve(id=22, uuid="uuid-2"))
+    client.set_push_accounts_callback.call_args.args[0](
+        {"uuid-1": first, "uuid-2": second, "uuid-3": new}
+    )
+    await hass.async_block_till_done()
+    registry = er.async_get(hass)
+    assert registry.async_get_entity_id("select", DOMAIN, "uuid-2_valve_mode")
+    assert registry.async_get_entity_id("select", DOMAIN, "uuid-3_valve_mode") is None
+
+
+async def test_legacy_without_registry_requires_selection(hass):
+    """Lack of migration evidence cannot authorize account-wide monitoring."""
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={"email": "u@example.com", "password": "pw"}
+    )
+    entry.add_to_hass(hass)
+    client = MagicMock(spec=FloLogicClient)
+    client.async_fetch_accounts.return_value = {"uuid-1": make_account(make_valve())}
+    with patch("custom_components.flologic.FloLogicClient", return_value=client):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    assert entry.options["monitored_valves"] == []
+    assert hass.data[DOMAIN][entry.entry_id].accounts == {}
+    assert ir.async_get(hass).async_get_issue(DOMAIN, f"select_valves_{entry.entry_id}")
+    assert not er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)
+    with pytest.raises(ServiceValidationError):
+        await call_action(hass)
+    client.async_request_state_change_for_valve.assert_not_awaited()
