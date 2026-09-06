@@ -16,6 +16,7 @@ The integration connects to the FloLogic cloud service used by the mobile app an
 - Grouped trouble sensors for water-off, warning/alert, and critical fault states
 - Read-only notification setting sensors
 - Service actions for supported FloLogic settings
+- Multi-valve accounts: every controllable valve gets its own device and entities
 
 ## Installation
 
@@ -111,6 +112,20 @@ The integration registers these service actions under the `flologic` domain:
 - `flologic.set_temp_shutoff`
 - `flologic.set_pre_alert_notice`
 - `flologic.set_no_flow_notice`
+
+### Multi-valve targeting
+
+Every action accepts the same optional targeting fields: `valve_id`
+(FloLogic valve id or uuid), `device_id` (Home Assistant device id), or
+`entity_id` (one or more FloLogic entities, whose valves are controlled).
+Give at most one of them.
+
+- With a single valve, the target may be omitted.
+- With multiple valves, an explicit target is required. Actions never fan
+  out to valves the caller did not name: an unknown or missing target is a
+  validation error, not a broadcast.
+- If several valves are targeted via `entity_id` and some fail, the failure
+  is logged with the affected valves; if all fail, the action raises.
 
 ## Advance Shutoff Warning
 

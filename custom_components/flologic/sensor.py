@@ -32,26 +32,26 @@ from .entity import FloLogicEntity
 class FloLogicSensorDescription(SensorEntityDescription):
     """FloLogic sensor description."""
 
-    value_fn: Callable[[FloLogicCoordinator], Any]
+    value_fn: Callable[[Any], Any]
 
 
-def valve_value(field: str) -> Callable[[FloLogicCoordinator], Any]:
+def valve_value(field: str) -> Callable[[Any], Any]:
     """Return a valve field getter."""
-    return lambda coordinator: coordinator.data.valve.get(field)
+    return lambda account: account.valve.get(field)
 
 
 SENSORS: tuple[FloLogicSensorDescription, ...] = (
     FloLogicSensorDescription(
         key="mode",
         translation_key="mode",
-        value_fn=lambda coordinator: coordinator.data.mode_status_name,
+        value_fn=lambda account: account.mode_status_name,
     ),
     FloLogicSensorDescription(
         key="flow_state",
         translation_key="flow_state",
-        value_fn=lambda coordinator: FLOW_STATE_NAMES.get(
-            coordinator.data.valve.get("flowState"),
-            coordinator.data.valve.get("flowState"),
+        value_fn=lambda account: FLOW_STATE_NAMES.get(
+            account.valve.get("flowState"),
+            account.valve.get("flowState"),
         ),
     ),
     FloLogicSensorDescription(
@@ -147,41 +147,56 @@ SENSORS: tuple[FloLogicSensorDescription, ...] = (
         translation_key="shutoff_countdown",
         device_class=SensorDeviceClass.DURATION,
         native_unit_of_measurement=UnitOfTime.SECONDS,
-        value_fn=lambda coordinator: coordinator.data.shutoff_countdown_seconds,
+        value_fn=lambda account: account.shutoff_countdown_seconds,
     ),
     FloLogicSensorDescription(
         key="flow_started_at",
         translation_key="flow_started_at",
         device_class=SensorDeviceClass.TIMESTAMP,
         entity_registry_enabled_default=False,
-        value_fn=lambda coordinator: coordinator.data.flow_started_at,
+        value_fn=lambda account: account.flow_started_at,
     ),
     FloLogicSensorDescription(
         key="flow_elapsed",
         translation_key="flow_elapsed",
         device_class=SensorDeviceClass.DURATION,
         native_unit_of_measurement=UnitOfTime.SECONDS,
-        value_fn=lambda coordinator: coordinator.data.flow_elapsed_seconds,
+        value_fn=lambda account: account.flow_elapsed_seconds,
     ),
     FloLogicSensorDescription(
         key="active_scheduler_events",
         translation_key="active_scheduler_events",
         entity_registry_enabled_default=False,
-        value_fn=lambda coordinator: len(coordinator.data.active_scheduler_events),
+        value_fn=lambda account: len(account.active_scheduler_events),
     ),
     FloLogicSensorDescription(
         key="notification_history_count",
         translation_key="notification_history_count",
         entity_registry_enabled_default=False,
-        value_fn=lambda coordinator: len(coordinator.data.notifications),
+        value_fn=lambda account: len(account.notifications),
     ),
     FloLogicSensorDescription(
         key="last_update_source",
         translation_key="last_update_source",
         entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=lambda coordinator: coordinator.data.update_source,
+        value_fn=lambda account: account.update_source,
     ),
 )
+
+
+def _entities_for_valve(
+    coordinator: FloLogicCoordinator, valve_id: str
+) -> list[FloLogicSensor]:
+    """Build every sensor for one valve."""
+    entities: list[FloLogicSensor] = []
+    for description in SENSORS:
+        if description.key in {"flow_elapsed", "shutoff_countdown"}:
+            entities.append(
+                FloLogicLocallyTickingFlowSensor(coordinator, description, valve_id)
+            )
+        else:
+            entities.append(FloLogicSensor(coordinator, description, valve_id))
+    return entities
 
 
 async def async_setup_entry(
@@ -191,12 +206,21 @@ async def async_setup_entry(
 ) -> None:
     """Set up FloLogic sensors."""
     coordinator: FloLogicCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities(
-        FloLogicLocallyTickingFlowSensor(coordinator, description)
-        if description.key in {"flow_elapsed", "shutoff_countdown"}
-        else FloLogicSensor(coordinator, description)
-        for description in SENSORS
-    )
+    known_valves: set[str] = set()
+
+    def _async_add_new_valves() -> None:
+        """Add entities for valves discovered after setup."""
+        new_ids = [vid for vid in coordinator.accounts if vid not in known_valves]
+        if not new_ids:
+            return
+        entities: list[FloLogicSensor] = []
+        for valve_id in new_ids:
+            entities.extend(_entities_for_valve(coordinator, valve_id))
+        known_valves.update(new_ids)
+        async_add_entities(entities)
+
+    _async_add_new_valves()
+    entry.async_on_unload(coordinator.async_add_listener(_async_add_new_valves))
 
 
 class FloLogicSensor(FloLogicEntity, SensorEntity):
@@ -205,29 +229,38 @@ class FloLogicSensor(FloLogicEntity, SensorEntity):
     entity_description: FloLogicSensorDescription
 
     def __init__(
-        self, coordinator: FloLogicCoordinator, description: FloLogicSensorDescription
+        self,
+        coordinator: FloLogicCoordinator,
+        description: FloLogicSensorDescription,
+        valve_id: str | None = None,
     ) -> None:
         """Initialize the sensor."""
-        super().__init__(coordinator, description.key)
+        super().__init__(coordinator, description.key, valve_id)
         self.entity_description = description
 
     @property
     def native_value(self) -> Any:
         """Return the sensor value."""
-        return self.entity_description.value_fn(self.coordinator)
+        acct = self._account
+        if acct is None:
+            return None
+        return self.entity_description.value_fn(acct)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
         """Return useful attributes for grouped values."""
+        acct = self._account
+        if acct is None:
+            return None
         if self.entity_description.key == "active_scheduler_events":
-            return {"events": self.coordinator.data.active_scheduler_events}
+            return {"events": acct.active_scheduler_events}
         if self.entity_description.key == "notification_history_count":
-            return {"notifications": self.coordinator.data.notifications}
+            return {"notifications": acct.notifications}
         if self.entity_description.key == "mode":
             return {
-                "raw_mode": self.coordinator.data.valve.get("mode"),
-                "mode_flags": self.coordinator.data.mode_flag_names,
-                "controllable_mode": self.coordinator.data.mode_name,
+                "raw_mode": acct.valve.get("mode"),
+                "mode_flags": acct.mode_flag_names,
+                "controllable_mode": acct.mode_name,
             }
         return None
 
@@ -240,16 +273,20 @@ class FloLogicLocallyTickingFlowSensor(FloLogicSensor):
     @property
     def native_value(self) -> Any:
         """Return a numeric duration value."""
-        if not self.coordinator.data.is_water_flowing:
+        acct = self._account
+        if acct is None:
+            return None
+        if not acct.is_water_flowing:
             return 0
         return super().native_value
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return flow status details."""
-        return {
-            "status": "Flowing" if self.coordinator.data.is_water_flowing else "No flow"
-        }
+        acct = self._account
+        if acct is None:
+            return {"status": "Unknown"}
+        return {"status": "Flowing" if acct.is_water_flowing else "No flow"}
 
     async def async_added_to_hass(self) -> None:
         """Start local ticking when added to Home Assistant."""
@@ -268,7 +305,8 @@ class FloLogicLocallyTickingFlowSensor(FloLogicSensor):
 
     def _sync_tick_timer(self) -> None:
         """Start or stop the local one-second tick."""
-        if self.coordinator.data.is_water_flowing:
+        acct = self._account
+        if acct is not None and acct.is_water_flowing:
             if self._unsub_tick is None:
                 self._schedule_next_tick()
         else:
@@ -287,7 +325,8 @@ class FloLogicLocallyTickingFlowSensor(FloLogicSensor):
     def _handle_tick(self, _now: Any) -> None:
         """Refresh the local elapsed-flow value."""
         self._unsub_tick = None
-        if not self.coordinator.data.is_water_flowing:
+        acct = self._account
+        if acct is None or not acct.is_water_flowing:
             self._stop_tick_timer()
             self.schedule_update_ha_state()
             return

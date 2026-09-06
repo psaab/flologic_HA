@@ -1,79 +1,267 @@
+# FloLogic service actions.
+#
+# Every write action accepts the same optional targeting fields. With a single
+# valve the target may be omitted. With multiple valves exactly one target is
+# required: valve_id, device_id, or entity_id. Actions never fan out to
+# valves the caller did not name.
 set_flow_sensitivity:
   fields:
     value:
       required: true
+      description: Flow sensitivity in oz/min (0-1000).
       selector:
         number:
           min: 0
+          max: 1000
           mode: box
           step: 0.1
+    valve_id:
+      required: false
+      description: FloLogic valve id or uuid to control.
+      selector:
+        text:
+    device_id:
+      required: false
+      description: Home Assistant device id of the FloLogic valve.
+      selector:
+        device:
+          integration: flologic
+    entity_id:
+      required: false
+      description: One or more FloLogic entities; their valves are controlled.
+      selector:
+        entity:
+          multiple: true
+          integration: flologic
 set_home_limit:
   fields:
     minutes:
       required: true
+      description: Continuous-flow limit in home mode, in minutes.
       selector:
         number:
-          min: 0
+          min: 1
+          max: 10080
           mode: box
           step: 1
+    valve_id:
+      required: false
+      description: FloLogic valve id or uuid to control.
+      selector:
+        text:
+    device_id:
+      required: false
+      description: Home Assistant device id of the FloLogic valve.
+      selector:
+        device:
+          integration: flologic
+    entity_id:
+      required: false
+      description: One or more FloLogic entities; their valves are controlled.
+      selector:
+        entity:
+          multiple: true
+          integration: flologic
 set_away_limit:
   fields:
     minutes:
       required: true
+      description: Continuous-flow limit in away mode, in minutes.
       selector:
         number:
           min: 0
+          max: 10080
           mode: box
           step: 0.5
+    valve_id:
+      required: false
+      description: FloLogic valve id or uuid to control.
+      selector:
+        text:
+    device_id:
+      required: false
+      description: Home Assistant device id of the FloLogic valve.
+      selector:
+        device:
+          integration: flologic
+    entity_id:
+      required: false
+      description: One or more FloLogic entities; their valves are controlled.
+      selector:
+        entity:
+          multiple: true
+          integration: flologic
 set_bypass_time:
   fields:
     minutes:
       required: true
+      description: Bypass duration in minutes.
       selector:
         number:
-          min: 0
+          min: 1
+          max: 10080
           mode: box
           step: 1
+    valve_id:
+      required: false
+      description: FloLogic valve id or uuid to control.
+      selector:
+        text:
+    device_id:
+      required: false
+      description: Home Assistant device id of the FloLogic valve.
+      selector:
+        device:
+          integration: flologic
+    entity_id:
+      required: false
+      description: One or more FloLogic entities; their valves are controlled.
+      selector:
+        entity:
+          multiple: true
+          integration: flologic
 set_auto_away:
   fields:
     hours:
       required: true
+      description: Idle time before automatic away mode, in hours.
       selector:
         number:
-          min: 0
+          min: 1
+          max: 8760
           mode: box
           step: 1
+    valve_id:
+      required: false
+      description: FloLogic valve id or uuid to control.
+      selector:
+        text:
+    device_id:
+      required: false
+      description: Home Assistant device id of the FloLogic valve.
+      selector:
+        device:
+          integration: flologic
+    entity_id:
+      required: false
+      description: One or more FloLogic entities; their valves are controlled.
+      selector:
+        entity:
+          multiple: true
+          integration: flologic
 set_temp_alert:
   fields:
     temperature:
       required: true
+      description: Low-temperature alert threshold in Fahrenheit.
       selector:
         number:
+          min: -50
+          max: 150
           mode: box
           step: 1
+    valve_id:
+      required: false
+      description: FloLogic valve id or uuid to control.
+      selector:
+        text:
+    device_id:
+      required: false
+      description: Home Assistant device id of the FloLogic valve.
+      selector:
+        device:
+          integration: flologic
+    entity_id:
+      required: false
+      description: One or more FloLogic entities; their valves are controlled.
+      selector:
+        entity:
+          multiple: true
+          integration: flologic
 set_temp_shutoff:
   fields:
     temperature:
       required: true
+      description: Low-temperature shutoff threshold in Fahrenheit.
       selector:
         number:
+          min: -50
+          max: 150
           mode: box
           step: 1
+    valve_id:
+      required: false
+      description: FloLogic valve id or uuid to control.
+      selector:
+        text:
+    device_id:
+      required: false
+      description: Home Assistant device id of the FloLogic valve.
+      selector:
+        device:
+          integration: flologic
+    entity_id:
+      required: false
+      description: One or more FloLogic entities; their valves are controlled.
+      selector:
+        entity:
+          multiple: true
+          integration: flologic
 set_pre_alert_notice:
   fields:
     minutes:
       required: true
+      description: Advance shutoff warning window in minutes.
       selector:
         number:
-          min: 0
+          min: 1
+          max: 10080
           mode: box
           step: 1
+    valve_id:
+      required: false
+      description: FloLogic valve id or uuid to control.
+      selector:
+        text:
+    device_id:
+      required: false
+      description: Home Assistant device id of the FloLogic valve.
+      selector:
+        device:
+          integration: flologic
+    entity_id:
+      required: false
+      description: One or more FloLogic entities; their valves are controlled.
+      selector:
+        entity:
+          multiple: true
+          integration: flologic
 set_no_flow_notice:
   fields:
     seconds:
       required: true
+      description: No-flow notice interval in seconds.
       selector:
         number:
-          min: 0
+          min: 1
+          max: 604800
           mode: box
           step: 1
+    valve_id:
+      required: false
+      description: FloLogic valve id or uuid to control.
+      selector:
+        text:
+    device_id:
+      required: false
+      description: Home Assistant device id of the FloLogic valve.
+      selector:
+        device:
+          integration: flologic
+    entity_id:
+      required: false
+      description: One or more FloLogic entities; their valves are controlled.
+      selector:
+        entity:
+          multiple: true
+          integration: flologic

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -54,7 +55,12 @@ class FloLogicAccount:
 
     @property
     def unique_id_prefix(self) -> str:
-        """Return a stable unique ID prefix."""
+        """Return a stable unique ID prefix.
+
+        Pinned to uuid-or-id: existing installs already use this key for
+        entity unique_ids, so changing the preference would churn every
+        entity id and lose history/automations. Do not reorder.
+        """
         return str(self.valve.get("uuid") or self.valve.get("id"))
 
     @property
@@ -318,7 +324,12 @@ class FloLogicConnection:
     ) -> list[Any]:
         """Invoke a hub method and wait for an event."""
         waiter = self.wait_for(event_name)
-        await self.invoke(target, *arguments)
+        try:
+            await self.invoke(target, *arguments)
+        except Exception:
+            # Don't leak a waiter that can never complete.
+            waiter.cancel()
+            raise
         return await asyncio.wait_for(waiter, timeout)
 
     def wait_for(self, event_name: str) -> asyncio.Future[list[Any]]:
@@ -409,35 +420,57 @@ class FloLogicClient:
         self._persistent_user: dict[str, Any] | None = None
         self._persistent_valve: dict[str, Any] | None = None
         self._persistent_devices: list[dict[str, Any]] = []
-        self._push_callback: Callable[[FloLogicAccount], None] | None = None
+        self._persistent_valves: dict[str, dict[str, Any]] = {}
+        self._push_accounts_callback: (
+            Callable[[dict[str, FloLogicAccount]], None] | None
+        ) = None
         self._last_account: FloLogicAccount | None = None
+        self._last_accounts: dict[str, FloLogicAccount] | None = None
+        self._last_array_probe: float = 0.0
         self._reconnect_task: asyncio.Task | None = None
         self._closing = False
 
-    def set_push_callback(
-        self, callback: Callable[[FloLogicAccount], None] | None
+    def set_push_accounts_callback(
+        self, callback: Callable[[dict[str, FloLogicAccount]], None] | None
     ) -> None:
-        """Set a callback for pushed persistent SignalR valve updates."""
-        self._push_callback = callback
+        """Set a callback for pushed multi-valve updates."""
+        self._push_accounts_callback = callback
 
     async def async_fetch_account(self) -> FloLogicAccount:
-        """Fetch the current account/device snapshot."""
+        """Fetch the current account/device snapshot (first valve)."""
+        accounts = await self.async_fetch_accounts()
+        if not accounts:
+            raise FloLogicError("FloLogic account has no controllable valves")
+        # Preserve single-account behaviour for callers that expect one valve.
+        first = next(iter(accounts.values()))
+        self._last_account = first
+        return first
+
+    async def async_fetch_accounts(self) -> dict[str, FloLogicAccount]:
+        """Fetch snapshots for every controllable valve on the account."""
         if self._keep_session_alive:
-            account = await self._with_persistent_retry(
-                self._async_fetch_account_persistent
+            accounts = await self._with_persistent_retry(
+                self._async_fetch_accounts_persistent
             )
         else:
-            account = await self._with_session(self._async_fetch_account)
-        self._last_account = account
-        return account
+            accounts = await self._with_session(self._async_fetch_accounts)
+        self._last_accounts = accounts
+        if accounts:
+            self._last_account = next(iter(accounts.values()))
+        return accounts
 
     async def async_set_mode(self, mode: str) -> None:
-        """Set the valve mode."""
-        mode_value = VALVE_MODES[mode]
-        await self.async_request_state_change({"mode": mode_value})
+        """Set the valve mode (first valve, backward compatible)."""
+        await self.async_request_state_change({"mode": _mode_value(mode)})
+
+    async def async_set_mode_for_valve(self, valve_id: str, mode: str) -> None:
+        """Set mode for a specific valve."""
+        await self.async_request_state_change_for_valve(
+            valve_id, {"mode": _mode_value(mode)}
+        )
 
     async def async_request_state_change(self, fields: dict[str, Any]) -> None:
-        """Send a FloLogic state-change command."""
+        """Send a FloLogic state-change command (first valve)."""
         if self._keep_session_alive:
             await self._with_persistent_retry(
                 lambda connection: self._async_send_state_change(connection, fields)
@@ -447,6 +480,33 @@ class FloLogicClient:
         async def _send(session: aiohttp.ClientSession) -> None:
             async with self._connection(session) as connection:
                 user, valve, _devices = await self._login(connection)
+                await self._send_state_change(connection, user, valve, fields)
+
+        await self._with_session(_send)
+
+    async def async_request_state_change_for_valve(
+        self, valve_id: str, fields: dict[str, Any]
+    ) -> None:
+        """Send a state-change command for a specific valve by id or uuid."""
+        if self._keep_session_alive:
+
+            async def _persistent_send(connection: FloLogicConnection) -> None:
+                valve = await self._resolve_valve_for_command(connection, valve_id)
+                await self._send_state_change_for_valve(connection, valve, fields)
+
+            await self._with_persistent_retry(_persistent_send)
+            return
+
+        async def _send(session: aiohttp.ClientSession) -> None:
+            async with self._connection(session) as connection:
+                user, _primary, devices = await self._login(connection)
+                # Try to get full device list for id resolution
+                full_devices = await self._ensure_full_devices(
+                    connection, user, devices
+                )
+                valve = self._find_valve(full_devices, valve_id)
+                if valve is None:
+                    raise FloLogicError(f"Valve {valve_id} not found")
                 await self._send_state_change(connection, user, valve, fields)
 
         await self._with_session(_send)
@@ -463,13 +523,103 @@ class FloLogicClient:
     async def _async_fetch_account(
         self, session: aiohttp.ClientSession
     ) -> FloLogicAccount:
-        """Fetch a snapshot using an existing session."""
+        """Fetch a snapshot using an existing session (backward compatible)."""
+        accounts = await self._async_fetch_accounts(session)
+        if not accounts:
+            raise FloLogicTimeoutError("FloLogic login did not return a valve")
+        return next(iter(accounts.values()))
+
+    async def _async_fetch_accounts(
+        self, session: aiohttp.ClientSession
+    ) -> dict[str, FloLogicAccount]:
+        """Fetch snapshots for every controllable valve."""
         async with self._connection(session) as connection:
-            user, valve, devices = await self._login(connection)
-            access = await self._fetch_access(connection, user, valve)
-            scheduler = await self._fetch_scheduler(connection, user, valve)
-            notifications = await self._fetch_notifications(connection, user, valve)
-            return FloLogicAccount(
+            user, _primary, devices = await self._login(connection)
+            full_devices = await self._ensure_full_devices(connection, user, devices)
+            valves = controllable_valves(full_devices)
+            if not valves:
+                raise FloLogicTimeoutError("FloLogic login did not return a valve")
+            # Fetch user accesses once for all valves.
+            try:
+                access_args = await connection.invoke_and_wait(
+                    "RequestUserAccesses",
+                    "UserAccessesSent",
+                    user,
+                    timeout=30,
+                )
+            except TimeoutError:
+                access_args = []
+            accesses = access_args[0] if access_args else []
+            access_map: dict[Any, dict[str, Any]] = {
+                acc.get("valveId"): acc
+                for acc in accesses
+                if isinstance(acc, dict) and acc.get("valveId") is not None
+            }
+            # Fetch per-valve scheduler/notifications. The two calls for one
+            # valve wait on different hub events, so they can run together;
+            # valves stay sequential because concurrent waits on the SAME
+            # event cannot be correlated back to a valve.
+            accounts: dict[str, FloLogicAccount] = {}
+            for valve in valves:
+                access = access_map.get(valve.get("id"))
+                scheduler, notifications = await asyncio.gather(
+                    self._fetch_scheduler(connection, user, valve),
+                    self._fetch_notifications(connection, user, valve),
+                )
+                acct = FloLogicAccount(
+                    user=user,
+                    valve=valve,
+                    devices=full_devices,
+                    access=access,
+                    scheduler=scheduler,
+                    notifications=notifications,
+                    update_source="poll",
+                )
+                accounts[acct.unique_id_prefix] = acct
+            return accounts
+
+    async def _async_fetch_account_persistent(
+        self,
+        connection: FloLogicConnection,
+    ) -> FloLogicAccount:
+        """Fetch a snapshot using the persistent SignalR connection (compat)."""
+        accounts = await self._async_fetch_accounts_persistent(connection)
+        if not accounts:
+            raise FloLogicTimeoutError("FloLogic refresh did not return a valve")
+        return next(iter(accounts.values()))
+
+    async def _async_fetch_accounts_persistent(
+        self,
+        connection: FloLogicConnection,
+    ) -> dict[str, FloLogicAccount]:
+        """Fetch snapshots for every valve using the persistent connection."""
+        user, devices = await self._refresh_persistent_valves(connection)
+        valves = controllable_valves(devices)
+        if not valves:
+            raise FloLogicTimeoutError("FloLogic refresh did not return a valve")
+        try:
+            access_args = await connection.invoke_and_wait(
+                "RequestUserAccesses",
+                "UserAccessesSent",
+                user,
+                timeout=30,
+            )
+        except TimeoutError:
+            access_args = []
+        accesses = access_args[0] if access_args else []
+        access_map: dict[Any, dict[str, Any]] = {
+            acc.get("valveId"): acc
+            for acc in accesses
+            if isinstance(acc, dict) and acc.get("valveId") is not None
+        }
+        accounts: dict[str, FloLogicAccount] = {}
+        for valve in valves:
+            access = access_map.get(valve.get("id"))
+            scheduler, notifications = await asyncio.gather(
+                self._fetch_scheduler(connection, user, valve),
+                self._fetch_notifications(connection, user, valve),
+            )
+            acct = FloLogicAccount(
                 user=user,
                 valve=valve,
                 devices=devices,
@@ -478,25 +628,8 @@ class FloLogicClient:
                 notifications=notifications,
                 update_source="poll",
             )
-
-    async def _async_fetch_account_persistent(
-        self,
-        connection: FloLogicConnection,
-    ) -> FloLogicAccount:
-        """Fetch a snapshot using the persistent SignalR connection."""
-        user, valve, devices = await self._refresh_persistent_valve(connection)
-        access = await self._fetch_access(connection, user, valve)
-        scheduler = await self._fetch_scheduler(connection, user, valve)
-        notifications = await self._fetch_notifications(connection, user, valve)
-        return FloLogicAccount(
-            user=user,
-            valve=valve,
-            devices=devices,
-            access=access,
-            scheduler=scheduler,
-            notifications=notifications,
-            update_source="poll",
-        )
+            accounts[acct.unique_id_prefix] = acct
+        return accounts
 
     async def _async_send_state_change(
         self,
@@ -538,38 +671,50 @@ class FloLogicClient:
         """Log in and return user, selected valve, and device list."""
         login_waiter = connection.wait_for("LoggedIn")
         valve_waiter = connection.wait_for("ValveSent")
-        await connection.invoke(
-            "Login", self._email, self._password, self._device_name, None
-        )
         try:
-            user_args = await asyncio.wait_for(login_waiter, 30)
-        except TimeoutError as err:
-            raise FloLogicAuthError("FloLogic login did not return a user") from err
-        user = user_args[0]
-        self._relog_token = user.get("relogToken") or self._relog_token
-
-        devices: list[dict[str, Any]] = []
-        valve: dict[str, Any] | None = None
-        try:
-            valve_args = await asyncio.wait_for(valve_waiter, 3)
-            valve = valve_args[0]
-            devices = [valve]
-        except TimeoutError:
-            array_args = await connection.invoke_and_wait(
-                "RefreshValveArray",
-                "ValveArraySent",
-                user,
-                timeout=30,
+            await connection.invoke(
+                "Login", self._email, self._password, self._device_name, None
             )
-            devices = array_args[0] if array_args else []
-            valve = choose_valve(devices)
-        finally:
-            if not valve_waiter.done():
-                valve_waiter.cancel()
+            try:
+                user_args = await asyncio.wait_for(login_waiter, 30)
+            except TimeoutError as err:
+                raise FloLogicAuthError("FloLogic login did not return a user") from err
+            user = user_args[0]
+            self._relog_token = user.get("relogToken") or self._relog_token
 
-        if not valve:
-            raise FloLogicTimeoutError("FloLogic login did not return a valve")
-        return user, valve, devices
+            devices: list[dict[str, Any]] = []
+            valve: dict[str, Any] | None = None
+            try:
+                valve_args = await asyncio.wait_for(valve_waiter, 3)
+                valve = valve_args[0]
+                devices = [valve]
+            except TimeoutError:
+                array_args = await connection.invoke_and_wait(
+                    "RefreshValveArray",
+                    "ValveArraySent",
+                    user,
+                    timeout=30,
+                )
+                devices = array_args[0] if array_args else []
+                # A ValveSent that arrived just after the 3s cutoff is still
+                # useful: merge it so the device list is complete.
+                if valve_waiter.done() and not valve_waiter.cancelled():
+                    with suppress(Exception):
+                        late_args = valve_waiter.result()
+                        late_valve = late_args[0] if late_args else None
+                        if isinstance(late_valve, dict) and all(
+                            dev.get("id") != late_valve.get("id") for dev in devices
+                        ):
+                            devices = [*devices, late_valve]
+                valve = choose_valve(devices)
+
+            if not valve:
+                raise FloLogicTimeoutError("FloLogic login did not return a valve")
+            return user, valve, devices
+        finally:
+            for waiter in (login_waiter, valve_waiter):
+                if not waiter.done():
+                    waiter.cancel()
 
     async def _fetch_access(
         self,
@@ -644,6 +789,99 @@ class FloLogicClient:
             return []
         return all_args[0] if all_args else []
 
+    def _find_valve(
+        self, devices: list[dict[str, Any]], valve_id: str
+    ) -> dict[str, Any] | None:
+        """Find a valve by id/uuid/string."""
+        needle = str(valve_id)
+        for dev in devices:
+            if str(dev.get("id")) == needle or str(dev.get("uuid")) == needle:
+                return dev
+        # Fallback: case-insensitive match on id string or name
+        needle_lower = needle.lower()
+        for dev in devices:
+            if (
+                needle_lower == str(dev.get("id")).lower()
+                or needle_lower == str(dev.get("uuid")).lower()
+            ):
+                return dev
+        return None
+
+    async def _ensure_full_devices(
+        self,
+        connection: FloLogicConnection,
+        user: dict[str, Any],
+        devices: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Ensure we have the full device array for a multi-valve account.
+
+        The cloud's ``Login`` may only send a single ``ValveSent`` (primary)
+        even when ``ValveArraySent`` lists two valves. If the initial list has
+        one entry we probe ``RefreshValveArray`` to discover the second device.
+
+        Single-valve accounts would otherwise pay for this probe on every
+        poll, so a confirmed single-valve result is trusted for an hour
+        (a valve added later is discovered on the next hourly probe at the
+        latest). A login that disagrees with a known multi-valve set always
+        re-probes immediately.
+        """
+        if len(devices) != 1:
+            return devices
+        known_count = (
+            len(self._last_accounts) if self._last_accounts is not None else None
+        )
+        if known_count == 1 and (time.monotonic() - self._last_array_probe) < 3600:
+            return devices
+        self._last_array_probe = time.monotonic()
+        try:
+            array_args = await connection.invoke_and_wait(
+                "RefreshValveArray",
+                "ValveArraySent",
+                user,
+                timeout=30,
+            )
+            full = array_args[0] if array_args else []
+            if isinstance(full, list) and len(full) > len(devices):
+                return [v for v in full if isinstance(v, dict)]
+        except TimeoutError:
+            pass
+        return devices
+
+    async def _resolve_valve_for_command(
+        self, connection: FloLogicConnection, valve_id: str
+    ) -> dict[str, Any]:
+        """Resolve a target valve for a state-change command."""
+        if self._persistent_user is None:
+            raise FloLogicError("FloLogic persistent connection is not logged in")
+        # Prefer cached valves
+        if self._persistent_valves:
+            cand = self._find_valve(list(self._persistent_valves.values()), valve_id)
+            if cand is not None:
+                return cand
+            cand = self._find_valve(self._persistent_devices, valve_id)
+            if cand is not None:
+                return cand
+        # Refresh to discover the valve
+        _, devices = await self._refresh_persistent_valves(connection)
+        valve = self._find_valve(devices, valve_id)
+        if valve is None:
+            # Also search within controllable tier using id string matching
+            valve = self._find_valve(controllable_valves(devices), valve_id)
+        if valve is None:
+            raise FloLogicError(f"Valve {valve_id} not found")
+        return valve
+
+    async def _send_state_change_for_valve(
+        self,
+        connection: FloLogicConnection,
+        valve: dict[str, Any],
+        fields: dict[str, Any],
+    ) -> None:
+        """Send a state-change for an explicit valve."""
+        if self._persistent_user is None:
+            raise FloLogicError("FloLogic persistent connection is not logged in")
+        await self._send_state_change(connection, self._persistent_user, valve, fields)
+
     async def _with_session(
         self, func: Callable[[aiohttp.ClientSession], Awaitable[Any]]
     ) -> Any:
@@ -695,11 +933,16 @@ class FloLogicClient:
             connection = self._connection(session)
             await connection.__aenter__()
             user, valve, devices = await self._login(connection)
+            full_devices = await self._ensure_full_devices(connection, user, devices)
+            valves = controllable_valves(full_devices)
             self._persistent_session = session
             self._persistent_connection = connection
             self._persistent_user = user
             self._persistent_valve = valve
-            self._persistent_devices = devices
+            self._persistent_devices = full_devices
+            self._persistent_valves = {
+                str(v.get("uuid") or v.get("id")): v for v in valves
+            }
             return connection
 
     async def _close_persistent(self) -> None:
@@ -713,6 +956,7 @@ class FloLogicClient:
         self._persistent_user = None
         self._persistent_valve = None
         self._persistent_devices = []
+        self._persistent_valves = {}
         if connection is not None:
             await connection.close()
         if owned and session is not None and not session.closed:
@@ -743,12 +987,27 @@ class FloLogicClient:
                 )
                 continue
             return
+        _LOGGER.warning(
+            "FloLogic persistent reconnect gave up after repeated failures; "
+            "the next poll will retry the connection"
+        )
 
     async def _refresh_persistent_valve(
         self,
         connection: FloLogicConnection,
     ) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
-        """Refresh the persistent connection's selected valve."""
+        """Refresh the persistent connection's selected valve (compat)."""
+        user, devices = await self._refresh_persistent_valves(connection)
+        valve = choose_valve(devices)
+        if not valve:
+            raise FloLogicTimeoutError("FloLogic refresh did not return a valve")
+        return user, valve, devices
+
+    async def _refresh_persistent_valves(
+        self,
+        connection: FloLogicConnection,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Refresh the full valve array for the persistent connection."""
         if self._persistent_user is None:
             raise FloLogicError("FloLogic persistent connection is not logged in")
         args = await connection.invoke_and_wait(
@@ -758,63 +1017,141 @@ class FloLogicClient:
             timeout=30,
         )
         devices = args[0] if args else []
-        valve = choose_valve(devices)
+        if not isinstance(devices, list):
+            devices = []
+        valves = controllable_valves(devices)
+        valve = valves[0] if valves else None
         if not valve:
             raise FloLogicTimeoutError("FloLogic refresh did not return a valve")
         self._persistent_valve = valve
         self._persistent_devices = devices
-        return self._persistent_user, valve, devices
+        self._persistent_valves = {str(v.get("uuid") or v.get("id")): v for v in valves}
+        return self._persistent_user, devices
 
     def _handle_persistent_event(self, target: str, arguments: list[Any]) -> None:
         """Handle unsolicited hub events on the persistent connection."""
         if target == "ValveSent" and arguments:
             valve = arguments[0]
             if isinstance(valve, dict):
-                self._handle_pushed_valves([valve])
+                self._handle_pushed_valves([valve], full_replace=False)
         elif target == "ValveArraySent" and arguments:
             valves = arguments[0]
             if isinstance(valves, list):
                 self._handle_pushed_valves(
-                    [valve for valve in valves if isinstance(valve, dict)]
+                    [valve for valve in valves if isinstance(valve, dict)],
+                    full_replace=True,
                 )
 
-    def _handle_pushed_valves(self, valves: list[dict[str, Any]]) -> None:
-        """Update the cached account from pushed valve data."""
+    def _handle_pushed_valves(
+        self, valves: list[dict[str, Any]], *, full_replace: bool = False
+    ) -> None:
+        """Update the cached account(s) from pushed valve data.
+
+        Single ``ValveSent`` pushes merge into the cache; full
+        ``ValveArraySent`` pushes replace it so cloud-side removals prune
+        stale valves instead of lingering as ghosts.
+        """
         if not self._keep_session_alive or self._persistent_user is None:
             return
-        valve = choose_valve(valves)
-        if valve is None:
-            return
-        if (
-            len(valves) == 1
-            and valve.get("isZGateway") is True
-            and self._persistent_valve is not None
-            and self._persistent_valve.get("isZGateway") is not True
-            and valve.get("id") != self._persistent_valve.get("id")
-        ):
-            return
-        self._persistent_valve = valve
-        self._persistent_devices = valves
-        if self._last_account is not None:
-            account = FloLogicAccount(
-                user=self._last_account.user,
-                valve=valve,
-                devices=valves,
-                access=self._last_account.access,
-                scheduler=self._last_account.scheduler,
-                notifications=self._last_account.notifications,
-                update_source="push",
-            )
+        if full_replace:
+            if not valves:
+                return
+            self._persistent_devices = list(valves)
+            self._persistent_valves = {
+                str(v.get("uuid") or v.get("id")): v
+                for v in controllable_valves(valves)
+            }
         else:
-            account = FloLogicAccount(
-                user=self._persistent_user,
-                valve=valve,
-                devices=valves,
-                update_source="push",
-            )
-        self._last_account = account
-        if self._push_callback is not None:
-            self._push_callback(account)
+            # Update persistent cache with whatever valves the cloud pushed.
+            merged = False
+            for incoming in valves:
+                if not isinstance(incoming, dict):
+                    continue
+                iid = incoming.get("id")
+                # A lone gateway push must not overwrite a real valve cache.
+                if (
+                    len(valves) == 1
+                    and incoming.get("isZGateway") is True
+                    and self._persistent_valve is not None
+                    and self._persistent_valve.get("isZGateway") is not True
+                    and incoming.get("id") != self._persistent_valve.get("id")
+                ):
+                    continue
+                # Replace or add to persistent_devices.
+                for idx, dev in enumerate(self._persistent_devices):
+                    if dev.get("id") == iid:
+                        self._persistent_devices[idx] = incoming
+                        break
+                else:
+                    self._persistent_devices.append(incoming)
+                if incoming.get("isZGateway") is not True:
+                    prefix = str(incoming.get("uuid") or iid)
+                    self._persistent_valves[prefix] = incoming
+                    if choose_valve([incoming]) is not None and (
+                        self._persistent_valve is None
+                        or self._persistent_valve.get("id") == iid
+                    ):
+                        self._persistent_valve = incoming
+                    merged = True
+            if not merged:
+                # Pure gateway noise: nothing valve-related changed.
+                return
+
+        # Build accounts dict for all known controllable valves
+        valves_list = controllable_valves(self._persistent_devices)
+        if not valves_list:
+            return
+
+        # Build new push accounts reusing cached access/scheduler
+        new_accounts: dict[str, FloLogicAccount] = {}
+        for valve in valves_list:
+            prefix = str(valve.get("uuid") or valve.get("id"))
+            if self._last_accounts and prefix in self._last_accounts:
+                prev = self._last_accounts[prefix]
+                acct = FloLogicAccount(
+                    user=prev.user,
+                    valve=valve,
+                    devices=self._persistent_devices,
+                    access=prev.access,
+                    scheduler=prev.scheduler,
+                    notifications=prev.notifications,
+                    update_source="push",
+                )
+            elif (
+                self._last_account is not None
+                and prefix == self._last_account.unique_id_prefix
+            ):
+                acct = FloLogicAccount(
+                    user=self._last_account.user,
+                    valve=valve,
+                    devices=self._persistent_devices,
+                    access=self._last_account.access,
+                    scheduler=self._last_account.scheduler,
+                    notifications=self._last_account.notifications,
+                    update_source="push",
+                )
+            else:
+                acct = FloLogicAccount(
+                    user=self._persistent_user,
+                    valve=valve,
+                    devices=self._persistent_devices,
+                    update_source="push",
+                )
+            new_accounts[prefix] = acct
+
+        # Update caches and dispatch. A full array push is authoritative, so
+        # it replaces the cache (pruning removals); incremental pushes merge.
+        if full_replace or self._last_accounts is None:
+            self._last_accounts = dict(new_accounts)
+        else:
+            self._last_accounts.update(new_accounts)
+        primary = choose_valve(valves_list)
+        if primary is not None:
+            pref = str(primary.get("uuid") or primary.get("id"))
+            self._last_account = new_accounts.get(pref)
+            self._persistent_valve = primary
+        if self._push_accounts_callback is not None:
+            self._push_accounts_callback(dict(new_accounts))
 
     def _connection(self, session: aiohttp.ClientSession) -> FloLogicConnection:
         """Create a connection object."""
@@ -841,31 +1178,49 @@ class FloLogicClient:
         )
 
 
+def controllable_valves(devices: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return all controllable valve devices from a device list.
+
+    The FloLogic cloud may return both gateway and valve devices. For a
+    multi-valve account we must expose *every* controllable valve, not just
+    the first.  The tier priority mirrors ``choose_valve`` but returns the
+    entire tier instead of a single entry so a two-valve account with two
+    ``isZConnect`` devices yields both.
+    """
+    if not devices:
+        return []
+    tier_zconnect = [d for d in devices if d.get("isZConnect") is True]
+    if tier_zconnect:
+        return tier_zconnect
+    tier_any = [
+        d
+        for d in devices
+        if d.get("isAnyConnect") is True and d.get("isZGateway") is not True
+    ]
+    if tier_any:
+        return tier_any
+    tier_name = [
+        d for d in devices if "connect" in str(d.get("deviceTypeName") or "").lower()
+    ]
+    if tier_name:
+        return tier_name
+    tier_not_gateway = [d for d in devices if d.get("isZGateway") is not True]
+    if tier_not_gateway:
+        return tier_not_gateway
+    return list(devices)
+
+
 def choose_valve(devices: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Choose the controllable Connect valve from a device list."""
-    if not devices:
-        return None
-    return (
-        next((device for device in devices if device.get("isZConnect") is True), None)
-        or next(
-            (
-                device
-                for device in devices
-                if device.get("isAnyConnect") is True
-                and device.get("isZGateway") is not True
-            ),
-            None,
-        )
-        or next(
-            (
-                device
-                for device in devices
-                if "connect" in str(device.get("deviceTypeName") or "").lower()
-            ),
-            None,
-        )
-        or next(
-            (device for device in devices if device.get("isZGateway") is not True), None
-        )
-        or devices[0]
-    )
+    vals = controllable_valves(devices)
+    return vals[0] if vals else None
+
+
+def _mode_value(mode: str) -> int:
+    """Return the cloud value for a mode name, rejecting unknown modes."""
+    try:
+        return VALVE_MODES[mode]
+    except KeyError as err:
+        raise ValueError(
+            f"Unknown FloLogic mode {mode!r}; valid modes: {sorted(VALVE_MODES)}"
+        ) from err

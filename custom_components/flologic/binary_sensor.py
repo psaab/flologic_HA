@@ -92,6 +92,21 @@ BINARY_SENSORS: tuple[FloLogicBinarySensorDescription, ...] = (
 )
 
 
+def _entities_for_valve(
+    coordinator: FloLogicCoordinator, valve_id: str
+) -> list[FloLogicBinarySensor]:
+    """Build every binary sensor for one valve."""
+    entities: list[FloLogicBinarySensor] = []
+    for description in BINARY_SENSORS:
+        if description.key == "advance_shutoff_warning":
+            entities.append(
+                FloLogicLocallyTickingBinarySensor(coordinator, description, valve_id)
+            )
+        else:
+            entities.append(FloLogicBinarySensor(coordinator, description, valve_id))
+    return entities
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -99,12 +114,21 @@ async def async_setup_entry(
 ) -> None:
     """Set up FloLogic binary sensors."""
     coordinator: FloLogicCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities(
-        FloLogicLocallyTickingBinarySensor(coordinator, description)
-        if description.key == "advance_shutoff_warning"
-        else FloLogicBinarySensor(coordinator, description)
-        for description in BINARY_SENSORS
-    )
+    known_valves: set[str] = set()
+
+    def _async_add_new_valves() -> None:
+        """Add entities for valves discovered after setup."""
+        new_ids = [vid for vid in coordinator.accounts if vid not in known_valves]
+        if not new_ids:
+            return
+        entities: list[FloLogicBinarySensor] = []
+        for valve_id in new_ids:
+            entities.extend(_entities_for_valve(coordinator, valve_id))
+        known_valves.update(new_ids)
+        async_add_entities(entities)
+
+    _async_add_new_valves()
+    entry.async_on_unload(coordinator.async_add_listener(_async_add_new_valves))
 
 
 class FloLogicBinarySensor(FloLogicEntity, BinarySensorEntity):
@@ -116,27 +140,29 @@ class FloLogicBinarySensor(FloLogicEntity, BinarySensorEntity):
         self,
         coordinator: FloLogicCoordinator,
         description: FloLogicBinarySensorDescription,
+        valve_id: str | None = None,
     ) -> None:
         """Initialize the binary sensor."""
-        super().__init__(coordinator, description.key)
+        super().__init__(coordinator, description.key, valve_id)
         self.entity_description = description
 
     @property
     def is_on(self) -> bool | None:
         """Return the binary sensor state."""
+        acct = self._account
+        if acct is None:
+            return None
         if self.entity_description.source == "online":
-            return self.coordinator.data.valve.get("online")
+            return acct.valve.get("online")
         if self.entity_description.source == "advance_shutoff_warning":
-            return self.coordinator.data.advance_shutoff_warning
+            return acct.advance_shutoff_warning
         if self.entity_description.source == "water_off_event":
             return self._has_any_mode_flag(WATER_OFF_MODE_FLAGS)
         if self.entity_description.source == "warning_alert_event":
             return self._has_any_mode_flag(WARNING_ALERT_MODE_FLAGS)
         if self.entity_description.source == "critical_fault_event":
             return self._has_any_mode_flag(CRITICAL_MODE_FLAGS)
-        return self.coordinator.data.notification_flags.get(
-            self.entity_description.source
-        )
+        return acct.notification_flags.get(self.entity_description.source)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
@@ -170,7 +196,10 @@ class FloLogicBinarySensor(FloLogicEntity, BinarySensorEntity):
     @property
     def _mode_value(self) -> int | None:
         """Return the current raw valve mode as an integer."""
-        mode = self.coordinator.data.valve.get("mode")
+        acct = self._account
+        if acct is None:
+            return None
+        mode = acct.valve.get("mode")
         try:
             return int(mode)
         except (TypeError, ValueError):
@@ -181,6 +210,7 @@ class FloLogicLocallyTickingBinarySensor(FloLogicBinarySensor):
     """FloLogic binary sensor that updates locally while water is flowing."""
 
     _unsub_tick: Callable[[], None] | None = None
+    _last_tick_value: bool | None = None
 
     async def async_added_to_hass(self) -> None:
         """Start local ticking when added to Home Assistant."""
@@ -199,7 +229,9 @@ class FloLogicLocallyTickingBinarySensor(FloLogicBinarySensor):
 
     def _sync_tick_timer(self) -> None:
         """Start or stop the local one-second tick."""
-        if self.coordinator.data.is_water_flowing:
+        self._last_tick_value = self.is_on
+        acct = self._account
+        if acct is not None and acct.is_water_flowing:
             if self._unsub_tick is None:
                 self._schedule_next_tick()
         else:
@@ -218,9 +250,15 @@ class FloLogicLocallyTickingBinarySensor(FloLogicBinarySensor):
     def _handle_tick(self, _now: Any) -> None:
         """Refresh the local warning value."""
         self._unsub_tick = None
-        if not self.coordinator.data.is_water_flowing:
+        acct = self._account
+        if acct is None or not acct.is_water_flowing:
             self._stop_tick_timer()
             self.schedule_update_ha_state()
             return
-        self.schedule_update_ha_state()
+        # A boolean rarely flips: only write state on an actual change to
+        # avoid a pointless state write every second while flowing.
+        current = self.is_on
+        if current != self._last_tick_value:
+            self._last_tick_value = current
+            self.schedule_update_ha_state()
         self._schedule_next_tick()
