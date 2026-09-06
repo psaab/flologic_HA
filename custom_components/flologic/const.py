@@ -13,6 +13,7 @@ CONF_OPTIONS_DEFAULTS_VERSION = "options_defaults_version"
 CONF_HUB_URL = "hub_url"
 CONF_POLL_INTERVAL = "poll_interval"
 CONF_KEEP_SESSION_ALIVE = "keep_session_alive"
+CONF_MONITORED_VALVES = "monitored_valves"
 
 DEFAULT_DEVICE_NAME = "Home Assistant"
 DEFAULT_DEVICE_CODE = "AND-ha-custom-001"

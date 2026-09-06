@@ -26,6 +26,7 @@ from .const import (
     CONF_HIDDEN_ENTITY_DEFAULTS_VERSION,
     CONF_HUB_URL,
     CONF_KEEP_SESSION_ALIVE,
+    CONF_MONITORED_VALVES,
     CONF_OPTIONS_DEFAULTS_VERSION,
     CONF_POLL_INTERVAL,
     DEFAULT_DEVICE_CODE,
@@ -161,12 +162,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             CONF_KEEP_SESSION_ALIVE, DEFAULT_KEEP_SESSION_ALIVE
         ),
     )
+    monitored = entry.options.get(CONF_MONITORED_VALVES)
     coordinator = FloLogicCoordinator(
         hass,
         client,
         entry.options.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL),
+        monitored_valves=set(monitored) if monitored is not None else None,
     )
     await coordinator.async_config_entry_first_refresh()
+    _async_migrate_monitored_valves(hass, entry, coordinator)
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -204,6 +208,28 @@ def _async_migrate_options_defaults(hass: HomeAssistant, entry: ConfigEntry) -> 
             **entry.options,
             CONF_KEEP_SESSION_ALIVE: DEFAULT_KEEP_SESSION_ALIVE,
         },
+    )
+
+
+def _async_migrate_monitored_valves(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    coordinator: FloLogicCoordinator,
+) -> None:
+    """Record an explicit valve selection for entries created before it existed.
+
+    Legacy entries monitored every valve the cloud returned. Freezing the
+    current set preserves their behavior exactly, while new valves are never
+    auto-added afterwards. Runs before the update listener is registered, so
+    persisting options here does not trigger a reload.
+    """
+    if CONF_MONITORED_VALVES in entry.options:
+        return
+    monitored = sorted(coordinator.accounts)
+    coordinator.monitored_valves = set(monitored)
+    hass.config_entries.async_update_entry(
+        entry,
+        options={**entry.options, CONF_MONITORED_VALVES: monitored},
     )
 
 

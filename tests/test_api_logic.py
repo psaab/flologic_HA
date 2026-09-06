@@ -21,7 +21,9 @@ from custom_components.flologic.api import (
     choose_valve,
     controllable_valves,
 )
+from custom_components.flologic.config_flow import valve_option_label
 from custom_components.flologic.const import VALVE_MODES
+from custom_components.flologic.coordinator import select_monitored_accounts
 
 
 def make_valve(**overrides: Any) -> dict[str, Any]:
@@ -469,3 +471,32 @@ async def test_legacy_account_fetch_preserves_primary_valve() -> None:
         return_value={"uuid-2": other, "uuid-1": primary}
     )
     assert await client.async_fetch_account() is primary
+
+
+def test_select_monitored_accounts() -> None:
+    """Only explicitly monitored valves are kept; None means all (legacy)."""
+    first = make_account(make_valve())
+    second = make_account(make_valve(id=22, uuid="uuid-2"))
+    accounts = {"uuid-1": first, "uuid-2": second}
+    assert select_monitored_accounts(accounts, None) == accounts
+    assert select_monitored_accounts(accounts, {"uuid-2"}) == {"uuid-2": second}
+    assert select_monitored_accounts(accounts, set()) == {}
+    assert select_monitored_accounts(accounts, {"missing"}) == {}
+    # Unknown selection keys never leak unselected valves through.
+    assert select_monitored_accounts(accounts, {"uuid-1", "missing"}) == {
+        "uuid-1": first
+    }
+
+
+def test_valve_option_label_includes_id_once() -> None:
+    """Selection labels disambiguate valves without repeating the id."""
+    assert valve_option_label(make_account(make_valve())) == "uuid-1 (11)"
+    named = make_account(make_valve(id=22, uuid="uuid-2", valveFriendlyName="Cabin"))
+    assert valve_option_label(named) == "Cabin (22)"
+    already = make_account(
+        make_valve(id=22, uuid="uuid-2", valveFriendlyName="Cabin (22)")
+    )
+    assert valve_option_label(already) == "Cabin (22)"
+    assert (
+        valve_option_label(make_account(make_valve(id=None, uuid="uuid-9"))) == "uuid-9"
+    )

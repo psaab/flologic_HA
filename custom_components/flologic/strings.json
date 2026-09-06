@@ -10,6 +10,13 @@
           "hub_url": "Hub URL"
         }
       },
+      "select_valves": {
+        "title": "Select valves",
+        "description": "Choose which valves this Home Assistant install monitors. Only one home usually needs each valve; pick more only if this install is responsible for several.",
+        "data": {
+          "monitored_valves": "Monitored valves"
+        }
+      },
       "init": {
         "title": "FloLogic options",
         "description": "Choose how often Home Assistant refreshes FloLogic data. Keep session alive reuses one cloud websocket, listens for pushed valve updates, and reconnects automatically if FloLogic closes it.",
@@ -22,7 +29,9 @@
     "error": {
       "cannot_connect": "Unable to connect to FloLogic.",
       "invalid_auth": "FloLogic rejected the login.",
-      "interval_too_low": "Polling interval is too low."
+      "interval_too_low": "Polling interval is too low.",
+      "no_valve_selected": "Select at least one valve to monitor.",
+      "unknown_valve_selected": "The valve selection is no longer valid. Go back and try again."
     },
     "abort": {
       "already_configured": "This FloLogic device is already configured."
@@ -32,15 +41,19 @@
     "step": {
       "init": {
         "title": "FloLogic options",
-        "description": "Choose how often Home Assistant refreshes FloLogic data. Keep session alive reuses one cloud websocket, listens for pushed valve updates, and reconnects automatically if FloLogic closes it.",
+        "description": "Choose how often Home Assistant refreshes FloLogic data. Keep session alive reuses one cloud websocket, listens for pushed valve updates, and reconnects automatically if FloLogic closes it. Monitored valves controls which valves this install tracks; changing it reloads the integration.",
         "data": {
           "poll_interval": "Polling interval in seconds",
-          "keep_session_alive": "Keep cloud session alive"
+          "keep_session_alive": "Keep cloud session alive",
+          "monitored_valves": "Monitored valves"
         }
       }
     },
     "error": {
-      "interval_too_low": "Polling interval is too low."
+      "cannot_connect": "Unable to reach FloLogic, so the valve list could not be refreshed. Other options can still be changed.",
+      "interval_too_low": "Polling interval is too low.",
+      "no_valve_selected": "Select at least one valve to monitor.",
+      "unknown_valve_selected": "The valve selection is no longer valid. Reopen the options and try again."
     }
   },
   "services": {

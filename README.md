@@ -49,12 +49,19 @@ Advanced fields are available for non-standard deployments:
 
 Most users should leave the advanced fields unchanged.
 
+If the account has more than one valve, setup asks which valves this Home
+Assistant install monitors. Pick only the valves installed at this site;
+each home should run its own install with its own selection. The choice
+defaults to the first valve and can select several when one install is
+genuinely responsible for more than one.
+
 ## Options
 
 After setup, open the integration options to configure cloud behavior:
 
 - **Polling interval in seconds**: Defaults to `60`; minimum is `1`.
 - **Keep cloud session alive**: Keeps one SignalR websocket open, listens for pushed valve updates, and reconnects automatically if the connection closes.
+- **Monitored valves**: Which valves this install tracks. New valves on the account are never added automatically; widen the selection here when a valve is added to this site. Changing the selection reloads the integration.
 
 Polling remains active when persistent mode is enabled. It acts as a fallback in case pushed updates are delayed or missed.
 

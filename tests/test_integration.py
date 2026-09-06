@@ -27,6 +27,7 @@ async def loaded_entries(hass):
         entry = MockConfigEntry(
             domain=DOMAIN,
             data={"email": f"user{number}@example.com", "password": "secret"},
+            options={"monitored_valves": [f"uuid-{number}"]},
             unique_id=f"account-{number}",
         )
         entry.add_to_hass(hass)
@@ -189,6 +190,9 @@ async def test_dynamic_entities_removal_return_and_unload(hass, loaded_entries):
     coordinator = hass.data[DOMAIN][entries[0].entry_id]
     push = clients[0].set_push_accounts_callback.call_args.args[0]
     initial = dict(coordinator.accounts)
+    # Dynamic discovery only applies to monitored valves (see the options-flow
+    # test for widening the selection); declare uuid-3 monitored first.
+    coordinator.monitored_valves.add("uuid-3")
     added = make_account(make_valve(id=33, uuid="uuid-3", mode=2))
     push({**initial, "uuid-3": added})
     await hass.async_block_till_done()
@@ -229,3 +233,93 @@ async def test_dynamic_entities_removal_return_and_unload(hass, loaded_entries):
     assert hass.services.has_service(DOMAIN, "set_home_limit")
     with pytest.raises(ServiceValidationError, match="No FloLogic valves"):
         await call_action(hass)
+
+
+@pytest.fixture
+async def monitored_entry(hass):
+    """Load one account with two valves but a single-valve selection."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={"email": "user@example.com", "password": "secret"},
+        options={"monitored_valves": ["uuid-1"]},
+        unique_id="account-1",
+    )
+    entry.add_to_hass(hass)
+    accounts = {
+        "uuid-1": make_account(make_valve(id=11, uuid="uuid-1")),
+        "uuid-2": make_account(make_valve(id=22, uuid="uuid-2")),
+    }
+    client = MagicMock(spec=FloLogicClient)
+    client.async_fetch_accounts.return_value = accounts
+    with patch("custom_components.flologic.FloLogicClient", return_value=client):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    return entry, client, accounts
+
+
+async def test_monitored_selection_filters_entities_and_targets(hass, monitored_entry):
+    """Unmonitored valves get no entities and reject action targets."""
+    entry, client, _accounts = monitored_entry
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    assert set(coordinator.accounts) == {"uuid-1"}
+    registry = er.async_get(hass)
+    assert registry.async_get_entity_id("sensor", DOMAIN, "uuid-1_mode")
+    assert registry.async_get_entity_id("sensor", DOMAIN, "uuid-2_mode") is None
+    assert registry.async_get_entity_id("select", DOMAIN, "uuid-2_valve_mode") is None
+    # The single monitored valve is the implicit target.
+    await call_action(hass)
+    client.async_request_state_change_for_valve.assert_awaited_once_with(
+        "uuid-1", {"homeIntervalTime": 10}
+    )
+    # The unmonitored valve cannot be reached, even explicitly.
+    with pytest.raises(ServiceValidationError, match="uuid-2"):
+        await call_action(hass, valve_id="uuid-2")
+    client.async_request_state_change_for_valve.assert_awaited_once()
+
+
+async def test_legacy_entry_freezes_selection_and_ignores_new_valves(hass):
+    """Entries without a selection keep all valves but never auto-add more."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={"email": "user@example.com", "password": "secret"},
+        unique_id="account-legacy",
+    )
+    entry.add_to_hass(hass)
+    accounts = {
+        "uuid-1": make_account(make_valve(id=11, uuid="uuid-1")),
+        "uuid-2": make_account(make_valve(id=22, uuid="uuid-2")),
+    }
+    client = MagicMock(spec=FloLogicClient)
+    client.async_fetch_accounts.return_value = accounts
+    with patch("custom_components.flologic.FloLogicClient", return_value=client):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    assert entry.options["monitored_valves"] == ["uuid-1", "uuid-2"]
+
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    push = client.set_push_accounts_callback.call_args.args[0]
+    added = make_account(make_valve(id=33, uuid="uuid-3", mode=2))
+    push({**accounts, "uuid-3": added})
+    await hass.async_block_till_done()
+    assert set(coordinator.accounts) == {"uuid-1", "uuid-2"}
+    registry = er.async_get(hass)
+    assert registry.async_get_entity_id("sensor", DOMAIN, "uuid-3_mode") is None
+
+    client.async_fetch_accounts.return_value = {**accounts, "uuid-3": added}
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert set(coordinator.accounts) == {"uuid-1", "uuid-2"}
+    assert registry.async_get_entity_id("sensor", DOMAIN, "uuid-3_mode") is None
+
+
+async def test_missing_monitored_valve_is_unavailable(hass, monitored_entry, caplog):
+    """A monitored valve that vanishes leaves its entities unavailable."""
+    entry, client, accounts = monitored_entry
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    entity_id = er.async_get(hass).async_get_entity_id("sensor", DOMAIN, "uuid-1_mode")
+    assert hass.states.get(entity_id).state != STATE_UNAVAILABLE
+    client.async_fetch_accounts.return_value = {"uuid-2": accounts["uuid-2"]}
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert hass.states.get(entity_id).state == STATE_UNAVAILABLE
+    assert "did not return them" in caplog.text
