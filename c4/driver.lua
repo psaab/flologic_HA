@@ -1989,13 +1989,15 @@ end
 -- Lua 5.1 safe.
 -- ============================================================================
 
-FLOGIC_DRIVER_VERSION = "2026090703"
+FLOGIC_DRIVER_VERSION = "2026090704"
 FLOGIC_DEFAULT_HUB = "https://hub-cloudapps-prod.azurewebsites.net"
 FLOGIC_BINDING_FIRST = 6100
 FLOGIC_BINDING_LAST = 6199
 FLOGIC_MIN_POLL_SECONDS = 30
 FLOGIC_MAX_POLL_SECONDS = 3600
 FLOGIC_LOCAL_TICK_MS = 5000
+FLOGIC_RELAY_VALVE_CLOSED = 101
+FLOGIC_RELAY_AWAY = 102
 
 -- Property names (must match driver.xml).
 FLOGIC_PROP_DEBUG = "Debug Mode"
@@ -2545,6 +2547,71 @@ local function flogic_sync_tick_timer()
   end
 end
 
+--- Status-only relay providers. Initial/bind sync must not fire transition programming.
+local function flogic_relay_notify(binding, closed, initial)
+  local command = closed and "CLOSED" or "OPENED"
+  if initial then
+    command = "STATE_" .. command
+  end
+  C4:SendToProxy(binding, command, {}, "NOTIFY")
+end
+
+local function flogic_update_relays(valve)
+  local st = flogic_state
+  local mode = valve and tonumber(valve.mode)
+  if
+    not valve
+    or valve.online ~= true
+    or not mode
+    or mode ~= mode
+    or mode < 0
+    or mode == math.huge
+    or mode % 1 ~= 0
+  then
+    st.relay_states = nil
+    return
+  end
+  local flags = FloModel.VALVE_MODE_FLAGS
+  local current = {
+    [FLOGIC_RELAY_VALVE_CLOSED] = FloModel.has_any_flag(mode, FloModel.WATER_OFF_MODE_FLAGS),
+    [FLOGIC_RELAY_AWAY] = FloModel.has_any_flag(mode, { flags.away, flags.auto_away, flags.external_away }),
+  }
+  local previous = st.relay_states or {}
+  st.relay_states = current
+  for _, binding in ipairs({ FLOGIC_RELAY_VALVE_CLOSED, FLOGIC_RELAY_AWAY }) do
+    if previous[binding] == nil or previous[binding] ~= current[binding] then
+      flogic_relay_notify(binding, current[binding], previous[binding] == nil)
+    end
+  end
+end
+
+local function flogic_sync_relay(binding)
+  local st = flogic_state
+  if not st.initialized or not st.relay_states then
+    return
+  end
+  local value = st.relay_states[binding]
+  if value ~= nil then
+    flogic_relay_notify(binding, value, true)
+  end
+end
+
+function OnBindingChanged(idBinding, strClass, bIsBound)
+  if strClass == "RELAY" and bIsBound then
+    flogic_sync_relay(idBinding)
+  end
+end
+
+function ReceivedFromProxy(idBinding, strCommand, _tParams)
+  if idBinding ~= FLOGIC_RELAY_VALVE_CLOSED and idBinding ~= FLOGIC_RELAY_AWAY then
+    return
+  end
+  -- These outputs report status, never accept commands to move the physical valve.
+  if strCommand == "GET_STATE" then
+    flogic_sync_relay(idBinding)
+  end
+end
+
 local function flogic_on_snapshot(snap, session)
   local st = flogic_state
   st.last_snapshot = snap
@@ -2552,21 +2619,22 @@ local function flogic_on_snapshot(snap, session)
     st.relog_token = session.relog_token
     C4:PersistSetValue("flologic_relog", session.relog_token, true)
   end
-  flogic_set_connection(true)
+  flogic_set_connection(snap.valve == nil or snap.valve.online == true, "selected valve offline")
   flogic_update_picker(snap.devices)
   if snap.valve == nil then
-    st.last_snapshot = nil
+    st.last_snapshot, st.relay_states = nil, nil
     flogic_set_prop(FLOGIC_PROP_CONNECTION, "Select a valve")
     return
   end
   flogic_update_properties(snap)
+  flogic_update_relays(snap.valve)
   flogic_process_edges(snap)
   flogic_sync_tick_timer()
 end
 
 local function flogic_clear_snapshot()
   local st = flogic_state
-  st.last_snapshot, st.last_mode = nil, nil
+  st.last_snapshot, st.last_mode, st.relay_states = nil, nil, nil
   if st.tick_timer then
     st.tick_timer:Cancel()
     st.tick_timer = nil
@@ -2716,6 +2784,9 @@ end
 function ExecuteCommand(strCommand, tParams)
   if strCommand == "LUA_ACTION" then
     strCommand = tParams and tParams.ACTION
+  end
+  if strCommand == "Refresh GitHub Updates" then
+    strCommand = "Check for Update"
   end
   flogic_log("command: " .. tostring(strCommand))
   if strCommand == "Check for Update" then

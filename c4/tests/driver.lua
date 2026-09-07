@@ -4,7 +4,15 @@ local original_factory = FloLogic.new_session
 
 local function director()
   local timers = D.new_fake_timers()
-  local env = { timers = timers, sessions = {}, transfers = {}, events = {}, addresses = {}, saved = {} }
+  local env = {
+    timers = timers,
+    sessions = {},
+    transfers = {},
+    events = {},
+    relay_notifications = {},
+    addresses = {},
+    saved = {},
+  }
   Properties = { Email = "test@example.invalid", Password = "test", ["Select Valve"] = "Kitchen (11)" }
   flogic_state = { command_queue = {}, retired_bindings = {}, relog_token = "" }
   C4 = {}
@@ -14,6 +22,9 @@ local function director()
   function C4:UpdatePropertyList(name, list, value)
     env.list = list
     Properties[name] = value
+  end
+  function C4:SendToProxy(binding, command, params, kind)
+    env.relay_notifications[#env.relay_notifications + 1] = { binding = binding, command = command, kind = kind }
   end
   function C4:FireEvent(name)
     env.events[#env.events + 1] = name
@@ -352,5 +363,74 @@ D.test("director: GitHub checks survive busy valve polling and cancel on reload"
   obsolete.done(obsolete, {}, 28)
   D.check_equal(Properties["Update Status"], before, "retired updater cannot write properties")
   OnDriverUpdated()
+  OnDriverDestroyed()
+end)
+
+D.test("director: status relays initialize, transition, and synchronize bindings", function()
+  local env = director()
+  stub_sessions(env)
+  local function snapshot(mode, online)
+    flogic_poll_now()
+    local valve = { id = 11, online = online ~= false, mode = mode, flowState = 1 }
+    env.sessions[#env.sessions].callback(nil, { valve = valve, devices = { valve } })
+  end
+  snapshot(1)
+  local notices = env.relay_notifications
+  D.check_equal(#notices, 2, "initialize both connections")
+  D.check_equal(notices[1].binding, 101, "stable closed binding")
+  D.check_equal(notices[1].command, "STATE_OPENED", "home is open initial state")
+  D.check_equal(notices[2].binding, 102, "stable away binding")
+  snapshot(1)
+  D.check_equal(#notices, 2, "unchanged polls do not fire programming")
+  snapshot(2)
+  D.check_equal(notices[3].binding, 102, "away changes independently")
+  D.check_equal(notices[3].command, "CLOSED", "away is closed")
+  snapshot(2 + 32)
+  D.check_equal(notices[4].binding, 101, "flow timeout closes water status")
+  D.check_equal(notices[4].command, "CLOSED", "flow shutoff asserted")
+  D.check_equal(#notices, 4, "away stays asserted during shutoff")
+  OnBindingChanged(101, "RELAY", true)
+  D.check_equal(notices[5].command, "STATE_CLOSED", "late binding initializes without edge")
+  ReceivedFromProxy(102, "GET_STATE", {})
+  D.check_equal(notices[6].command, "STATE_CLOSED", "state query answered")
+  ReceivedFromProxy(101, "OPEN", {})
+  ReceivedFromProxy(102, "TOGGLE", {})
+  D.check_equal(#env.sessions, 4, "status connections never issue cloud commands")
+  snapshot(1)
+  D.check_equal(notices[7].command, "OPENED", "water restored")
+  D.check_equal(notices[8].command, "OPENED", "away cleared")
+  OnDriverDestroyed()
+end)
+
+D.test("director: offline and selection changes cannot fabricate relay edges", function()
+  local env = director()
+  stub_sessions(env)
+  local function snapshot(mode, online)
+    flogic_poll_now()
+    local valve = { id = 11, online = online, mode = mode, flowState = 1 }
+    env.sessions[#env.sessions].callback(nil, { valve = valve, devices = { valve } })
+  end
+  snapshot(8, true)
+  D.check_equal(env.relay_notifications[1].command, "STATE_CLOSED", "manual shutoff initialized")
+  snapshot(1, false)
+  ReceivedFromProxy(101, "GET_STATE")
+  D.check_equal(#env.relay_notifications, 2, "offline does not claim water restored")
+  snapshot(128, true)
+  D.check_equal(env.relay_notifications[3].command, "STATE_OPENED", "recovery resynchronizes")
+  D.check_equal(env.relay_notifications[4].command, "STATE_CLOSED", "automatic away supported")
+  Properties["Valve ID Override"] = "22"
+  OnPropertyChanged("Valve ID Override")
+  OnBindingChanged(101, "RELAY", true)
+  D.check_equal(#env.relay_notifications, 4, "old selection cannot be replayed")
+  OnDriverDestroyed()
+end)
+
+D.test("director: GitHub refresh button accepts Composer command and label", function()
+  local env = director()
+  ExecuteCommand("LUA_ACTION", { ACTION = "Check for Update" })
+  env.transfers[1].done(nil, { { code = 200, body = "[]" } }, 0)
+  ExecuteCommand("LUA_ACTION", { ACTION = "Refresh GitHub Updates" })
+  D.check_equal(#env.transfers, 2, "button label and command refresh GitHub")
+  D.check_equal(env.transfers[2].url, FloUpdate.API_URL, "refresh uses GitHub, not cloud poll")
   OnDriverDestroyed()
 end)

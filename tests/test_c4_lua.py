@@ -84,3 +84,24 @@ def test_package_matches_reviewed_files() -> None:
     }
     assert properties["Driver Version"].findtext("default") == version
     assert properties["Password"].findtext("password") == "true"
+
+
+def test_status_relay_bindings_and_github_refresh_action() -> None:
+    """Composer needs actual XML connection/action definitions, not only Lua."""
+    manifest = ElementTree.parse(C4_DIR / "driver.xml").getroot()
+    bindings = {
+        entry.findtext("id"): entry
+        for entry in manifest.findall("connections/connection")
+    }
+    assert set(bindings) == {"101", "102"}
+    for binding, name in (("101", "Valve Closed"), ("102", "Away Mode")):
+        entry = bindings[binding]
+        assert entry.findtext("connectionname") == name
+        assert entry.findtext("type") == "1"
+        assert entry.findtext("consumer") == "False"
+        assert entry.findtext("classes/class/classname") == "RELAY"
+    actions = {
+        action.findtext("name"): action.findtext("command")
+        for action in manifest.findall("config/actions/action")
+    }
+    assert actions["Refresh GitHub Updates"] == "Check for Update"

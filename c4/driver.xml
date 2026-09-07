@@ -8,7 +8,7 @@
   <manufacturer>FloLogic</manufacturer>
   <driver>DriverWorks</driver>
   <control>lua_gen</control>
-  <version>2026090703</version>
+  <version>2026090704</version>
   <minimum_os_version>3.3.0</minimum_os_version>
   <created>09/06/2026 12:00 PM</created>
   <modified>09/07/2026 12:00 PM</modified>
@@ -49,7 +49,7 @@
       <property>
         <name>Driver Version</name>
         <type>STRING</type>
-        <default>2026090703</default>
+        <default>2026090704</default>
         <readonly>true</readonly>
       </property>
       <property>
@@ -415,7 +415,7 @@
     </commands>
     <actions>
       <action>
-        <name>Check for Update</name>
+        <name>Refresh GitHub Updates</name>
         <command>Check for Update</command>
       </action>
       <action>
@@ -429,12 +429,43 @@
     </actions>
     <script file="driver.lua" encryption="0" jit="1"/>
   </config>
-  <!-- Combo self-proxy: with no static connections, this is what makes the
-       driver searchable and room-addable (same pattern as generic_http). -->
+  <!-- Keep the original self-proxy identity so existing project references survive updates. -->
   <combo>true</combo>
   <proxies>
     <proxy>flologic_valve</proxy>
   </proxies>
+  <connections>
+    <connection>
+      <id>101</id>
+      <facing>6</facing>
+      <connectionname>Valve Closed</connectionname>
+      <type>1</type>
+      <consumer>False</consumer>
+      <audiosource>False</audiosource>
+      <videosource>False</videosource>
+      <linelevel>True</linelevel>
+      <classes>
+        <class>
+          <classname>RELAY</classname>
+        </class>
+      </classes>
+    </connection>
+    <connection>
+      <id>102</id>
+      <facing>6</facing>
+      <connectionname>Away Mode</connectionname>
+      <type>1</type>
+      <consumer>False</consumer>
+      <audiosource>False</audiosource>
+      <videosource>False</videosource>
+      <linelevel>True</linelevel>
+      <classes>
+        <class>
+          <classname>RELAY</classname>
+        </class>
+      </classes>
+    </connection>
+  </connections>
   <events>
     <event>
       <id>1</id>

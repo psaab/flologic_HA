@@ -1,10 +1,10 @@
 # FloLogic Control4 Driver
 
 Control4 DriverWorks driver for FloLogic Connect valves, based on the
-[Home Assistant integration](../README.md). Version **2026090703**, targeting
+[Home Assistant integration](../README.md). Version **2026090704**, targeting
 Control4 OS **3.3.0 or newer**. One instance monitors one explicitly selected
 valve. This is a poll-based programming driver; it has no Navigator interface
-or sensor/relay proxy bindings.
+or sensor proxy bindings. Two relay connections report valve-closed and away status.
 
 ## Install
 
@@ -34,7 +34,7 @@ late-init/update callbacks leave one timer set. Persistent device identity,
 credentials, and valve selection survive. Retired network bindings remain
 reserved until Director acknowledges their disconnection.
 
-**Actions → Check for Update** reads releases from
+**Actions → Refresh GitHub Updates** reads releases from
 [psaab/flologic_HA](https://github.com/psaab/flologic_HA/releases). It checks once
 10 seconds after startup and every **Update Check Interval** hours (default
 24; 0 disables periodic checks). **Update Status**, **Latest Driver Version**,
@@ -52,7 +52,7 @@ ignored. A build newer than GitHub is reported explicitly. A repository with
 no eligible C4 asset is reported as such, rather than as up to date.
 
 To publish after committing and pushing a tested build, create and push a tag
-matching the XML/Lua version (for this build, `c4-v2026090703`). The
+matching the XML/Lua version (for this build, `c4-v2026090704`). The
 `release-c4.yml` workflow verifies the tag, tests/rebuilds the driver, and uploads
 its asset. C4 releases are not marked as GitHub's latest release, preserving
 that designation for Home Assistant. No tag or release is published merely by
@@ -61,6 +61,35 @@ running the local packaging script.
 Version 2026090703 adds static update properties/actions. Composer must re-read
 `driver.xml` to register them; a Lua-only reload is insufficient. Refresh the
 Composer project/driver metadata if those fields are missing after installation.
+
+## Relay status connections
+
+Under Composer **Connections → Control**, bind these RELAY provider outputs
+to the desired relay-consuming drivers:
+
+| Connection | Binding ID | Closed means | Open means |
+| --- | --- | --- | --- |
+| Valve Closed | 101 | FloLogic reports a shutoff condition | No shutoff condition reported |
+| Away Mode | 102 | Away, automatic-away, or external-away flag is active | None of those away flags is active |
+
+Valve Closed includes flow-time-limit trips, manual shutoff, leak, emergency,
+and temperature/humidity shutoff flags. It reflects the reported cloud state;
+it is not a separate physical valve-position measurement. Away remains active
+if its flag is still present during a shutoff. Delayed-away is not active-away.
+
+These are status outputs: relay OPEN/CLOSE/TOGGLE commands do not move the
+valve or change its mode. Use the driver's explicit mode commands for control.
+Initial status, reconnects, and new bindings use STATE_OPENED/STATE_CLOSED;
+subsequent observed transitions use OPENED/CLOSED. Unchanged polls send no
+additional notifications. During an outage the connected consumer retains its
+last indication, because a relay has no unknown state. Check **Connection** and
+**Last Update** before treating it as current; stale state is not replayed to a
+new binding. Recovery establishes a fresh baseline without false transitions.
+
+Version 2026090704 adds static relay connections and renames the update action
+to **Refresh GitHub Updates**. Install the complete `.c4z` through Composer's
+**Add or Update Driver…** and refresh its driver metadata to expose the new
+connections/button. Loading Lua alone does not install these XML changes.
 
 ## Operation
 
