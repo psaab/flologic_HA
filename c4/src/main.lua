@@ -8,7 +8,7 @@
 -- Lua 5.1 safe.
 -- ============================================================================
 
-FLOGIC_DRIVER_VERSION = "2026090707"
+FLOGIC_DRIVER_VERSION = "2026090708"
 print("[flologic] Lua loaded: " .. FLOGIC_DRIVER_VERSION)
 FLOGIC_DEFAULT_HUB = "https://hub-cloudapps-prod.azurewebsites.net"
 FLOGIC_BINDING_FIRST = 6100
@@ -16,8 +16,8 @@ FLOGIC_BINDING_LAST = 6199
 FLOGIC_MIN_POLL_SECONDS = 30
 FLOGIC_MAX_POLL_SECONDS = 3600
 FLOGIC_LOCAL_TICK_MS = 5000
-FLOGIC_RELAY_VALVE_CLOSED = 101
-FLOGIC_RELAY_AWAY = 102
+FLOGIC_CONTACT_VALVE_CLOSED = 101
+FLOGIC_CONTACT_AWAY = 102
 
 -- Property names (must match driver.xml).
 FLOGIC_PROP_DEBUG = "Debug Mode"
@@ -809,8 +809,8 @@ local function flogic_sync_tick_timer()
   end
 end
 
---- Status-only relay providers. Initial/bind sync must not fire transition programming.
-local function flogic_relay_notify(binding, closed, initial)
+--- Status-only contact sensor providers. Initial/bind sync must not fire transition programming.
+local function flogic_contact_notify(binding, closed, initial)
   local command = closed and "CLOSED" or "OPENED"
   if initial then
     command = "STATE_" .. command
@@ -818,7 +818,7 @@ local function flogic_relay_notify(binding, closed, initial)
   C4:SendToProxy(binding, command, {}, "NOTIFY")
 end
 
-local function flogic_update_relays(valve)
+local function flogic_update_contacts(valve)
   local st = flogic_state
   local mode = valve and tonumber(valve.mode)
   if
@@ -830,47 +830,47 @@ local function flogic_update_relays(valve)
     or mode == math.huge
     or mode % 1 ~= 0
   then
-    st.relay_states = nil
+    st.contact_states = nil
     return
   end
   local flags = FloModel.VALVE_MODE_FLAGS
   local current = {
-    [FLOGIC_RELAY_VALVE_CLOSED] = FloModel.has_any_flag(mode, FloModel.WATER_OFF_MODE_FLAGS),
-    [FLOGIC_RELAY_AWAY] = FloModel.has_any_flag(mode, { flags.away, flags.auto_away, flags.external_away }),
+    [FLOGIC_CONTACT_VALVE_CLOSED] = FloModel.has_any_flag(mode, FloModel.WATER_OFF_MODE_FLAGS),
+    [FLOGIC_CONTACT_AWAY] = FloModel.has_any_flag(mode, { flags.away, flags.auto_away, flags.external_away }),
   }
-  local previous = st.relay_states or {}
-  st.relay_states = current
-  for _, binding in ipairs({ FLOGIC_RELAY_VALVE_CLOSED, FLOGIC_RELAY_AWAY }) do
+  local previous = st.contact_states or {}
+  st.contact_states = current
+  for _, binding in ipairs({ FLOGIC_CONTACT_VALVE_CLOSED, FLOGIC_CONTACT_AWAY }) do
     if previous[binding] == nil or previous[binding] ~= current[binding] then
-      flogic_relay_notify(binding, current[binding], previous[binding] == nil)
+      flogic_contact_notify(binding, current[binding], previous[binding] == nil)
     end
   end
 end
 
-local function flogic_sync_relay(binding)
+local function flogic_sync_contact(binding)
   local st = flogic_state
-  if not st.initialized or not st.relay_states then
+  if not st.initialized or not st.contact_states then
     return
   end
-  local value = st.relay_states[binding]
+  local value = st.contact_states[binding]
   if value ~= nil then
-    flogic_relay_notify(binding, value, true)
+    flogic_contact_notify(binding, value, true)
   end
 end
 
 function OnBindingChanged(idBinding, strClass, bIsBound)
-  if strClass == "RELAY" and bIsBound then
-    flogic_sync_relay(idBinding)
+  if strClass == "CONTACT_SENSOR" and bIsBound then
+    flogic_sync_contact(idBinding)
   end
 end
 
 function ReceivedFromProxy(idBinding, strCommand, _tParams)
-  if idBinding ~= FLOGIC_RELAY_VALVE_CLOSED and idBinding ~= FLOGIC_RELAY_AWAY then
+  if idBinding ~= FLOGIC_CONTACT_VALVE_CLOSED and idBinding ~= FLOGIC_CONTACT_AWAY then
     return
   end
   -- These outputs report status, never accept commands to move the physical valve.
   if strCommand == "GET_STATE" then
-    flogic_sync_relay(idBinding)
+    flogic_sync_contact(idBinding)
   end
 end
 
@@ -884,19 +884,19 @@ local function flogic_on_snapshot(snap, session)
   flogic_set_connection(snap.valve == nil or snap.valve.online == true, "selected valve offline")
   flogic_update_picker(snap.devices)
   if snap.valve == nil then
-    st.last_snapshot, st.relay_states = nil, nil
+    st.last_snapshot, st.contact_states = nil, nil
     flogic_set_prop(FLOGIC_PROP_CONNECTION, "Select a valve")
     return
   end
   flogic_update_properties(snap)
-  flogic_update_relays(snap.valve)
+  flogic_update_contacts(snap.valve)
   flogic_process_edges(snap)
   flogic_sync_tick_timer()
 end
 
 local function flogic_clear_snapshot()
   local st = flogic_state
-  st.last_snapshot, st.last_mode, st.relay_states = nil, nil, nil
+  st.last_snapshot, st.last_mode, st.contact_states = nil, nil, nil
   if st.tick_timer then
     st.tick_timer:Cancel()
     st.tick_timer = nil

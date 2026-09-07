@@ -1,10 +1,11 @@
 # FloLogic Control4 Driver
 
 Control4 DriverWorks driver for FloLogic Connect valves, based on the
-[Home Assistant integration](../README.md). Version **2026090707**, targeting
+[Home Assistant integration](../README.md). Version **2026090708**, targeting
 Control4 OS **3.3.0 or newer**. One instance monitors one explicitly selected
 valve. This is a poll-based programming driver; it has no Navigator interface
-or sensor proxy bindings. Two relay connections report valve-closed and away status.
+or sensor proxy bindings. Two contact sensor connections report valve-closed
+and away status for programming and state detection.
 
 ## Install
 
@@ -73,7 +74,7 @@ ignored. A build newer than GitHub is reported explicitly. A repository with
 no eligible C4 asset is reported as such, rather than as up to date.
 
 To publish after committing and pushing a tested build, create and push a tag
-matching the XML/Lua version (for this build, `c4-v2026090707`). The
+matching the XML/Lua version (for this build, `c4-v2026090708`). The
 `release-c4.yml` workflow verifies the tag, tests/rebuilds the driver, and uploads
 its asset. C4 releases are not marked as GitHub's latest release, preserving
 that designation for Home Assistant. No tag or release is published merely by
@@ -83,10 +84,11 @@ Version 2026090703 adds static update properties/actions. Composer must re-read
 `driver.xml` to register them; a Lua-only reload is insufficient. Refresh the
 Composer project/driver metadata if those fields are missing after installation.
 
-## Relay status connections
+## Contact sensor status connections
 
-Under Composer **Connections → Control**, bind these RELAY provider outputs
-to the desired relay-consuming drivers:
+Under Composer **Connections → Control**, bind these CONTACT_SENSOR provider
+outputs to contact-consuming drivers, or use them directly in programming to
+detect the reported state:
 
 | Connection | Binding ID | Closed means | Open means |
 | --- | --- | --- | --- |
@@ -98,14 +100,15 @@ and temperature/humidity shutoff flags. It reflects the reported cloud state;
 it is not a separate physical valve-position measurement. Away remains active
 if its flag is still present during a shutoff. Delayed-away is not active-away.
 
-These are status outputs: relay OPEN/CLOSE/TOGGLE commands do not move the
-valve or change its mode. Use the driver's explicit mode commands for control.
-Initial status, reconnects, and new bindings use STATE_OPENED/STATE_CLOSED;
-subsequent observed transitions use OPENED/CLOSED. Unchanged polls send no
-additional notifications. During an outage the connected consumer retains its
-last indication, because a relay has no unknown state. Check **Connection** and
-**Last Update** before treating it as current; stale state is not replayed to a
-new binding. Recovery establishes a fresh baseline without false transitions.
+These are status outputs: they report state and never accept commands to move
+the valve or change its mode. Use the driver's explicit mode commands for
+control. Initial status, reconnects, and new bindings use
+STATE_OPENED/STATE_CLOSED; subsequent observed transitions use OPENED/CLOSED.
+Unchanged polls send no additional notifications. During an outage the
+connected consumer retains its last indication, because a contact has no
+unknown state. Check **Connection** and **Last Update** before treating it as
+current; stale state is not replayed to a new binding. Recovery establishes a
+fresh baseline without false transitions.
 
 Version 2026090704 adds static relay connections and renames the update action
 to **Refresh GitHub Updates**. Install the complete `.c4z` through Composer's

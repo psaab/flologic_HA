@@ -9,7 +9,7 @@ local function director()
     sessions = {},
     transfers = {},
     events = {},
-    relay_notifications = {},
+    contact_notifications = {},
     addresses = {},
     saved = {},
     files = {},
@@ -29,7 +29,7 @@ local function director()
     Properties[name] = value
   end
   function C4:SendToProxy(binding, command, params, kind)
-    env.relay_notifications[#env.relay_notifications + 1] = { binding = binding, command = command, kind = kind }
+    env.contact_notifications[#env.contact_notifications + 1] = { binding = binding, command = command, kind = kind }
   end
   function C4:FireEvent(name)
     env.events[#env.events + 1] = name
@@ -431,7 +431,7 @@ D.test("director: GitHub checks survive busy valve polling and cancel on reload"
   OnDriverDestroyed()
 end)
 
-D.test("director: status relays initialize, transition, and synchronize bindings", function()
+D.test("director: status contacts initialize, transition, and synchronize bindings", function()
   local env = director()
   stub_sessions(env)
   local function snapshot(mode, online)
@@ -440,7 +440,7 @@ D.test("director: status relays initialize, transition, and synchronize bindings
     env.sessions[#env.sessions].callback(nil, { valve = valve, devices = { valve } })
   end
   snapshot(1)
-  local notices = env.relay_notifications
+  local notices = env.contact_notifications
   D.check_equal(#notices, 2, "initialize both connections")
   D.check_equal(notices[1].binding, 101, "stable closed binding")
   D.check_equal(notices[1].command, "STATE_OPENED", "home is open initial state")
@@ -454,7 +454,7 @@ D.test("director: status relays initialize, transition, and synchronize bindings
   D.check_equal(notices[4].binding, 101, "flow timeout closes water status")
   D.check_equal(notices[4].command, "CLOSED", "flow shutoff asserted")
   D.check_equal(#notices, 4, "away stays asserted during shutoff")
-  OnBindingChanged(101, "RELAY", true)
+  OnBindingChanged(101, "CONTACT_SENSOR", true)
   D.check_equal(notices[5].command, "STATE_CLOSED", "late binding initializes without edge")
   ReceivedFromProxy(102, "GET_STATE", {})
   D.check_equal(notices[6].command, "STATE_CLOSED", "state query answered")
@@ -467,7 +467,7 @@ D.test("director: status relays initialize, transition, and synchronize bindings
   OnDriverDestroyed()
 end)
 
-D.test("director: offline and selection changes cannot fabricate relay edges", function()
+D.test("director: offline and selection changes cannot fabricate contact edges", function()
   local env = director()
   stub_sessions(env)
   local function snapshot(mode, online)
@@ -476,17 +476,17 @@ D.test("director: offline and selection changes cannot fabricate relay edges", f
     env.sessions[#env.sessions].callback(nil, { valve = valve, devices = { valve } })
   end
   snapshot(8, true)
-  D.check_equal(env.relay_notifications[1].command, "STATE_CLOSED", "manual shutoff initialized")
+  D.check_equal(env.contact_notifications[1].command, "STATE_CLOSED", "manual shutoff initialized")
   snapshot(1, false)
   ReceivedFromProxy(101, "GET_STATE")
-  D.check_equal(#env.relay_notifications, 2, "offline does not claim water restored")
+  D.check_equal(#env.contact_notifications, 2, "offline does not claim water restored")
   snapshot(128, true)
-  D.check_equal(env.relay_notifications[3].command, "STATE_OPENED", "recovery resynchronizes")
-  D.check_equal(env.relay_notifications[4].command, "STATE_CLOSED", "automatic away supported")
+  D.check_equal(env.contact_notifications[3].command, "STATE_OPENED", "recovery resynchronizes")
+  D.check_equal(env.contact_notifications[4].command, "STATE_CLOSED", "automatic away supported")
   Properties["Valve ID Override"] = "22"
   OnPropertyChanged("Valve ID Override")
-  OnBindingChanged(101, "RELAY", true)
-  D.check_equal(#env.relay_notifications, 4, "old selection cannot be replayed")
+  OnBindingChanged(101, "CONTACT_SENSOR", true)
+  D.check_equal(#env.contact_notifications, 4, "old selection cannot be replayed")
   OnDriverDestroyed()
 end)
 
