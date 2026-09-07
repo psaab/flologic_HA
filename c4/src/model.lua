@@ -6,7 +6,7 @@
 -- execution, Lua 5.1 safe (no bitwise operators: flag tests use arithmetic).
 -- ============================================================================
 
-FloModel = FloModel or {}
+FloModel = {}
 
 -- Controllable valve modes: name -> cloud bit value.
 FloModel.VALVE_MODES = { home = 1, away = 2, bypass = 4, shutoff = 8, disabled = 16 }

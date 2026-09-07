@@ -1,0 +1,49 @@
+name: Release Control4 driver
+
+on:
+  push:
+    tags:
+      - "c4-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Validate C4 release tag
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          from xml.etree import ElementTree
+          version = ElementTree.parse("c4/driver.xml").getroot().findtext("version")
+          tag = os.environ["GITHUB_REF_NAME"]
+          assert re.fullmatch(r"c4-v[0-9]{10}", tag), "Expected c4-vYYYYMMDDNN"
+          assert tag == f"c4-v{version}", "Tag must match the C4 manifest version"
+          PY
+      - name: Install test dependencies
+        run: python -m pip install -r requirements_test.txt
+      - name: Check Lua style
+        uses: JohnnyMorganz/stylua-action@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          version: v2.5.2
+          args: --check --config-path c4/stylua.toml c4/src c4/tests
+      - name: Build and verify package
+        run: |
+          sh c4/scripts/package.sh
+          python -m pytest -q tests/test_c4_lua.py
+      - name: Publish C4 asset without replacing the HA latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" c4/flologic_valve.c4z \
+            --verify-tag --latest=false \
+            --title "FloLogic Control4 ${GITHUB_REF_NAME#c4-v}" \
+            --notes-file c4/RELEASE_NOTES.md

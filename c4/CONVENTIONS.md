@@ -97,3 +97,17 @@ entries establish scope and provenance, not a claim of a full source audit.
 | [lua-protobuf](https://github.com/finitelabs/lua-protobuf) | [f2b3b9306f8e](https://github.com/finitelabs/lua-protobuf/tree/f2b3b9306f8ef98c6a285a7ba12c64e5cd1f99ef) |
 | [noiseprotocol.github.io](https://github.com/finitelabs/noiseprotocol.github.io) | [97a603a07338](https://github.com/finitelabs/noiseprotocol.github.io/tree/97a603a07338435a05e9e78d717facfffe7c6f19) |
 | [website](https://github.com/finitelabs/website) | [fc81d06b9475](https://github.com/finitelabs/website/tree/fc81d06b9475d2fd42227fb398f1d776985ad6e5) |
+
+## Proflame reload reference (2026-09-07)
+
+The follow-up review used [psaab/proflame_c4](https://github.com/psaab/proflame_c4),
+particularly `src/driver.lua` load cleanup and `OnDriverUpdated`, and specification
+section 3.3. FloLogic now cleans up at the start of bundle evaluation, replaces
+module/state tables, and explicitly restarts on updates. Tests reload the source
+in the same Lua runtime without a preceding destroy callback and deliver old
+HTTP/timer/disconnect callbacks after replacement.
+
+Proflame's report-only startup/periodic release checks also inform the GitHub
+release workflow here. FloLogic uses C4-specific tags because it shares a
+repository with Home Assistant. Installation uses Composer; the reference's
+undocumented restricted-storage bypass is not included.

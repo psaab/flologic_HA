@@ -3,6 +3,57 @@
 -- ============================================================================
 
 -- ============================================================================
+-- bundled: src/bootstrap.lua
+-- ============================================================================
+-- Runs FIRST, before replacing module tables or Director callbacks on hot reload.
+-- Director may evaluate the bundle again without calling OnDriverDestroyed.
+function flogic_retire_runtime()
+  local previous = flogic_state
+  if not previous then
+    return
+  end
+  previous.initialized = false
+  local session = previous.session
+  local binding, port = previous.binding, previous.hub_port
+  previous.session, previous.busy, previous.tcp_callbacks = nil, false, nil
+  previous.command_queue = {}
+  for _, name in ipairs({
+    "poll_timer",
+    "tick_timer",
+    "soon_timer",
+    "debug_timer",
+    "update_timer",
+    "update_start_timer",
+  }) do
+    local timer = previous[name]
+    previous[name] = nil
+    if timer then
+      pcall(function()
+        timer:Cancel()
+      end)
+    end
+  end
+  if previous.updater then
+    pcall(previous.updater.cancel)
+    previous.updater = nil
+  end
+  if session then
+    pcall(session.cancel or session.close)
+  end
+  -- Never hand a new connection the old binding's pending OFFLINE callback.
+  previous.retired_bindings = previous.retired_bindings or {}
+  if binding and port then
+    previous.retired_bindings[binding] = port
+    pcall(function()
+      C4:NetDisconnect(binding, port)
+    end)
+  end
+  previous.binding = nil
+end
+
+flogic_retire_runtime()
+
+-- ============================================================================
 -- bundled: src/json.lua
 -- ============================================================================
 -- ============================================================================
@@ -13,7 +64,7 @@
 -- no bitwise operators, no string.pack, no table.pack).
 -- ============================================================================
 
-JSON = JSON or {}
+JSON = {}
 
 -- Sentinel for explicit JSON null in encoded output (Lua nil cannot occupy
 -- an array slot). Decoded nulls still arrive as nil (absent key).
@@ -315,7 +366,7 @@ end
 -- execution, Lua 5.1 safe (no bitwise operators: flag tests use arithmetic).
 -- ============================================================================
 
-FloModel = FloModel or {}
+FloModel = {}
 
 -- Controllable valve modes: name -> cloud bit value.
 FloModel.VALVE_MODES = { home = 1, away = 2, bypass = 4, shutoff = 8, disabled = 16 }
@@ -738,7 +789,7 @@ end
 -- Lua 5.1 safe: the record separator uses a decimal escape (\030 = \x1e).
 -- ============================================================================
 
-SignalR = SignalR or {}
+SignalR = {}
 
 SignalR.RECORD_SEPARATOR = "\030"
 
@@ -892,7 +943,7 @@ end
 -- connection); this module only builds/parses bytes.
 -- ============================================================================
 
-WS = WS or {}
+WS = {}
 
 WS.GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 WS.OP_CONT = 0
@@ -1204,7 +1255,7 @@ end
 -- FloLogic table only. Lua 5.1 safe.
 -- ============================================================================
 
-FloLogic = FloLogic or {}
+FloLogic = {}
 
 FloLogic.OS_PLATFORM = "Android"
 FloLogic.APP_VERSION = "control4"
@@ -1811,6 +1862,121 @@ function FloLogic.new_session(opts)
 end
 
 -- ============================================================================
+-- bundled: src/update.lua
+-- ============================================================================
+-- GitHub release discovery. Installation remains a Composer operation.
+FloUpdate = {}
+FloUpdate.REPOSITORY = "psaab/flologic_HA"
+FloUpdate.ASSET = "flologic_valve.c4z"
+FloUpdate.API_URL = "https://api.github.com/repos/" .. FloUpdate.REPOSITORY .. "/releases?per_page=100"
+
+--- Ignore HA releases, drafts, prereleases, and releases without the C4 asset.
+function FloUpdate.select_release(releases)
+  if type(releases) ~= "table" or releases.message ~= nil then
+    return nil, "Invalid GitHub release response"
+  end
+  local best
+  for _, release in ipairs(releases) do
+    if type(release) == "table" and not release.draft and not release.prerelease then
+      local tag = release.tag_name
+      local version = type(tag) == "string" and tag:match("^c4%-v(%d%d%d%d%d%d%d%d%d%d)$")
+      if version and type(release.assets) == "table" then
+        local expected = "https://github.com/"
+          .. FloUpdate.REPOSITORY
+          .. "/releases/download/"
+          .. tag
+          .. "/"
+          .. FloUpdate.ASSET
+        for _, asset in ipairs(release.assets) do
+          if type(asset) == "table" and asset.name == FloUpdate.ASSET and asset.browser_download_url == expected then
+            if not best or version > best.version then
+              best = { version = version, url = expected }
+            end
+          end
+        end
+      end
+    end
+  end
+  return best
+end
+
+--- A cancellable, report-only check; callbacks never run after cancel/reload.
+function FloUpdate.new_check(opts)
+  local self = { done = false }
+  function self.cancel()
+    self.done = true
+    if self.cancel_timer then
+      pcall(self.cancel_timer)
+      self.cancel_timer = nil
+    end
+    if self.cancel_http then
+      pcall(self.cancel_http)
+      self.cancel_http = nil
+    end
+  end
+  local function finish(err, release)
+    if self.done then
+      return
+    end
+    self.cancel()
+    opts.on_result(err, release)
+  end
+  function self.start()
+    if self.done or self.started then
+      return
+    end
+    self.started = true
+    self.cancel_timer = opts.set_timeout(35000, function()
+      finish("GitHub request timed out")
+    end)
+    local ok, cancel = pcall(opts.http_get, FloUpdate.API_URL, {
+      Accept = "application/vnd.github+json",
+      ["User-Agent"] = "FloLogic-Control4",
+      ["X-GitHub-Api-Version"] = "2022-11-28",
+    }, function(err, body, code)
+      if self.done then
+        return
+      end
+      if err then
+        finish("GitHub request failed")
+        return
+      end
+      if code == 403 or code == 429 then
+        finish("GitHub rate limited or denied the request; try later")
+        return
+      end
+      if code ~= 200 then
+        finish("GitHub HTTP " .. tostring(code))
+        return
+      end
+      if type(body) ~= "string" or #body > 1048576 then
+        finish("Invalid GitHub response size")
+        return
+      end
+      local decoded, releases = pcall(JSON.decode, body)
+      if not decoded then
+        finish("Invalid GitHub JSON")
+        return
+      end
+      local release, reason = FloUpdate.select_release(releases)
+      finish(reason, release)
+    end)
+    if not ok then
+      finish("GitHub transport unavailable")
+      return
+    end
+    if self.done then
+      if cancel then
+        pcall(cancel)
+      end
+    else
+      self.cancel_http = cancel
+    end
+  end
+  return self
+end
+
+-- ============================================================================
 -- bundled: src/main.lua
 -- ============================================================================
 -- ============================================================================
@@ -1823,7 +1989,7 @@ end
 -- Lua 5.1 safe.
 -- ============================================================================
 
-FLOGIC_DRIVER_VERSION = "2026090702"
+FLOGIC_DRIVER_VERSION = "2026090703"
 FLOGIC_DEFAULT_HUB = "https://hub-cloudapps-prod.azurewebsites.net"
 FLOGIC_BINDING_FIRST = 6100
 FLOGIC_BINDING_LAST = 6199
@@ -1856,30 +2022,27 @@ FLOGIC_EV_CONN_LOST = "Connection Lost"
 FLOGIC_EV_CONN_RESTORED = "Connection Restored"
 
 -- Driver state. One session at a time; commands queue behind a running poll.
-flogic_state = flogic_state
-  or {
-    binding = nil,
+local function flogic_fresh_state()
+  return {
     initialized = false,
-    retired_bindings = {},
-    hub_host = nil,
-    hub_port = nil,
-    poll_timer = nil,
-    tick_timer = nil,
     busy = false,
     command_queue = {},
-    last_snapshot = nil,
-    last_connection_ok = nil,
-    last_mode = nil,
-    last_flowing = nil,
-    last_water_off = nil,
-    last_warning = nil,
-    last_critical = nil,
-    last_advance = nil,
     relog_token = "",
-    sha1_digest = nil,
-    tcp_callbacks = nil,
-    last_picker_labels = nil,
+    retired_bindings = flogic_state and flogic_state.retired_bindings or {},
   }
+end
+
+flogic_state = flogic_fresh_state()
+
+--- Timer closures belong to this load, even if Director delivers a cancelled tick.
+local function flogic_set_timer(ms, callback, repeating)
+  local owner = flogic_state
+  return C4:SetTimer(ms, function(timer)
+    if flogic_state == owner and owner.initialized then
+      callback(timer)
+    end
+  end, repeating)
+end
 
 local function flogic_log(message)
   if Properties ~= nil and Properties[FLOGIC_PROP_DEBUG] == "On" then
@@ -2015,6 +2178,84 @@ local function flogic_http_post(url, body, headers, cb)
   end
 end
 
+local function flogic_http_get(url, headers, cb)
+  local transfer = C4:url()
+  transfer:SetOptions({
+    timeout = 30,
+    connect_timeout = 10,
+    ssl_verify_peer = true,
+    ssl_verify_host = true,
+    fail_on_error = false,
+  })
+  transfer:OnDone(function(_, responses, code)
+    local response = responses and responses[#responses]
+    cb(code ~= 0 and "transport-error" or nil, response and response.body or "", response and response.code)
+  end)
+  transfer:Get(url, headers)
+  return function()
+    transfer:Cancel()
+  end
+end
+
+local function flogic_check_update()
+  local st = flogic_state
+  if not st.initialized or st.updater then
+    return
+  end
+  flogic_set_prop("Update Status", "Checking GitHub")
+  flogic_set_prop("Update Download URL", "")
+  flogic_set_prop("Latest Driver Version", "")
+  local check
+  check = FloUpdate.new_check({
+    http_get = flogic_http_get,
+    set_timeout = function(ms, callback)
+      local timer = flogic_set_timer(ms, callback, false)
+      return function()
+        timer:Cancel()
+      end
+    end,
+    on_result = function(err, release)
+      if flogic_state ~= st or not st.initialized or st.updater ~= check then
+        return
+      end
+      st.updater = nil
+      if err then
+        flogic_set_prop("Update Status", err)
+      elseif not release then
+        flogic_set_prop("Update Status", "No published C4 package found in recent releases")
+      else
+        flogic_set_prop("Latest Driver Version", release.version)
+        flogic_set_prop("Update Download URL", release.url)
+        local status = "Up to date"
+        if release.version > FLOGIC_DRIVER_VERSION then
+          status = "Update available: " .. release.version .. "; download and install with Composer"
+        elseif release.version < FLOGIC_DRIVER_VERSION then
+          status = "Running build is newer than the published release"
+        end
+        flogic_set_prop("Update Status", status)
+      end
+    end,
+  })
+  st.updater = check
+  check.start()
+end
+
+local function flogic_schedule_update_checks()
+  local st = flogic_state
+  if st.update_timer then
+    st.update_timer:Cancel()
+    st.update_timer = nil
+  end
+  local hours = tonumber(flogic_prop("Update Check Interval")) or 24
+  if hours ~= hours or hours <= 0 then
+    return
+  end
+  hours = math.min(hours, 168)
+  st.update_timer = flogic_set_timer(hours * 3600000, function()
+    flogic_check_update()
+  end, true)
+end
+
 -- --- Crypto / randomness (platform-backed, probed once) --------------------
 
 local function flogic_probe_sha1()
@@ -2073,7 +2314,7 @@ local function flogic_new_session()
     http_post = flogic_http_post,
     tcp_open = flogic_tcp_open,
     set_timeout = function(ms, fn)
-      local timer = C4:SetTimer(ms, function(t)
+      local timer = flogic_set_timer(ms, function(t)
         t:Cancel()
         fn()
       end, false)
@@ -2281,7 +2522,7 @@ local function flogic_sync_tick_timer()
   local snap = st.last_snapshot
   local flowing = snap ~= nil and FloModel.is_water_flowing(snap.valve)
   if flowing and st.tick_timer == nil then
-    st.tick_timer = C4:SetTimer(FLOGIC_LOCAL_TICK_MS, function()
+    st.tick_timer = flogic_set_timer(FLOGIC_LOCAL_TICK_MS, function()
       local current = flogic_state.last_snapshot
       if current == nil or not FloModel.is_water_flowing(current.valve) then
         if flogic_state.tick_timer ~= nil then
@@ -2380,7 +2621,7 @@ function flogic_poll_soon(delay_ms)
   if st.soon_timer then
     st.soon_timer:Cancel()
   end
-  st.soon_timer = C4:SetTimer(delay_ms or 1000, function(t)
+  st.soon_timer = flogic_set_timer(delay_ms or 1000, function(t)
     t:Cancel()
     st.soon_timer = nil
     flogic_poll_now()
@@ -2438,7 +2679,7 @@ local function flogic_restart_poll_timer()
     st.poll_timer:Cancel()
     st.poll_timer = nil
   end
-  st.poll_timer = C4:SetTimer(flogic_poll_interval_ms(), function()
+  st.poll_timer = flogic_set_timer(flogic_poll_interval_ms(), function()
     flogic_poll_now()
   end, true)
 end
@@ -2477,7 +2718,10 @@ function ExecuteCommand(strCommand, tParams)
     strCommand = tParams and tParams.ACTION
   end
   flogic_log("command: " .. tostring(strCommand))
-  if strCommand == "Refresh" then
+  if strCommand == "Check for Update" then
+    flogic_check_update()
+    return
+  elseif strCommand == "Refresh" then
     flogic_poll_now()
     return
   elseif strCommand == "Refresh Valve List" then
@@ -2523,7 +2767,7 @@ end
 -- --- Lifecycle --------------------------------------------------------------
 
 function OnDriverInit()
-  -- Only persist reads are safe here; everything else waits for LateInit.
+  -- Restore persisted identity; networking and timers start in LateInit.
   local saved = C4:PersistGetValue("flologic_relog")
   if type(saved) == "string" then
     flogic_state.relog_token = saved
@@ -2531,7 +2775,12 @@ function OnDriverInit()
 end
 
 function OnDriverLateInit()
-  flogic_state.initialized = false
+  flogic_retire_runtime()
+  flogic_state = flogic_fresh_state()
+  OnDriverInit()
+  flogic_set_prop("Driver Version", FLOGIC_DRIVER_VERSION)
+  flogic_set_prop(FLOGIC_PROP_CONNECTION, "Initializing")
+  flogic_log("driver loaded: " .. FLOGIC_DRIVER_VERSION)
   for _, key in ipairs({ "device_code", "device_token" }) do
     local saved = C4:PersistGetValue("flologic_" .. key)
     if type(saved) ~= "string" or saved == "" then
@@ -2547,10 +2796,14 @@ function OnDriverLateInit()
     return
   end
   flogic_state.initialized = true
-  flogic_set_prop("Driver Version", FLOGIC_DRIVER_VERSION)
   OnPropertyChanged(FLOGIC_PROP_DEBUG)
   flogic_restart_poll_timer()
   flogic_poll_soon(2000)
+  flogic_schedule_update_checks()
+  flogic_state.update_start_timer = flogic_set_timer(10000, function()
+    flogic_state.update_start_timer = nil
+    flogic_check_update()
+  end, false)
 end
 
 local function flogic_cancel_work()
@@ -2572,17 +2825,11 @@ local function flogic_cancel_work()
 end
 
 function OnDriverDestroyed()
-  local st = flogic_state
-  st.initialized = false
-  flogic_cancel_work()
-  if st.poll_timer then
-    st.poll_timer:Cancel()
-    st.poll_timer = nil
-  end
-  if st.debug_timer then
-    st.debug_timer:Cancel()
-    st.debug_timer = nil
-  end
+  flogic_retire_runtime()
+end
+
+function OnDriverUpdated()
+  OnDriverLateInit()
 end
 
 function OnDriverRemovedFromProject()
@@ -2599,11 +2846,13 @@ function OnPropertyChanged(strProperty)
       flogic_state.debug_timer:Cancel()
     end
     if flogic_prop(FLOGIC_PROP_DEBUG) == "On" then
-      flogic_state.debug_timer = C4:SetTimer(10800000, function()
+      flogic_state.debug_timer = flogic_set_timer(10800000, function()
         flogic_set_prop(FLOGIC_PROP_DEBUG, "Off")
         flogic_state.debug_timer = nil
       end, false)
     end
+  elseif strProperty == "Update Check Interval" then
+    flogic_schedule_update_checks()
   elseif strProperty == FLOGIC_PROP_POLL then
     flogic_restart_poll_timer()
   elseif

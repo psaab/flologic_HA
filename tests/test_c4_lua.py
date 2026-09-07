@@ -18,11 +18,13 @@ from lupa.lua51 import LuaRuntime
 C4_DIR = Path(__file__).resolve().parent.parent / "c4"
 
 LOAD_ORDER = [
+    "src/bootstrap.lua",
     "src/json.lua",
     "src/model.lua",
     "src/signalr.lua",
     "src/websocket.lua",
     "src/flologic.lua",
+    "src/update.lua",
     "src/main.lua",
     "tests/helpers.lua",
     "tests/run.lua",
@@ -43,6 +45,10 @@ def test_lua_suite_passes() -> None:
     )
     printed: list[str] = []
     runtime.globals().print = lambda *args: printed.append(" ".join(map(str, args)))
+    runtime.globals().flogic_test_source = _read("driver.lua")
+    runtime.execute(
+        "function flogic_test_reload() assert(loadstring(flogic_test_source))() end"
+    )
     chunk = "\n".join(_read(name) for name in LOAD_ORDER)
     runtime.execute(chunk + "\nTestHelp.run_all()")  # raises on any Lua error
     assert any(line.startswith("passed=") for line in printed), printed
@@ -54,7 +60,10 @@ def test_bundled_driver_matches_sources() -> None:
     """driver.lua must be a fresh bundle.sh concatenation of src/*.lua."""
     bundled = (C4_DIR / "driver.lua").read_text(encoding="utf-8")
     assert "THIS FILE IS GENERATED" in bundled.splitlines()[1]
-    for name in LOAD_ORDER[:6]:
+    assert bundled.index("-- bundled: src/bootstrap.lua") < bundled.index(
+        "-- bundled: src/json.lua"
+    )
+    for name in LOAD_ORDER[:8]:
         source = _read(name).strip()
         assert source in bundled, f"{name} not reflected in driver.lua"
 

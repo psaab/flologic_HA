@@ -6,7 +6,7 @@
 -- no bitwise operators, no string.pack, no table.pack).
 -- ============================================================================
 
-JSON = JSON or {}
+JSON = {}
 
 -- Sentinel for explicit JSON null in encoded output (Lua nil cannot occupy
 -- an array slot). Decoded nulls still arrive as nil (absent key).

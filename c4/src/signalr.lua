@@ -6,7 +6,7 @@
 -- Lua 5.1 safe: the record separator uses a decimal escape (\030 = \x1e).
 -- ============================================================================
 
-SignalR = SignalR or {}
+SignalR = {}
 
 SignalR.RECORD_SEPARATOR = "\030"
 

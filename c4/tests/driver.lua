@@ -101,6 +101,9 @@ local function director()
     function transfer:Cancel()
       self.cancelled = true
     end
+    function transfer:Get(url, headers)
+      self.url, self.headers = url, headers
+    end
     function transfer:Post(url, body, headers)
       self.url, self.headers = url, headers
       if env.server then
@@ -278,5 +281,76 @@ D.test("director: changing accounts discards old target and relog credentials", 
   D.check_equal(env.saved.flologic_relog, "", "persisted token cleared")
   D.check_equal(Properties["Valve ID Override"], "", "override cleared")
   D.check_equal(Properties["Select Valve"], "Select a valve", "new account requires explicit selection")
+  OnDriverDestroyed()
+end)
+
+D.test("director: repeated update callbacks retire work and preserve configuration", function()
+  local env = director()
+  local code = flogic_state.device_code
+  local old_state = flogic_state
+  local old_tick = env.timers._pending[1].fn
+  flogic_poll_now()
+  local request = env.transfers[1]
+  OnDriverUpdated()
+  D.check(request.cancelled, "update cancels old transfer")
+  D.check(flogic_state ~= old_state and not old_state.initialized, "fresh runtime")
+  D.check_equal(flogic_state.device_code, code, "persistent identity kept")
+  D.check_equal(Properties["Select Valve"], "Kitchen (11)", "selection kept")
+  old_tick()
+  request.done(request, { { code = 200, body = '{"connectionToken":"old"}' } }, 0)
+  D.check_equal(#env.transfers, 1, "retired callbacks cannot restart networking")
+  OnDriverUpdated()
+  OnDriverLateInit()
+  D.check_equal(env.timers.pending_count(), 4, "one set of poll/update timers")
+  OnDriverDestroyed()
+  D.check_equal(env.timers.pending_count(), 0, "all timers retired")
+end)
+
+D.test("director: reload replaces modules and fences old binding callbacks", function()
+  local env = director()
+  local old_modules = { JSON, FloModel, SignalR, WS, FloLogic, FloUpdate }
+  local old_callback = OnPropertyChanged
+  local old_state = flogic_state
+  C4.NetDisconnect = function() end -- Director acknowledges OFFLINE later.
+  flogic_poll_now()
+  env.transfers[1].done(nil, { { code = 200, body = '{"connectionToken":"first"}' } }, 0)
+  local old_binding = env.binding
+  flogic_test_reload()
+  original_factory = FloLogic.new_session
+  local new_modules = { JSON, FloModel, SignalR, WS, FloLogic, FloUpdate }
+  for i, module in ipairs(old_modules) do
+    D.check(module ~= new_modules[i], "module reference replaced")
+  end
+  D.check(OnPropertyChanged ~= old_callback, "Director entry point replaced")
+  D.check(flogic_state ~= old_state and old_state.session == nil, "old session retired")
+  D.check_equal(env.timers.pending_count(), 0, "load cleans before lifecycle callbacks")
+  OnDriverUpdated()
+  flogic_poll_now()
+  env.transfers[2].done(nil, { { code = 200, body = '{"connectionToken":"second"}' } }, 0)
+  D.check(env.binding ~= old_binding, "closing binding cannot be reused")
+  OnConnectionStatusChanged(old_binding, 443, "OFFLINE")
+  D.check(flogic_state.busy, "old disconnect cannot close new connection")
+  D.check_equal(env.addresses[old_binding], "", "old binding released on acknowledgement")
+  OnDriverDestroyed()
+end)
+
+D.test("director: GitHub checks survive busy valve polling and cancel on reload", function()
+  local env = director()
+  flogic_poll_now()
+  ExecuteCommand("LUA_ACTION", { ACTION = "Check for Update" })
+  local request = env.transfers[2]
+  D.check_equal(request.url, FloUpdate.API_URL, "GitHub repository endpoint")
+  D.check(flogic_state.busy, "release check does not release valve session")
+  request.done(request, { { code = 200, body = "[]" } }, 0)
+  D.check(Properties["Update Status"]:find("No published C4", 1, true) ~= nil, "no release is explicit")
+  ExecuteCommand("Check for Update")
+  local obsolete = env.transfers[3]
+  flogic_test_reload()
+  original_factory = FloLogic.new_session
+  D.check(obsolete.cancelled, "reload cancels GitHub transfer")
+  local before = Properties["Update Status"]
+  obsolete.done(obsolete, {}, 28)
+  D.check_equal(Properties["Update Status"], before, "retired updater cannot write properties")
+  OnDriverUpdated()
   OnDriverDestroyed()
 end)

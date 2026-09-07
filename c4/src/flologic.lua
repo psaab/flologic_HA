@@ -8,7 +8,7 @@
 -- FloLogic table only. Lua 5.1 safe.
 -- ============================================================================
 
-FloLogic = FloLogic or {}
+FloLogic = {}
 
 FloLogic.OS_PLATFORM = "Android"
 FloLogic.APP_VERSION = "control4"

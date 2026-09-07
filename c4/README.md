@@ -1,7 +1,7 @@
 # FloLogic Control4 Driver
 
 Control4 DriverWorks driver for FloLogic Connect valves, based on the
-[Home Assistant integration](../README.md). Version **2026090702**, targeting
+[Home Assistant integration](../README.md). Version **2026090703**, targeting
 Control4 OS **3.3.0 or newer**. One instance monitors one explicitly selected
 valve. This is a poll-based programming driver; it has no Navigator interface
 or sensor/relay proxy bindings.
@@ -18,6 +18,49 @@ A missing selection stays unavailable. The driver never selects another valve
 because the original disappears or the inventory order changes. Editing the
 account, endpoint, or selection cancels outstanding work and queued commands.
 A command already transmitted to the cloud cannot be recalled.
+
+## Updates and reloads
+
+In Composer Pro, use **Driver → Add or Update Driver…** with the new
+`flologic_valve.c4z`, keeping the existing project instances. Confirm
+**Driver Version** on each instance. The package filename, self-proxy name,
+and existing command/event identities remain stable so programming references
+can remain attached to those instances.
+
+The bundle retires the previous runtime before redefining any modules. It
+cancels old HTTP transfers, sessions, timers, and update checks, then replaces
+module tables and runtime state. `OnDriverUpdated` restarts the driver; repeated
+late-init/update callbacks leave one timer set. Persistent device identity,
+credentials, and valve selection survive. Retired network bindings remain
+reserved until Director acknowledges their disconnection.
+
+**Actions → Check for Update** reads releases from
+[psaab/flologic_HA](https://github.com/psaab/flologic_HA/releases). It checks once
+10 seconds after startup and every **Update Check Interval** hours (default
+24; 0 disables periodic checks). **Update Status**, **Latest Driver Version**,
+and **Update Download URL** identify a published C4 package. Checks are
+report-only; install the downloaded package using Composer.
+
+The automatic installer in the Proflame reference relies on an undocumented
+bypass of restricted driver-storage access. This driver does not include that
+bypass or claim that discovering a release installs it. Its supported workflow
+is GitHub discovery followed by Composer installation.
+
+C4 releases use `c4-vYYYYMMDDNN` tags and must contain exactly named
+`flologic_valve.c4z` assets. Drafts, prereleases, and Home Assistant releases are
+ignored. A build newer than GitHub is reported explicitly. A repository with
+no eligible C4 asset is reported as such, rather than as up to date.
+
+To publish after committing and pushing a tested build, create and push a tag
+matching the XML/Lua version (for this build, `c4-v2026090703`). The
+`release-c4.yml` workflow verifies the tag, tests/rebuilds the driver, and uploads
+its asset. C4 releases are not marked as GitHub's latest release, preserving
+that designation for Home Assistant. No tag or release is published merely by
+running the local packaging script.
+
+Version 2026090703 adds static update properties/actions. Composer must re-read
+`driver.xml` to register them; a Lua-only reload is insufficient. Refresh the
+Composer project/driver metadata if those fields are missing after installation.
 
 ## Operation
 
@@ -91,21 +134,23 @@ protection remains independent of this driver.
 ## Development
 
 Edit `src/*.lua`; `driver.lua` and `flologic_valve.c4z` are generated artifacts.
-The protocol/model modules are transport-independent. `src/main.lua` owns
+The bootstrap runs before module replacement; the protocol/model and release
+selection modules are transport-independent. `src/main.lua` owns
 Director callbacks, properties, transports, and lifecycle. Tests use injected
 transports plus a Director shim; production never loads test helpers.
 
 ```sh
 stylua --config-path c4/stylua.toml c4/src c4/tests
-lua5.1 c4/tests/loader_standalone.lua
 sh c4/scripts/package.sh
+lua5.1 c4/tests/loader_standalone.lua
 python -m pytest tests/test_c4_lua.py
 ```
 
 The Python runner explicitly selects Lua 5.1 through `lupa.lua51`. Tests cover
 protocol vectors, full sessions, discovery, negative command results,
 handshake/session timeouts, cancellation, stale callbacks, queue limits,
-Composer actions, and exact package contents/version consistency.
+Composer actions, repeated loads in the same Lua runtime, GitHub release
+selection/cancellation, and exact package contents/version consistency.
 
 [Control4 conventions and review notes](CONVENTIONS.md) records the
 FiniteLabs references, adopted patterns, and larger architectural improvements.

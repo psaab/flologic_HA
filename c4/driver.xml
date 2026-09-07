@@ -8,7 +8,7 @@
   <manufacturer>FloLogic</manufacturer>
   <driver>DriverWorks</driver>
   <control>lua_gen</control>
-  <version>2026090702</version>
+  <version>2026090703</version>
   <minimum_os_version>3.3.0</minimum_os_version>
   <created>09/06/2026 12:00 PM</created>
   <modified>09/07/2026 12:00 PM</modified>
@@ -20,9 +20,36 @@
   <config>
     <properties>
       <property>
+        <name>Update Status</name>
+        <type>STRING</type>
+        <default>Not checked</default>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>Latest Driver Version</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>Update Download URL</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>Update Check Interval</name>
+        <type>RANGED_INTEGER</type>
+        <minimum>0</minimum>
+        <maximum>168</maximum>
+        <default>24</default>
+        <readonly>false</readonly>
+        <description>Hours between report-only GitHub checks; 0 disables periodic checks.</description>
+      </property>
+      <property>
         <name>Driver Version</name>
         <type>STRING</type>
-        <default>2026090702</default>
+        <default>2026090703</default>
         <readonly>true</readonly>
       </property>
       <property>
@@ -250,6 +277,10 @@
     </properties>
     <commands>
       <command>
+        <name>Check for Update</name>
+        <description>Check published C4 releases and show the Composer download URL.</description>
+      </command>
+      <command>
         <name>Refresh</name>
         <description>Poll the FloLogic cloud now.</description>
       </command>
@@ -383,6 +414,10 @@
       </command>
     </commands>
     <actions>
+      <action>
+        <name>Check for Update</name>
+        <command>Check for Update</command>
+      </action>
       <action>
         <name>Refresh</name>
         <command>Refresh</command>

@@ -10,7 +10,7 @@
 -- connection); this module only builds/parses bytes.
 -- ============================================================================
 
-WS = WS or {}
+WS = {}
 
 WS.GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 WS.OP_CONT = 0

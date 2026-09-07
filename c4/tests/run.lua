@@ -729,3 +729,51 @@ T.test("session: websocket upgrade carries the same identity as negotiation", fu
     T.check_equal(headers[name], value, "websocket " .. name)
   end
 end)
+
+T.test("updates: select only stable C4 releases with the expected package", function()
+  local function release(version)
+    local tag = "c4-v" .. version
+    return {
+      tag_name = tag,
+      assets = {
+        {
+          name = "flologic_valve.c4z",
+          browser_download_url = "https://github.com/psaab/flologic_HA/releases/download/"
+            .. tag
+            .. "/flologic_valve.c4z",
+        },
+      },
+    }
+  end
+  local older, newer = release("2026090701"), release("2026090703")
+  local draft, prerelease, wrong_asset = release("2026090799"), release("2026090798"), release("2026090797")
+  draft.draft, prerelease.prerelease = true, true
+  wrong_asset.assets[1].browser_download_url = "https://example.invalid/driver.c4z"
+  local best =
+    FloUpdate.select_release({ newer, { tag_name = "v0.2.2", assets = {} }, draft, older, prerelease, wrong_asset })
+  T.check_equal(best.version, "2026090703", "choose newest eligible C4 release")
+  T.check(FloUpdate.select_release({ { tag_name = "v0.2.2", assets = {} } }) == nil, "HA release ignored")
+end)
+
+T.test("updates: watchdog cancels HTTP and suppresses late results", function()
+  local timers = TestHelp.new_fake_timers()
+  local callback, cancelled, result, count
+  count = 0
+  local check = FloUpdate.new_check({
+    set_timeout = timers.set_timeout,
+    http_get = function(_, _, cb)
+      callback = cb
+      return function()
+        cancelled = true
+      end
+    end,
+    on_result = function(err)
+      result, count = err, count + 1
+    end,
+  })
+  check.start()
+  timers.advance(35000)
+  T.check(cancelled and result ~= nil, "timeout cancels and reports")
+  callback(nil, "[]", 200)
+  T.check_equal(count, 1, "late result ignored")
+end)
