@@ -42,6 +42,13 @@ function flogic_retire_runtime()
     end)
   end
   previous.binding = nil
+  if previous.soap_binding and previous.soap_port then
+    previous.retired_bindings[previous.soap_binding] = previous.soap_port
+    pcall(function()
+      C4:NetDisconnect(previous.soap_binding, previous.soap_port)
+    end)
+  end
+  previous.soap_binding, previous.soap_port, previous.soap_callbacks = nil, nil, nil
 end
 
 flogic_retire_runtime()

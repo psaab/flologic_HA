@@ -110,3 +110,22 @@ def test_status_relay_bindings_and_github_refresh_action() -> None:
         for action in manifest.findall("config/actions/action")
     }
     assert actions["Refresh GitHub Updates"] == "Check for Update"
+
+
+def test_updater_commands_and_actions() -> None:
+    """Composer needs the install/force commands and buttons, not only Lua."""
+    manifest = ElementTree.parse(C4_DIR / "driver.xml").getroot()
+    commands = {
+        entry.findtext("name") for entry in manifest.findall("config/commands/command")
+    }
+    assert "Install Latest Release" in commands
+    assert "Force Reinstall Latest Release" in commands
+    actions = {
+        action.findtext("name"): action.findtext("command")
+        for action in manifest.findall("config/actions/action")
+    }
+    assert actions["Install Latest Release"] == "Install Latest Release"
+    assert (
+        actions["Force Reinstall Latest Release (Recovery)"]
+        == "Force Reinstall Latest Release"
+    )

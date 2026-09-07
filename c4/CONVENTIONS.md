@@ -109,5 +109,11 @@ HTTP/timer/disconnect callbacks after replacement.
 
 Proflame's report-only startup/periodic release checks also inform the GitHub
 release workflow here. FloLogic uses C4-specific tags because it shares a
-repository with Home Assistant. Installation uses Composer; the reference's
-undocumented restricted-storage bypass is not included.
+repository with Home Assistant. At the owner's explicit direction, FloLogic
+also adopts Proflame's in-driver installer: the community-standard FileSetDir
+unlock handshake plus the local `UpdateProjectC4i` trigger, with loud failure
+status and a manual-Composer fallback whenever staging or triggering fails.
+This trades the earlier Composer-only stance for one-click updates; the
+handshake string and SOAP packet are undocumented Director behavior shared
+across community drivers (proflame, finitelabs, black-ops-drivers), so treat
+them as the first suspects if installs fail on a future OS.

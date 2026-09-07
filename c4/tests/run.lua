@@ -777,3 +777,246 @@ T.test("updates: watchdog cancels HTTP and suppresses late results", function()
   callback(nil, "[]", 200)
   T.check_equal(count, 1, "late result ignored")
 end)
+
+T.test("updates: version compare and install packet bytes", function()
+  T.check_equal(FloUpdate.compare_versions("2026090705", "2026090705"), 0, "equal")
+  T.check_equal(FloUpdate.compare_versions("2026090704", "2026090705"), -1, "older")
+  T.check_equal(FloUpdate.compare_versions("2026090706", "2026090705"), 1, "newer")
+  T.check_equal(FloUpdate.compare_versions("999", "1000"), -1, "width-insensitive")
+  T.check_equal(
+    FloUpdate.build_install_packet("flologic_valve.c4z"),
+    '<c4soap async="0" category="composer" name="UpdateProjectC4i"'
+      .. ' operation="RWX" session="0"><param name="name" type="string">flologic_valve.c4z</param></c4soap>\000',
+    "exact soap packet"
+  )
+  T.check(
+    FloUpdate.build_install_packet('a&<b>"c"'):find("a&amp;&lt;b&gt;&quot;c&quot;", 1, true) ~= nil,
+    "filename escaped"
+  )
+end)
+
+local function install_fixtures(version)
+  local tag = "c4-v" .. version
+  local releases = {
+    {
+      tag_name = tag,
+      draft = false,
+      prerelease = false,
+      assets = {
+        {
+          name = "flologic_valve.c4z",
+          browser_download_url = "https://github.com/psaab/flologic_HA/releases/download/"
+            .. tag
+            .. "/flologic_valve.c4z",
+        },
+      },
+    },
+  }
+  local files = { ["flologic_valve.c4z"] = "OLD-DRIVER-BYTES" }
+  local store = {
+    files = files,
+    set_dir_calls = {},
+    soap_packets = {},
+    denied = false,
+    soap_err = nil,
+    corrupt_write = false,
+  }
+  local fakes = {
+    get_installed = function()
+      return true
+    end,
+    file_set_dir = function(alias)
+      store.set_dir_calls[#store.set_dir_calls + 1] = alias
+      return not store.denied
+    end,
+    file_exists = function(name)
+      return files[name] ~= nil
+    end,
+    file_delete = function(name)
+      files[name] = nil
+    end,
+    file_write = function(name, data)
+      files[name] = store.corrupt_write and data:sub(1, #data - 1) or data
+    end,
+    file_size = function(name)
+      return files[name] and #files[name] or nil
+    end,
+    soap_send = function(packet, cb)
+      store.soap_packets[#store.soap_packets + 1] = packet
+      cb(store.soap_err)
+      return function() end
+    end,
+  }
+  return releases, store, fakes
+end
+
+local function install_http(releases_body, asset_body, seen)
+  return function(url, _, cb)
+    seen[#seen + 1] = url
+    if url:find("api.github.com", 1, true) then
+      cb(nil, releases_body, 200, nil)
+    else
+      cb(nil, asset_body, 200, nil)
+    end
+    return function() end
+  end
+end
+
+T.test("updates: install downloads, stages, and triggers on newer release", function()
+  local timers = TestHelp.new_fake_timers()
+  local releases, store, fakes = install_fixtures("2026090801")
+  local seen, progress, err, outcome = {}, {}, nil, nil
+  fakes.http_get = install_http(JSON.encode(releases), "NEW-DRIVER-BYTES", seen)
+  fakes.set_timeout = timers.set_timeout
+  fakes.force, fakes.current_version = false, "2026090705"
+  fakes.on_progress = function(text)
+    progress[#progress + 1] = text
+  end
+  fakes.on_result = function(e, o)
+    err, outcome = e, o
+  end
+  local op = FloUpdate.new_install(fakes)
+  op.start()
+  T.check(err == nil, "no error, got " .. tostring(err))
+  T.check_equal(outcome.installed, "2026090801", "installed version")
+  T.check_equal(store.files["flologic_valve.c4z"], "NEW-DRIVER-BYTES", "staged bytes")
+  T.check_equal(store.set_dir_calls[1], "C4Z_ROOT", "staged to the install root")
+  T.check_equal(#store.soap_packets, 1, "one install trigger")
+  T.check_equal(store.soap_packets[1], FloUpdate.build_install_packet("flologic_valve.c4z"), "trigger packet")
+  T.check_equal(#seen, 2, "releases + asset fetch")
+  T.check(progress[1]:find("Downloading", 1, true) ~= nil, "download progress")
+end)
+
+T.test("updates: install skips when current, force reinstalls anyway", function()
+  local timers = TestHelp.new_fake_timers()
+  local releases, store, fakes = install_fixtures("2026090705")
+  local seen = {}
+  fakes.http_get = install_http(JSON.encode(releases), "NEW-DRIVER-BYTES", seen)
+  fakes.set_timeout = timers.set_timeout
+  fakes.force, fakes.current_version = false, "2026090705"
+  local err, outcome = nil, nil
+  fakes.on_result = function(e, o)
+    err, outcome = e, o
+  end
+  FloUpdate.new_install(fakes).start()
+  T.check(err == nil, "skip is not an error")
+  T.check(outcome.installed == nil and outcome.skipped == "up-to-date", "nothing applied")
+  T.check_equal(#seen, 1, "no download when current")
+  T.check_equal(store.files["flologic_valve.c4z"], "OLD-DRIVER-BYTES", "old build intact")
+  fakes.force = true
+  local ferr, foutcome = nil, nil
+  fakes.on_result = function(e, o)
+    ferr, foutcome = e, o
+  end
+  FloUpdate.new_install(fakes).start()
+  T.check(ferr == nil, "force has no error")
+  T.check_equal(foutcome.installed, "2026090705", "force reinstalls same build")
+  T.check_equal(store.files["flologic_valve.c4z"], "NEW-DRIVER-BYTES", "bytes replaced")
+end)
+
+T.test("updates: install failures leave the old driver intact", function()
+  local timers = TestHelp.new_fake_timers()
+  local function run(mutator, current)
+    local releases, store, fakes = install_fixtures("2026090801")
+    local seen = {}
+    fakes.http_get = install_http(JSON.encode(releases), "NEW-DRIVER-BYTES", seen)
+    fakes.set_timeout = timers.set_timeout
+    fakes.force, fakes.current_version = false, current or "2026090705"
+    local err, outcome = "unset", "unset"
+    fakes.on_result = function(e, o)
+      err, outcome = e, o
+    end
+    if mutator then
+      mutator(fakes, store)
+    end
+    FloUpdate.new_install(fakes).start()
+    return err, outcome, store
+  end
+  local err = run(function(fakes, store)
+    store.denied = true
+  end)
+  T.check(err:find("denied", 1, true) ~= nil, "denied store reported, got " .. tostring(err))
+  local _, _, denied_store = run(function(_, store)
+    store.denied = true
+  end)
+  T.check_equal(denied_store.files["flologic_valve.c4z"], "OLD-DRIVER-BYTES", "denial keeps old file")
+  T.check_equal(#denied_store.soap_packets, 0, "denial triggers nothing")
+  local size_err = run(function(_, store)
+    store.corrupt_write = true
+  end)
+  T.check(size_err:find("size mismatch", 1, true) ~= nil, "short write reported")
+  local _, _, missing = run(function(fakes)
+    fakes.get_installed = function()
+      return false
+    end
+  end)
+  T.check_equal(#missing.soap_packets, 0, "absent driver never installs")
+  local _, skipped = run(function(fakes)
+    fakes.get_installed = function()
+      return false
+    end
+  end)
+  T.check(skipped.skipped == "not-installed", "absent driver reports skip")
+end)
+
+T.test("updates: install follows asset redirects with headers", function()
+  local timers = TestHelp.new_fake_timers()
+  local releases, _, fakes = install_fixtures("2026090801")
+  local hops = {}
+  fakes.http_get = function(url, _, cb)
+    hops[#hops + 1] = url
+    if url:find("api.github.com", 1, true) then
+      cb(nil, JSON.encode(releases), 200, nil)
+    elseif #hops == 2 then
+      cb(nil, "", 302, { Location = "https://objects.example.invalid/asset" })
+    else
+      cb(nil, "NEW-DRIVER-BYTES", 200, nil)
+    end
+    return function() end
+  end
+  fakes.set_timeout = timers.set_timeout
+  fakes.force, fakes.current_version = false, "2026090705"
+  local err, outcome = nil, nil
+  fakes.on_result = function(e, o)
+    err, outcome = e, o
+  end
+  FloUpdate.new_install(fakes).start()
+  T.check(err == nil, "redirect followed, got " .. tostring(err))
+  T.check_equal(outcome.installed, "2026090801", "installed after redirect")
+  T.check_equal(hops[3], "https://objects.example.invalid/asset", "followed Location")
+end)
+
+T.test("updates: install rejects bare redirects and cancel wins races", function()
+  local timers = TestHelp.new_fake_timers()
+  local releases, _, fakes = install_fixtures("2026090801")
+  fakes.http_get = function(url, _, cb)
+    if url:find("api.github.com", 1, true) then
+      cb(nil, JSON.encode(releases), 200, nil)
+    else
+      cb(nil, "", 302, nil)
+    end
+    return function() end
+  end
+  fakes.set_timeout = timers.set_timeout
+  fakes.force, fakes.current_version = false, "2026090705"
+  local err = nil
+  fakes.on_result = function(e)
+    err = e
+  end
+  FloUpdate.new_install(fakes).start()
+  T.check(err == "Asset redirect not followed by transport", "bare redirect is explicit, got " .. tostring(err))
+  local answer, count = nil, 0
+  fakes.http_get = function(_, _, cb)
+    answer = cb
+    return function() end
+  end
+  fakes.on_result = function()
+    count = count + 1
+  end
+  local op = FloUpdate.new_install(fakes)
+  op.start()
+  op.cancel()
+  answer(nil, "[]", 200, nil)
+  timers.advance(200000)
+  T.check_equal(count, 0, "cancelled install stays silent")
+end)

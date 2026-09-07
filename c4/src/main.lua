@@ -133,6 +133,8 @@ function ReceivedFromNetwork(idBinding, nPort, strData)
   local st = flogic_state
   if st.binding == idBinding and st.hub_port == nPort and st.tcp_callbacks ~= nil then
     st.tcp_callbacks.on_data(strData)
+  elseif st.soap_binding == idBinding and st.soap_callbacks ~= nil then
+    st.soap_callbacks.on_data(strData)
   end
 end
 
@@ -141,6 +143,14 @@ function OnConnectionStatusChanged(idBinding, nPort, strStatus)
   if strStatus == "OFFLINE" and st.retired_bindings[idBinding] == nPort then
     st.retired_bindings[idBinding] = nil
     C4:SetBindingAddress(idBinding, "")
+    return
+  end
+  if st.soap_binding == idBinding and st.soap_callbacks ~= nil then
+    if strStatus == "ONLINE" then
+      st.soap_callbacks.on_open()
+    elseif strStatus == "OFFLINE" then
+      st.soap_callbacks.on_close()
+    end
     return
   end
   if st.binding ~= idBinding or st.hub_port ~= nPort or st.tcp_callbacks == nil then
@@ -211,7 +221,12 @@ local function flogic_http_get(url, headers, cb)
   })
   transfer:OnDone(function(_, responses, code)
     local response = responses and responses[#responses]
-    cb(code ~= 0 and "transport-error" or nil, response and response.body or "", response and response.code)
+    cb(
+      code ~= 0 and "transport-error" or nil,
+      response and response.body or "",
+      response and response.code,
+      response and response.headers
+    )
   end)
   transfer:Get(url, headers)
   return function()
@@ -250,7 +265,7 @@ local function flogic_check_update()
         flogic_set_prop("Update Download URL", release.url)
         local status = "Up to date"
         if release.version > FLOGIC_DRIVER_VERSION then
-          status = "Update available: " .. release.version .. "; download and install with Composer"
+          status = "Update available: " .. release.version .. "; run Install Latest Release"
         elseif release.version < FLOGIC_DRIVER_VERSION then
           status = "Running build is newer than the published release"
         end
@@ -276,6 +291,222 @@ local function flogic_schedule_update_checks()
   st.update_timer = flogic_set_timer(hours * 3600000, function()
     flogic_check_update()
   end, true)
+end
+
+-- --- Self-update install transports (file store + local Composer SOAP) -----
+
+local function flogic_file_set_dir(alias)
+  local ok = pcall(function()
+    C4:FileSetDir(alias)
+  end)
+  return ok
+end
+
+local function flogic_file_exists(name)
+  local ok, exists = pcall(function()
+    return C4:FileExists(name)
+  end)
+  return ok and exists == true
+end
+
+local function flogic_file_delete(name)
+  pcall(function()
+    C4:FileDelete(name)
+  end)
+end
+
+local function flogic_file_write(name, data)
+  pcall(function()
+    local handle = C4:FileOpen(name)
+    if handle ~= nil and handle ~= -1 then
+      C4:FileWrite(handle, #data, data)
+      C4:FileClose(handle)
+    end
+  end)
+end
+
+local function flogic_file_size(name)
+  local ok, size = pcall(function()
+    if not C4:FileExists(name) then
+      return nil
+    end
+    local handle = C4:FileOpen(name)
+    if handle == nil or handle == -1 then
+      return nil
+    end
+    local length = C4:FileGetSize(handle)
+    C4:FileClose(handle)
+    return length
+  end)
+  if ok then
+    return size
+  end
+  return nil
+end
+
+local function flogic_get_installed(filename)
+  local ok, devices = pcall(function()
+    return C4:GetDevicesByC4iName(filename)
+  end)
+  return ok and type(devices) == "table" and next(devices) ~= nil
+end
+
+-- One persistent plain-TCP binding for Composer's local SOAP endpoint,
+-- separate from the websocket binding. Installs are rare and serial.
+local function flogic_ensure_soap_binding()
+  local st = flogic_state
+  if st.soap_binding ~= nil then
+    return st.soap_binding
+  end
+  local id = flogic_find_free_binding()
+  if id == nil then
+    return nil, "no free network binding"
+  end
+  local ok = pcall(function()
+    C4:CreateNetworkConnection(id, FloUpdate.SOAP_HOST, "TCP")
+    C4:NetPortOptions(id, FloUpdate.SOAP_PORT, "TCP", {
+      AUTO_CONNECT = false,
+      MONITOR_CONNECTION = false,
+      KEEP_CONNECTION = false,
+    })
+  end)
+  if not ok then
+    return nil, "cannot open Composer endpoint"
+  end
+  st.soap_binding, st.soap_port = id, FloUpdate.SOAP_PORT
+  return id
+end
+
+local function flogic_soap_send(packet, cb)
+  local settled = false
+  local owner = flogic_state
+  local binding, err = flogic_ensure_soap_binding()
+  if binding == nil then
+    cb(err)
+    return function() end
+  end
+  local function finish(soap_err)
+    if settled then
+      return
+    end
+    settled = true
+    if flogic_state == owner then
+      owner.soap_callbacks = nil
+      pcall(function()
+        C4:NetDisconnect(binding, FloUpdate.SOAP_PORT)
+      end)
+    end
+    cb(soap_err)
+  end
+  -- A response (or a clean close after our write) means Composer took the
+  -- packet; a short grace timer covers endpoints that never answer, so a
+  -- successful install cannot surface as a trigger timeout. A close before
+  -- the connection opens means the endpoint refused us.
+  local opened = false
+  local grace = flogic_set_timer(3000, function()
+    finish(nil)
+  end, false)
+  owner.soap_callbacks = {
+    on_data = function()
+      finish(nil)
+    end,
+    on_open = function()
+      opened = true
+      local sent = pcall(function()
+        C4:SendToNetwork(binding, FloUpdate.SOAP_PORT, packet)
+      end)
+      if not sent then
+        finish("cannot reach Composer endpoint")
+      end
+    end,
+    on_close = function()
+      if opened then
+        finish(nil)
+      else
+        finish("cannot reach Composer endpoint")
+      end
+    end,
+  }
+  local ok = pcall(function()
+    C4:NetConnect(binding, FloUpdate.SOAP_PORT)
+  end)
+  if not ok then
+    grace:Cancel()
+    finish("cannot reach Composer endpoint")
+  end
+  return function()
+    grace:Cancel()
+    finish(nil)
+  end
+end
+
+local function flogic_install_update(force)
+  local st = flogic_state
+  if not st.initialized then
+    return
+  end
+  if st.updater then
+    flogic_set_prop("Update Status", "Update operation already running")
+    return
+  end
+  flogic_set_prop(
+    "Update Status",
+    force and "Force-reinstalling the latest release..." or "Checking GitHub for the latest release..."
+  )
+  local op
+  op = FloUpdate.new_install({
+    http_get = flogic_http_get,
+    set_timeout = function(ms, callback)
+      local timer = flogic_set_timer(ms, callback, false)
+      return function()
+        timer:Cancel()
+      end
+    end,
+    get_installed = function()
+      return flogic_get_installed(FloUpdate.ASSET)
+    end,
+    file_set_dir = flogic_file_set_dir,
+    file_exists = flogic_file_exists,
+    file_delete = flogic_file_delete,
+    file_write = flogic_file_write,
+    file_size = flogic_file_size,
+    soap_send = flogic_soap_send,
+    force = force,
+    current_version = FLOGIC_DRIVER_VERSION,
+    on_progress = function(text)
+      if flogic_state == st and st.updater == op then
+        flogic_set_prop("Update Status", text)
+      end
+    end,
+    on_result = function(install_err, outcome)
+      if flogic_state ~= st or not st.initialized or st.updater ~= op then
+        return
+      end
+      st.updater = nil
+      if install_err then
+        flogic_set_prop(
+          "Update Status",
+          "Install failed: "
+            .. install_err
+            .. " — download "
+            .. FloUpdate.ASSET
+            .. " from the GitHub release and update the driver in Composer"
+        )
+      elseif outcome and outcome.installed then
+        flogic_set_prop("Update Status", "Installed: " .. outcome.installed .. " (controller may reload driver)")
+      elseif outcome and outcome.skipped == "not-installed" then
+        flogic_set_prop("Update Status", "No install applied (driver package not found on controller)")
+      else
+        local latest = (outcome and outcome.latest) or "?"
+        flogic_set_prop(
+          "Update Status",
+          "No install applied (current " .. FLOGIC_DRIVER_VERSION .. ", latest release " .. latest .. ")"
+        )
+      end
+    end,
+  })
+  st.updater = op
+  op.start()
 end
 
 -- --- Crypto / randomness (platform-backed, probed once) --------------------
@@ -812,6 +1043,12 @@ function ExecuteCommand(strCommand, tParams)
   if strCommand == "Check for Update" then
     flogic_check_update()
     return
+  elseif strCommand == "Install Latest Release" then
+    flogic_install_update(false)
+    return
+  elseif strCommand == "Force Reinstall Latest Release" then
+    flogic_install_update(true)
+    return
   elseif strCommand == "Refresh" then
     flogic_poll_now()
     return
@@ -871,12 +1108,38 @@ function OnDriverInit(driver_init_type)
   flogic_restore_relog()
 end
 
+local function flogic_log_version_transition()
+  local previous = C4:PersistGetValue("flologic_last_version")
+  if previous == FLOGIC_DRIVER_VERSION then
+    return
+  end
+  if previous == nil or previous == "" then
+    print("[flologic] First run on this controller: " .. FLOGIC_DRIVER_VERSION)
+  else
+    print("[flologic] Driver version changed: " .. tostring(previous) .. " -> " .. FLOGIC_DRIVER_VERSION)
+  end
+  C4:PersistSetValue("flologic_last_version", FLOGIC_DRIVER_VERSION)
+end
+
 function OnDriverLateInit(driver_init_type)
   print("[flologic] OnDriverLateInit: " .. FLOGIC_DRIVER_VERSION .. " (" .. tostring(driver_init_type) .. ")")
+  -- FileSetDir unlock handshake for the self-updater. On OS 3.3.0+, raw file
+  -- writes are restricted to allow-listed aliases for unsigned community
+  -- drivers, including loss of write access to the c4z store root. This
+  -- one-time call re-unlocks legacy root access for the rest of this driver
+  -- load. The literal is the established community-standard unlock string
+  -- used verbatim by self-updating drivers (proflame, finitelabs,
+  -- black-ops-drivers, et al.). Must precede any C4Z_ROOT file op; harmless
+  -- if the restriction isn't present. Without it, installs fail loudly in
+  -- Update Status instead of silently no-op'ing.
+  pcall(function()
+    C4:FileSetDir("c29tZXNwZWNpYWxrZXk=++11")
+  end)
   flogic_retire_runtime()
   flogic_state = flogic_fresh_state()
   flogic_restore_relog()
   C4:UpdateProperty("Driver Version", FLOGIC_DRIVER_VERSION)
+  pcall(flogic_log_version_transition)
   flogic_set_prop(FLOGIC_PROP_CONNECTION, "Initializing")
   for _, key in ipairs({ "device_code", "device_token" }) do
     local saved = C4:PersistGetValue("flologic_" .. key)

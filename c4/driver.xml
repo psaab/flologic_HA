@@ -278,7 +278,15 @@
     <commands>
       <command>
         <name>Check for Update</name>
-        <description>Check published C4 releases and show the Composer download URL.</description>
+        <description>Report-only: query the latest GitHub C4 release and show in Update Status whether a newer version is available. Does NOT download or install.</description>
+      </command>
+      <command>
+        <name>Install Latest Release</name>
+        <description>Download the latest published C4 release and install it on this controller. Does nothing when already up to date.</description>
+      </command>
+      <command>
+        <name>Force Reinstall Latest Release</name>
+        <description>Re-download and re-install the latest GitHub C4 release even if its version matches the running driver (recovery/repair). May reinstall an older build if the latest release is behind the current one.</description>
       </command>
       <command>
         <name>Refresh</name>
@@ -417,6 +425,18 @@
       <action>
         <name>Refresh GitHub Updates</name>
         <command>Check for Update</command>
+      </action>
+      <action>
+        <name>Install Latest Release</name>
+        <command>Install Latest Release</command>
+      </action>
+      <action>
+        <!-- Button label flags this as a recovery action: it reinstalls even
+             when versions match and can downgrade if the latest release is
+             behind the running build. The <command> routes to the existing
+             "Force Reinstall Latest Release" ExecuteCommand branch. -->
+        <name>Force Reinstall Latest Release (Recovery)</name>
+        <command>Force Reinstall Latest Release</command>
       </action>
       <action>
         <name>Refresh</name>

@@ -12,6 +12,11 @@ local function director()
     relay_notifications = {},
     addresses = {},
     saved = {},
+    files = {},
+    file_dirs = {},
+    files_denied = false,
+    installed = {},
+    soap_packets = {},
   }
   Properties = { Email = "test@example.invalid", Password = "test", ["Select Valve"] = "Kitchen (11)" }
   flogic_state = { command_queue = {}, retired_bindings = {}, relog_token = "" }
@@ -78,7 +83,9 @@ local function director()
   end
   function C4:NetConnect(id, port)
     env.binding, env.port = id, port
-    if env.server then
+    if env.addresses[id] == "127.0.0.1" then
+      OnConnectionStatusChanged(id, port, "ONLINE")
+    elseif env.server then
       env.socket = env.server.tcp_open(env.addresses[id], port, {
         on_open = function()
           OnConnectionStatusChanged(id, port, "ONLINE")
@@ -92,14 +99,44 @@ local function director()
       })
     end
   end
-  function C4:SendToNetwork(_, _, bytes)
+  function C4:SendToNetwork(id, _, bytes)
+    if env.addresses[id] == "127.0.0.1" then
+      env.soap_packets[#env.soap_packets + 1] = bytes
+      ReceivedFromNetwork(id, env.port, "<c4soap></c4soap>")
+      return
+    end
     env.socket.send(bytes)
   end
   function C4:NetDisconnect(id, port)
-    if env.socket then
+    if env.socket and env.addresses[id] ~= "127.0.0.1" then
       env.socket.close()
     end
     OnConnectionStatusChanged(id, port, "OFFLINE")
+  end
+  function C4:FileSetDir(alias)
+    if env.files_denied then
+      error("Restricted path specified")
+    end
+    env.file_dirs[#env.file_dirs + 1] = alias
+  end
+  function C4:FileExists(name)
+    return env.files[name] ~= nil
+  end
+  function C4:FileOpen(name)
+    return { name = name }
+  end
+  function C4:FileWrite(handle, length, data)
+    env.files[handle.name] = data:sub(1, length)
+  end
+  function C4:FileGetSize(handle)
+    return #(env.files[handle.name] or "")
+  end
+  function C4:FileClose(_) end
+  function C4:FileDelete(name)
+    env.files[name] = nil
+  end
+  function C4:GetDevicesByC4iName(name)
+    return env.installed[name] or {}
   end
   function C4:url()
     local transfer = {}
@@ -460,5 +497,74 @@ D.test("director: GitHub refresh button accepts Composer command and label", fun
   ExecuteCommand("LUA_ACTION", { ACTION = "Refresh GitHub Updates" })
   D.check_equal(#env.transfers, 2, "button label and command refresh GitHub")
   D.check_equal(env.transfers[2].url, FloUpdate.API_URL, "refresh uses GitHub, not cloud poll")
+  OnDriverDestroyed()
+end)
+
+local function director_release(version)
+  local tag = "c4-v" .. version
+  return JSON.encode({
+    {
+      tag_name = tag,
+      draft = false,
+      prerelease = false,
+      assets = {
+        {
+          name = "flologic_valve.c4z",
+          browser_download_url = "https://github.com/psaab/flologic_HA/releases/download/"
+            .. tag
+            .. "/flologic_valve.c4z",
+        },
+      },
+    },
+  })
+end
+
+D.test("director: install command stages the package and triggers Composer", function()
+  local env = director()
+  D.check_equal(env.file_dirs[1], "c29tZXNwZWNpYWxrZXk=++11", "file store handshake precedes installs")
+  env.installed["flologic_valve.c4z"] = { [1] = true }
+  env.files["flologic_valve.c4z"] = "OLD-DRIVER-BYTES"
+  ExecuteCommand("Install Latest Release", {})
+  D.check_equal(env.transfers[1].url, FloUpdate.API_URL, "install queries releases first")
+  env.transfers[1].done(nil, { { code = 200, body = director_release("2026090801") } }, 0)
+  D.check_equal(#env.transfers, 2, "newer release downloads its asset")
+  env.transfers[2].done(nil, { { code = 200, body = "NEW-C4Z-BYTES" } }, 0)
+  D.check_equal(env.files["flologic_valve.c4z"], "NEW-C4Z-BYTES", "download staged to the file store")
+  D.check_equal(#env.soap_packets, 1, "one Composer install trigger")
+  D.check_equal(env.soap_packets[1], FloUpdate.build_install_packet("flologic_valve.c4z"), "trigger names the asset")
+  D.check(
+    Properties["Update Status"]:find("Installed: 2026090801", 1, true) ~= nil,
+    "success surfaces the installed version, got " .. tostring(Properties["Update Status"])
+  )
+  OnDriverDestroyed()
+end)
+
+D.test("director: force reinstall bypasses the version compare", function()
+  local env = director()
+  env.installed["flologic_valve.c4z"] = { [1] = true }
+  ExecuteCommand("Force Reinstall Latest Release", {})
+  env.transfers[1].done(nil, { { code = 200, body = director_release(FLOGIC_DRIVER_VERSION) } }, 0)
+  D.check_equal(#env.transfers, 2, "force downloads the same build")
+  env.transfers[2].done(nil, { { code = 200, body = "SAME-C4Z-BYTES" } }, 0)
+  D.check_equal(env.files["flologic_valve.c4z"], "SAME-C4Z-BYTES", "same build restaged")
+  D.check_equal(#env.soap_packets, 1, "force still triggers Composer")
+  OnDriverDestroyed()
+end)
+
+D.test("director: denied file store fails loudly and keeps the old driver", function()
+  local env = director()
+  env.installed["flologic_valve.c4z"] = { [1] = true }
+  env.files["flologic_valve.c4z"] = "OLD-DRIVER-BYTES"
+  env.files_denied = true
+  ExecuteCommand("Install Latest Release", {})
+  env.transfers[1].done(nil, { { code = 200, body = director_release("2026090801") } }, 0)
+  env.transfers[2].done(nil, { { code = 200, body = "NEW-C4Z-BYTES" } }, 0)
+  D.check_equal(env.files["flologic_valve.c4z"], "OLD-DRIVER-BYTES", "denial keeps the old build")
+  D.check_equal(#env.soap_packets, 0, "denial triggers no install")
+  D.check(
+    Properties["Update Status"]:find("Install failed", 1, true) ~= nil
+      and Properties["Update Status"]:find("Composer", 1, true) ~= nil,
+    "denial points at the manual path, got " .. tostring(Properties["Update Status"])
+  )
   OnDriverDestroyed()
 end)

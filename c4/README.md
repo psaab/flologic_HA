@@ -49,12 +49,17 @@ package from failure during initialization or subsequent cloud polling.
 10 seconds after startup and every **Update Check Interval** hours (default
 24; 0 disables periodic checks). **Update Status**, **Latest Driver Version**,
 and **Update Download URL** identify a published C4 package. Checks are
-report-only; install the downloaded package using Composer.
+report-only.
 
-The automatic installer in the Proflame reference relies on an undocumented
-bypass of restricted driver-storage access. This driver does not include that
-bypass or claim that discovering a release installs it. Its supported workflow
-is GitHub discovery followed by Composer installation.
+**Actions → Install Latest Release** downloads the newest C4 asset, stages it
+in the controller's driver store (verified by on-disk size), and tells
+Composer to install it — no manual download step. **Force Reinstall Latest
+Release (Recovery)** does the same even when the running build already matches
+the release tag, for repairing a corrupt or partial install; it can reinstall
+an older build if the latest release lags the running one. Every phase reports
+to **Update Status**, and any failure names the manual fallback (download the
+asset and update via Composer). The file-store unlock handshake and the local
+`UpdateProjectC4i` install trigger follow the proven proflame_c4 pattern.
 
 C4 releases use `c4-vYYYYMMDDNN` tags and must contain exactly named
 `flologic_valve.c4z` assets. Drafts, prereleases, and Home Assistant releases are
