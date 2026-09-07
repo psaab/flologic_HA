@@ -1,7 +1,7 @@
 # FloLogic Control4 Driver
 
 Control4 DriverWorks driver for FloLogic Connect valves, based on the
-[Home Assistant integration](../README.md). Version **2026090701**, targeting
+[Home Assistant integration](../README.md). Version **2026090702**, targeting
 Control4 OS **3.3.0 or newer**. One instance monitors one explicitly selected
 valve. This is a poll-based programming driver; it has no Navigator interface
 or sensor/relay proxy bindings.
@@ -24,6 +24,11 @@ A command already transmitted to the cloud cannot be recalled.
 Every poll and command uses a short-lived SignalR session:
 HTTPS negotiate → TLS WebSocket upgrade → SignalR acknowledgement → login →
 full inventory → selected-valve metadata or command → cleanup.
+
+Both negotiation and WebSocket upgrade send the same device identity,
+application/platform, device name, and relog headers, matching the HA client.
+Version 2026090702 fixes their omission from the WebSocket upgrade, which
+could leave login waiting for `LoggedIn` until timeout.
 
 - Poll interval: 30–3600 seconds, default 60. Only one session runs at a time.
 - Commands queue behind an active session, with a maximum of eight waiting

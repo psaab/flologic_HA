@@ -321,6 +321,14 @@ function TestHelp.new_fake_server(script)
     function handle.send(bytes)
       server._sent_frames[#server._sent_frames + 1] = bytes
       if bytes:sub(1, 3) == "GET" then
+        -- Match the HA transport contract: identity belongs on both requests.
+        local headers = {}
+        for name, value in bytes:gmatch("\r\n([^:\r\n]+): ([^\r\n]*)") do
+          headers[name] = value
+        end
+        for name, value in pairs(server._http_calls[#server._http_calls].headers) do
+          assert(headers[name] == value, "fake server: websocket identity mismatch: " .. name)
+        end
         -- Websocket handshake: answer 101 with the correct accept key.
         local key = bytes:match("Sec%-WebSocket%-Key:%s*([^\r\n]+)")
         assert(key ~= nil, "fake server: handshake missing key")

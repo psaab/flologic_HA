@@ -695,3 +695,37 @@ T.test("session: invalid URLs and transport exceptions fail cleanly", function()
   T.check_equal(result, "http:adapter-error", "adapter exception sanitized")
   T.check_equal(timers.pending_count(), 0, "exception cancels watchdog")
 end)
+
+T.test("session: websocket upgrade carries the same identity as negotiation", function()
+  local server = TestHelp.new_fake_server({
+    { expect_target = "Login", reply_target = "LoggedIn", reply_args = { test_user() } },
+    { expect_target = "RefreshValveArray", reply_target = "ValveArraySent", reply_args = { {} } },
+  })
+  local result
+  new_test_session(server, TestHelp.new_fake_timers(), { relog_token = "saved-session-token" }).fetch_snapshot(
+    HUB_URL,
+    "",
+    function(err, snapshot)
+      T.check(err == nil, "discovery succeeds")
+      result = snapshot
+    end
+  )
+  T.check(result ~= nil, "session completed")
+  local request = server._sent_frames[1]
+  local headers = {}
+  for name, value in request:gmatch("\r\n([^:\r\n]+): ([^\r\n]*)") do
+    headers[name] = value
+  end
+  local expected = {
+    userDeviceCode = "code",
+    userDeviceToken = "token",
+    relogToken = "saved-session-token",
+    OsPlatform = "Android",
+    AppVer = "control4",
+    DeviceName = "test",
+  }
+  for name, value in pairs(expected) do
+    T.check_equal(server._http_calls[1].headers[name], value, "negotiate " .. name)
+    T.check_equal(headers[name], value, "websocket " .. name)
+  end
+end)

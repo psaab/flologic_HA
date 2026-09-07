@@ -218,6 +218,9 @@ function FloLogic.new_session(opts)
       AppVer = FloLogic.APP_VERSION,
       DeviceName = self._device_name,
     }
+    -- FloLogic reads connection identity on the WebSocket request as well.
+    -- Preserve exactly the headers used to create this negotiated connection.
+    self._connection_headers = headers
     self._log_debug("negotiate " .. url)
     local ok_post, cancel = pcall(self._http_post, url, "", headers, function(err, data, code)
       if self._done then
@@ -308,7 +311,15 @@ function FloLogic.new_session(opts)
         return
       end
       handshake_sent = true
-      local request = WS.build_handshake_request(hub.host .. ":" .. tostring(hub.port), ws_path, key)
+      local headers = {}
+      for name, value in pairs(self._connection_headers) do
+        if type(value) ~= "string" or value:find("[\r\n]") then
+          on_fail("ws:invalid-connection-header")
+          return
+        end
+        headers[#headers + 1] = name .. ": " .. value
+      end
+      local request = WS.build_handshake_request(hub.host .. ":" .. tostring(hub.port), ws_path, key, headers)
       if not pcall(self._tcp.send, request) then
         on_fail("ws:send-failed")
       end
