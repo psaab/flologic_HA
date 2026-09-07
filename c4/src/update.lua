@@ -163,7 +163,7 @@ end
 --- file_size(name) -> bytes or nil. File callbacks must not throw; the
 --- Director adapter wraps every C4 file call in pcall and converts denials
 --- to false/nil. on_result(err, outcome) has outcome
---- { installed = version|nil, latest = version|nil, skipped = reason|nil }.
+--- { attempted = version|nil, latest = version|nil, skipped = reason|nil }.
 function FloUpdate.new_install(opts)
   local self = { done = false }
   function self.cancel()
@@ -327,7 +327,7 @@ function FloUpdate.new_install(opts)
     -- Never trust the write call: verify by on-disk SIZE (a number), not by
     -- re-reading binary that can false-mismatch through string marshalling.
     if opts.file_size(filename) ~= #body then
-      finish("Staged package size mismatch; installed driver left intact")
+      finish("Staged package size mismatch; stored package may be missing or incomplete; restore using Composer")
       return
     end
     cb()
@@ -343,7 +343,7 @@ function FloUpdate.new_install(opts)
     end
     get_releases(function(release)
       if not opts.force and FloUpdate.compare_versions(release.version, opts.current_version) <= 0 then
-        finish(nil, { installed = nil, latest = release.version, skipped = "up-to-date" })
+        finish(nil, { attempted = nil, latest = release.version, skipped = "up-to-date" })
         return
       end
       progress("Downloading " .. release.version)
@@ -360,7 +360,7 @@ function FloUpdate.new_install(opts)
               finish("Install trigger failed: " .. tostring(err))
               return
             end
-            finish(nil, { installed = release.version, latest = release.version })
+            finish(nil, { attempted = release.version, latest = release.version })
           end)
           if not ok then
             finish("Install trigger unavailable")

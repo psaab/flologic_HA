@@ -1,22 +1,22 @@
 Control4 DriverWorks package for FloLogic Connect valves (OS 3.3.0+).
 
-Download `flologic_valve.c4z` and update the existing project driver in Composer
-Pro. Confirm **Driver Version 2026090706** on each installed FloLogic instance.
-Keep existing instances and programming references.
+Update the existing driver through Composer Pro and confirm **Driver Version
+2026090707**. Keep existing instances and programming references.
 
-- **Install Latest Release** action: downloads the newest GitHub release to
-  controller staging storage, verifies its size, then applies it and refreshes
-  the project item so the new Lua loads without deleting the instance.
-- **Force Reinstall** action: reinstalls the driver's bundled build even when
-  no newer release exists, restoring a known-good copy.
-- Both actions are cancellable and report progress through the Update Status
-  property; automatic release polling continues to enable the install action
-  when a newer build appears.
-- If Director does not pick up the refreshed file automatically, run Refresh
-  Navigators or re-add the driver instance without deleting programming.
+- Remove the unconditional filesystem restriction override from initialization.
+  Direct installation may now be denied by Director; use Composer in that case.
+- Report an unverified installation attempt as `Installation unconfirmed`,
+  rather than claiming that the requested version was installed.
+- Close file handles after write or size-query errors.
+- Correct the write-failure message: the stored package may be missing or
+  incomplete. The previous package is not guaranteed to have been preserved.
+- Correct recovery documentation: Force Reinstall targets GitHub's latest
+  eligible release, potentially downgrading. It is not a bundled backup.
+  Update polling changes properties; the buttons are always present.
 
-In Lua Output, look for `Lua loaded: 2026090706`, `OnDriverInit`,
-`OnDriverLateInit`, and `Runtime ready: 2026090706`. Missing lines identify which
-stage needs further investigation; offline tests cannot confirm Composer behavior.
+The direct installer's package validation and destructive replacement issues
+remain unresolved. Use Composer installation until those issues are addressed.
+Neither a Navigator refresh nor adding a second instance verifies an upgrade.
+Confirm the running version and `Lua loaded` / `Runtime ready` messages instead.
 
-Install the complete package so Composer reads the XML connections and actions.
+Offline checks do not establish installation or reload behavior on Director.

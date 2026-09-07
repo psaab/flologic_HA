@@ -521,7 +521,6 @@ end
 
 D.test("director: install command stages the package and triggers Composer", function()
   local env = director()
-  D.check_equal(env.file_dirs[1], "c29tZXNwZWNpYWxrZXk=++11", "file store handshake precedes installs")
   env.installed["flologic_valve.c4z"] = { [1] = true }
   env.files["flologic_valve.c4z"] = "OLD-DRIVER-BYTES"
   ExecuteCommand("Install Latest Release", {})
@@ -533,8 +532,8 @@ D.test("director: install command stages the package and triggers Composer", fun
   D.check_equal(#env.soap_packets, 1, "one Composer install trigger")
   D.check_equal(env.soap_packets[1], FloUpdate.build_install_packet("flologic_valve.c4z"), "trigger names the asset")
   D.check(
-    Properties["Update Status"]:find("Installed: 2026090801", 1, true) ~= nil,
-    "success surfaces the installed version, got " .. tostring(Properties["Update Status"])
+    Properties["Update Status"]:find("Installation unconfirmed: 2026090801", 1, true) ~= nil,
+    "result does not claim a verified installation, got " .. tostring(Properties["Update Status"])
   )
   OnDriverDestroyed()
 end)

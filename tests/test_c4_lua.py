@@ -68,6 +68,48 @@ def test_bundled_driver_matches_sources() -> None:
         assert source in bundled, f"{name} not reflected in driver.lua"
 
 
+def test_file_handles_close_on_errors() -> None:
+    """Exercise cleanup with fake handles, without installing or changing paths."""
+    runtime = LuaRuntime()
+    runtime.globals().print = lambda *args: None
+    runtime.execute(_read("src/main.lua"))
+    runtime.execute(
+        """
+        local function upvalue(fn, wanted)
+          for i = 1, 100 do
+            local name, value = debug.getupvalue(fn, i)
+            if name == wanted then return value end
+            if name == nil then break end
+          end
+          error("missing upvalue: " .. wanted)
+        end
+        local install = upvalue(ExecuteCommand, "flogic_install_update")
+        local write = upvalue(install, "flogic_file_write")
+        local size = upvalue(install, "flogic_file_size")
+        local handle = {}
+        local closed = 0
+        C4 = {
+          FileExists = function() return true end,
+          FileOpen = function() return handle end,
+          FileWrite = function() error("simulated write failure") end,
+          FileGetSize = function() error("simulated size query failure") end,
+          FileClose = function(_, actual)
+            assert(actual == handle)
+            closed = closed + 1
+          end,
+        }
+        write("test-package", "test-data")
+        assert(closed == 1, "write failure leaked handle")
+        assert(size("test-package") == nil)
+        assert(closed == 2, "size failure leaked handle")
+        C4.FileOpen = function() return -1 end
+        write("test-package", "test-data")
+        assert(size("test-package") == nil)
+        assert(closed == 2, "invalid handle must not be closed")
+        """
+    )
+
+
 def test_package_matches_reviewed_files() -> None:
     """The installable artifact must contain the reviewed code and trust store."""
     files = {"driver.xml", "driver.lua", "ca-bundle.pem", "CA-LICENSE"}

@@ -1,7 +1,7 @@
 # FloLogic Control4 Driver
 
 Control4 DriverWorks driver for FloLogic Connect valves, based on the
-[Home Assistant integration](../README.md). Version **2026090706**, targeting
+[Home Assistant integration](../README.md). Version **2026090707**, targeting
 Control4 OS **3.3.0 or newer**. One instance monitors one explicitly selected
 valve. This is a poll-based programming driver; it has no Navigator interface
 or sensor proxy bindings. Two relay connections report valve-closed and away status.
@@ -36,7 +36,7 @@ repeated late-init/update callbacks leave one timer set. Persistent device ident
 credentials, and valve selection survive. Retired network bindings remain
 reserved until Director acknowledges their disconnection.
 
-Version 2026090706 uses an explicit closing `script` tag, matching Proflame's
+Version 2026090705 introduced an explicit closing `script` tag, matching Proflame's
 [working reload manifest](https://github.com/psaab/proflame_c4/commit/c295ce0678b3).
 This is a compatibility change; its effect still needs verification on Director.
 Lua Output now reports `Lua loaded`, each initialization callback with its reason,
@@ -51,15 +51,21 @@ package from failure during initialization or subsequent cloud polling.
 and **Update Download URL** identify a published C4 package. Checks are
 report-only.
 
-**Actions → Install Latest Release** downloads the newest C4 asset, stages it
-in the controller's driver store (verified by on-disk size), and tells
-Composer to install it — no manual download step. **Force Reinstall Latest
-Release (Recovery)** does the same even when the running build already matches
-the release tag, for repairing a corrupt or partial install; it can reinstall
-an older build if the latest release lags the running one. Every phase reports
-to **Update Status**, and any failure names the manual fallback (download the
-asset and update via Composer). The file-store unlock handshake and the local
-`UpdateProjectC4i` install trigger follow the proven proflame_c4 pattern.
+**Actions → Install Latest Release** attempts to download and install the newest
+C4 release. **Force Reinstall Latest Release (Recovery)** targets the latest
+published release even when it matches or is older than the running build;
+it does not restore a bundled or guaranteed known-good copy. Both actions
+are always present; periodic checks update properties, not button availability.
+
+Version 2026090707 removes the initialization-time filesystem restriction
+override. Direct installation can fail when Director denies access to its
+package store; use Composer to install the downloaded package instead.
+An `Installation unconfirmed` result does not prove an update occurred.
+Verify the running **Driver Version** and lifecycle messages in Lua Output.
+
+The direct installer still lacks package-content validation and safe replacement
+of the previous stored package. A write failure can leave that file incomplete
+or missing. Use Composer installation until those remaining issues are addressed.
 
 C4 releases use `c4-vYYYYMMDDNN` tags and must contain exactly named
 `flologic_valve.c4z` assets. Drafts, prereleases, and Home Assistant releases are
@@ -67,7 +73,7 @@ ignored. A build newer than GitHub is reported explicitly. A repository with
 no eligible C4 asset is reported as such, rather than as up to date.
 
 To publish after committing and pushing a tested build, create and push a tag
-matching the XML/Lua version (for this build, `c4-v2026090706`). The
+matching the XML/Lua version (for this build, `c4-v2026090707`). The
 `release-c4.yml` workflow verifies the tag, tests/rebuilds the driver, and uploads
 its asset. C4 releases are not marked as GitHub's latest release, preserving
 that designation for Home Assistant. No tag or release is published merely by

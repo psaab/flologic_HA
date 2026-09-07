@@ -878,7 +878,7 @@ T.test("updates: install downloads, stages, and triggers on newer release", func
   local op = FloUpdate.new_install(fakes)
   op.start()
   T.check(err == nil, "no error, got " .. tostring(err))
-  T.check_equal(outcome.installed, "2026090801", "installed version")
+  T.check_equal(outcome.attempted, "2026090801", "attempted version")
   T.check_equal(store.files["flologic_valve.c4z"], "NEW-DRIVER-BYTES", "staged bytes")
   T.check_equal(store.set_dir_calls[1], "C4Z_ROOT", "staged to the install root")
   T.check_equal(#store.soap_packets, 1, "one install trigger")
@@ -900,7 +900,7 @@ T.test("updates: install skips when current, force reinstalls anyway", function(
   end
   FloUpdate.new_install(fakes).start()
   T.check(err == nil, "skip is not an error")
-  T.check(outcome.installed == nil and outcome.skipped == "up-to-date", "nothing applied")
+  T.check(outcome.attempted == nil and outcome.skipped == "up-to-date", "nothing applied")
   T.check_equal(#seen, 1, "no download when current")
   T.check_equal(store.files["flologic_valve.c4z"], "OLD-DRIVER-BYTES", "old build intact")
   fakes.force = true
@@ -910,7 +910,7 @@ T.test("updates: install skips when current, force reinstalls anyway", function(
   end
   FloUpdate.new_install(fakes).start()
   T.check(ferr == nil, "force has no error")
-  T.check_equal(foutcome.installed, "2026090705", "force reinstalls same build")
+  T.check_equal(foutcome.attempted, "2026090705", "force attempts same build")
   T.check_equal(store.files["flologic_valve.c4z"], "NEW-DRIVER-BYTES", "bytes replaced")
 end)
 
@@ -982,7 +982,7 @@ T.test("updates: install follows asset redirects with headers", function()
   end
   FloUpdate.new_install(fakes).start()
   T.check(err == nil, "redirect followed, got " .. tostring(err))
-  T.check_equal(outcome.installed, "2026090801", "installed after redirect")
+  T.check_equal(outcome.attempted, "2026090801", "attempted after redirect")
   T.check_equal(hops[3], "https://objects.example.invalid/asset", "followed Location")
 end)
 

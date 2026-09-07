@@ -8,7 +8,7 @@
 -- Lua 5.1 safe.
 -- ============================================================================
 
-FLOGIC_DRIVER_VERSION = "2026090706"
+FLOGIC_DRIVER_VERSION = "2026090707"
 print("[flologic] Lua loaded: " .. FLOGIC_DRIVER_VERSION)
 FLOGIC_DEFAULT_HUB = "https://hub-cloudapps-prod.azurewebsites.net"
 FLOGIC_BINDING_FIRST = 6100
@@ -316,28 +316,37 @@ local function flogic_file_delete(name)
 end
 
 local function flogic_file_write(name, data)
+  local handle
   pcall(function()
-    local handle = C4:FileOpen(name)
+    handle = C4:FileOpen(name)
     if handle ~= nil and handle ~= -1 then
       C4:FileWrite(handle, #data, data)
-      C4:FileClose(handle)
     end
   end)
+  if handle ~= nil and handle ~= -1 then
+    pcall(function()
+      C4:FileClose(handle)
+    end)
+  end
 end
 
 local function flogic_file_size(name)
+  local handle
   local ok, size = pcall(function()
     if not C4:FileExists(name) then
       return nil
     end
-    local handle = C4:FileOpen(name)
+    handle = C4:FileOpen(name)
     if handle == nil or handle == -1 then
       return nil
     end
-    local length = C4:FileGetSize(handle)
-    C4:FileClose(handle)
-    return length
+    return C4:FileGetSize(handle)
   end)
+  if handle ~= nil and handle ~= -1 then
+    pcall(function()
+      C4:FileClose(handle)
+    end)
+  end
   if ok then
     return size
   end
@@ -398,10 +407,9 @@ local function flogic_soap_send(packet, cb)
     end
     cb(soap_err)
   end
-  -- A response (or a clean close after our write) means Composer took the
-  -- packet; a short grace timer covers endpoints that never answer, so a
-  -- successful install cannot surface as a trigger timeout. A close before
-  -- the connection opens means the endpoint refused us.
+  -- Neither receipt of bytes nor connection closure confirms installation.
+  -- The caller must report the result as unconfirmed; only the loaded driver
+  -- can establish its running version.
   local opened = false
   local grace = flogic_set_timer(3000, function()
     finish(nil)
@@ -492,8 +500,11 @@ local function flogic_install_update(force)
             .. FloUpdate.ASSET
             .. " from the GitHub release and update the driver in Composer"
         )
-      elseif outcome and outcome.installed then
-        flogic_set_prop("Update Status", "Installed: " .. outcome.installed .. " (controller may reload driver)")
+      elseif outcome and outcome.attempted then
+        flogic_set_prop(
+          "Update Status",
+          "Installation unconfirmed: " .. outcome.attempted .. "; verify Driver Version and Lua Output in Composer"
+        )
       elseif outcome and outcome.skipped == "not-installed" then
         flogic_set_prop("Update Status", "No install applied (driver package not found on controller)")
       else
@@ -1123,18 +1134,6 @@ end
 
 function OnDriverLateInit(driver_init_type)
   print("[flologic] OnDriverLateInit: " .. FLOGIC_DRIVER_VERSION .. " (" .. tostring(driver_init_type) .. ")")
-  -- FileSetDir unlock handshake for the self-updater. On OS 3.3.0+, raw file
-  -- writes are restricted to allow-listed aliases for unsigned community
-  -- drivers, including loss of write access to the c4z store root. This
-  -- one-time call re-unlocks legacy root access for the rest of this driver
-  -- load. The literal is the established community-standard unlock string
-  -- used verbatim by self-updating drivers (proflame, finitelabs,
-  -- black-ops-drivers, et al.). Must precede any C4Z_ROOT file op; harmless
-  -- if the restriction isn't present. Without it, installs fail loudly in
-  -- Update Status instead of silently no-op'ing.
-  pcall(function()
-    C4:FileSetDir("c29tZXNwZWNpYWxrZXk=++11")
-  end)
   flogic_retire_runtime()
   flogic_state = flogic_fresh_state()
   flogic_restore_relog()
