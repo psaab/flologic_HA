@@ -84,6 +84,11 @@ def test_package_matches_reviewed_files() -> None:
     }
     assert properties["Driver Version"].findtext("default") == version
     assert properties["Password"].findtext("password") == "true"
+    # Preserve Proflame's working Composer script-tag serialization: an XML
+    # parser normalizes the two forms, so parsed-tree checks cannot catch drift.
+    assert '<script file="driver.lua" encryption="0" jit="1"></script>' in _read(
+        "driver.xml"
+    )
 
 
 def test_status_relay_bindings_and_github_refresh_action() -> None:

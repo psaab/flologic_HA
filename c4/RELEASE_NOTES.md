@@ -1,21 +1,21 @@
 Control4 DriverWorks package for FloLogic Connect valves (OS 3.3.0+).
 
-Download `flologic_valve.c4z` and use Composer Pro **Driver → Add or Update
-Driver…** to update the existing project driver. Confirm **Driver Version**
-2026090704 on each installed FloLogic instance. Keep existing instances and
-programming references.
+Download `flologic_valve.c4z` and update the existing project driver in Composer
+Pro. Confirm **Driver Version 2026090705** on each installed FloLogic instance.
+Keep existing instances and programming references.
 
-- **Actions → Refresh GitHub Updates** checks published C4 releases and updates
-  the version/status/download URL. Installation remains through Composer.
-- **Connections → Control → Valve Closed** (RELAY binding 101) closes when
-  FloLogic reports a shutoff condition, including flow-limit trips.
-- **Connections → Control → Away Mode** (RELAY binding 102) closes when an
-  away, automatic-away, or external-away flag is active.
-- Relays report observed status only. Initial/rebind/recovery sync is quiet;
-  later changes send relay transitions. Offline status retains the consumer's
-  last indication without manufacturing an open/normal state.
+- Match the explicit XML script closing tag in Proflame's working reload
+  manifest. This compatibility change still needs verification on Director.
+- Publish the running Lua version during both initialization callbacks and log
+  load, initialization reason, and runtime readiness even with Debug Mode off.
+- Exercise Composer's documented `DIT_UPDATING` destroy/load/init/late-init
+  sequence in the Lua regression suite, including automatic polling, preserved
+  identity/selection, and rejection of callbacks from the old runtime.
 
-This release adds static connections and updates an action label. Composer
-must re-read `driver.xml`; a Lua-only reload cannot register these changes.
-Refresh Composer's driver/project metadata after installing if the new
-connections or button are missing. Bind the new outputs in Connections.
+In Lua Output, look for `Lua loaded: 2026090705`, `OnDriverInit`,
+`OnDriverLateInit`, and `Runtime ready: 2026090705`. Missing lines identify which
+stage needs further investigation; offline tests cannot confirm Composer behavior.
+
+Includes the GitHub refresh action and Valve Closed/Away Mode relay outputs from
+2026090704. Install the complete package so Composer reads the XML connections.
+GitHub checks provide a download URL; installation remains through Composer.

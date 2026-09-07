@@ -317,6 +317,34 @@ D.test("director: repeated update callbacks retire work and preserve configurati
   D.check_equal(env.timers.pending_count(), 0, "all timers retired")
 end)
 
+D.test("director: Composer DIT_UPDATING reload starts polling without OnDriverUpdated", function()
+  local env = director()
+  local old_state = flogic_state
+  local identity = old_state.device_code
+  Properties["Debug Mode"] = "Off"
+  flogic_poll_now()
+  local old_request = env.transfers[1]
+  OnDriverDestroyed("DIT_UPDATING")
+  D.check(old_request.cancelled, "Composer destroy cancels outstanding request")
+  flogic_test_reload()
+  original_factory = FloLogic.new_session
+  Properties["Driver Version"] = "old version"
+  OnDriverInit("DIT_UPDATING")
+  D.check_equal(Properties["Driver Version"], FLOGIC_DRIVER_VERSION, "init stamps running version")
+  D.check_equal(env.timers.pending_count(), 0, "init waits for bindings")
+  OnDriverLateInit("DIT_UPDATING")
+  D.check(flogic_state.initialized and flogic_state ~= old_state, "new runtime initialized")
+  D.check_equal(flogic_state.device_code, identity, "device identity survives Composer upgrade")
+  D.check_equal(Properties["Select Valve"], "Kitchen (11)", "valve selection preserved")
+  D.check_equal(env.timers.pending_count(), 4, "one timer set after Composer upgrade")
+  old_request.done(old_request, { { code = 200, body = '{"connectionToken":"stale"}' } }, 0)
+  D.check_equal(#env.transfers, 1, "old callback cannot connect")
+  env.timers.advance(2000)
+  D.check_equal(#env.transfers, 2, "new runtime polls automatically")
+  OnDriverDestroyed()
+  D.check_equal(env.timers.pending_count(), 0, "new timers cleaned up")
+end)
+
 D.test("director: reload replaces modules and fences old binding callbacks", function()
   local env = director()
   local old_modules = { JSON, FloModel, SignalR, WS, FloLogic, FloUpdate }

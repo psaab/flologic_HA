@@ -8,7 +8,8 @@
 -- Lua 5.1 safe.
 -- ============================================================================
 
-FLOGIC_DRIVER_VERSION = "2026090704"
+FLOGIC_DRIVER_VERSION = "2026090705"
+print("[flologic] Lua loaded: " .. FLOGIC_DRIVER_VERSION)
 FLOGIC_DEFAULT_HUB = "https://hub-cloudapps-prod.azurewebsites.net"
 FLOGIC_BINDING_FIRST = 6100
 FLOGIC_BINDING_LAST = 6199
@@ -856,21 +857,27 @@ end
 
 -- --- Lifecycle --------------------------------------------------------------
 
-function OnDriverInit()
-  -- Restore persisted identity; networking and timers start in LateInit.
+local function flogic_restore_relog()
   local saved = C4:PersistGetValue("flologic_relog")
   if type(saved) == "string" then
     flogic_state.relog_token = saved
   end
 end
 
-function OnDriverLateInit()
+function OnDriverInit(driver_init_type)
+  -- Publish the running version even if Composer already shows the XML default.
+  C4:UpdateProperty("Driver Version", FLOGIC_DRIVER_VERSION)
+  print("[flologic] OnDriverInit: " .. FLOGIC_DRIVER_VERSION .. " (" .. tostring(driver_init_type) .. ")")
+  flogic_restore_relog()
+end
+
+function OnDriverLateInit(driver_init_type)
+  print("[flologic] OnDriverLateInit: " .. FLOGIC_DRIVER_VERSION .. " (" .. tostring(driver_init_type) .. ")")
   flogic_retire_runtime()
   flogic_state = flogic_fresh_state()
-  OnDriverInit()
-  flogic_set_prop("Driver Version", FLOGIC_DRIVER_VERSION)
+  flogic_restore_relog()
+  C4:UpdateProperty("Driver Version", FLOGIC_DRIVER_VERSION)
   flogic_set_prop(FLOGIC_PROP_CONNECTION, "Initializing")
-  flogic_log("driver loaded: " .. FLOGIC_DRIVER_VERSION)
   for _, key in ipairs({ "device_code", "device_token" }) do
     local saved = C4:PersistGetValue("flologic_" .. key)
     if type(saved) ~= "string" or saved == "" then
@@ -894,6 +901,7 @@ function OnDriverLateInit()
     flogic_state.update_start_timer = nil
     flogic_check_update()
   end, false)
+  print("[flologic] Runtime ready: " .. FLOGIC_DRIVER_VERSION)
 end
 
 local function flogic_cancel_work()
@@ -914,12 +922,13 @@ local function flogic_cancel_work()
   flogic_clear_snapshot()
 end
 
-function OnDriverDestroyed()
+function OnDriverDestroyed(driver_init_type)
+  print("[flologic] OnDriverDestroyed: " .. FLOGIC_DRIVER_VERSION .. " (" .. tostring(driver_init_type) .. ")")
   flogic_retire_runtime()
 end
 
 function OnDriverUpdated()
-  OnDriverLateInit()
+  OnDriverLateInit("OnDriverUpdated")
 end
 
 function OnDriverRemovedFromProject()

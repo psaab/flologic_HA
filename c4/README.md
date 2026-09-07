@@ -1,7 +1,7 @@
 # FloLogic Control4 Driver
 
 Control4 DriverWorks driver for FloLogic Connect valves, based on the
-[Home Assistant integration](../README.md). Version **2026090704**, targeting
+[Home Assistant integration](../README.md). Version **2026090705**, targeting
 Control4 OS **3.3.0 or newer**. One instance monitors one explicitly selected
 valve. This is a poll-based programming driver; it has no Navigator interface
 or sensor proxy bindings. Two relay connections report valve-closed and away status.
@@ -29,10 +29,20 @@ can remain attached to those instances.
 
 The bundle retires the previous runtime before redefining any modules. It
 cancels old HTTP transfers, sessions, timers, and update checks, then replaces
-module tables and runtime state. `OnDriverUpdated` restarts the driver; repeated
-late-init/update callbacks leave one timer set. Persistent device identity,
+module tables and runtime state. Composer upgrades use `OnDriverDestroyed`,
+then load the bundle and call `OnDriverInit` and `OnDriverLateInit` with
+`DIT_UPDATING`. The additional `OnDriverUpdated` callback also restarts the driver;
+repeated late-init/update callbacks leave one timer set. Persistent device identity,
 credentials, and valve selection survive. Retired network bindings remain
 reserved until Director acknowledges their disconnection.
+
+Version 2026090705 uses an explicit closing `script` tag, matching Proflame's
+[working reload manifest](https://github.com/psaab/proflame_c4/commit/c295ce0678b3).
+This is a compatibility change; its effect still needs verification on Director.
+Lua Output now reports `Lua loaded`, each initialization callback with its reason,
+and `Runtime ready`, including the running version even with Debug Mode off.
+Capture those lines during an upgrade to distinguish failure to load the new
+package from failure during initialization or subsequent cloud polling.
 
 **Actions → Refresh GitHub Updates** reads releases from
 [psaab/flologic_HA](https://github.com/psaab/flologic_HA/releases). It checks once
@@ -52,7 +62,7 @@ ignored. A build newer than GitHub is reported explicitly. A repository with
 no eligible C4 asset is reported as such, rather than as up to date.
 
 To publish after committing and pushing a tested build, create and push a tag
-matching the XML/Lua version (for this build, `c4-v2026090704`). The
+matching the XML/Lua version (for this build, `c4-v2026090705`). The
 `release-c4.yml` workflow verifies the tag, tests/rebuilds the driver, and uploads
 its asset. C4 releases are not marked as GitHub's latest release, preserving
 that designation for Home Assistant. No tag or release is published merely by
