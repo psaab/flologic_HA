@@ -9,8 +9,10 @@
 JSON = {}
 
 -- Sentinel for explicit JSON null in encoded output (Lua nil cannot occupy
--- an array slot). Decoded nulls still arrive as nil (absent key).
-JSON.null = JSON.null or {}
+-- an array slot). Decoded nulls still arrive as nil (absent key). Sessions
+-- are always cancelled across a reload, so no live value can carry a stale
+-- sentinel from a previous bundle evaluation.
+JSON.null = {}
 
 local function is_array(t)
   local count = 0

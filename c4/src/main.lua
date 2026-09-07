@@ -8,7 +8,7 @@
 -- Lua 5.1 safe.
 -- ============================================================================
 
-FLOGIC_DRIVER_VERSION = "2026090708"
+FLOGIC_DRIVER_VERSION = "2026090709"
 print("[flologic] Lua loaded: " .. FLOGIC_DRIVER_VERSION)
 FLOGIC_DEFAULT_HUB = "https://hub-cloudapps-prod.azurewebsites.net"
 FLOGIC_BINDING_FIRST = 6100
@@ -98,11 +98,21 @@ end
 -- another session must not inherit its asynchronous disconnect callbacks.
 
 local function flogic_find_free_binding()
+  local st = flogic_state
   for id = FLOGIC_BINDING_FIRST, FLOGIC_BINDING_LAST do
     local ok, address = pcall(function()
       return C4:GetBindingAddress(id)
     end)
-    if ok and (address == nil or address == "") and not flogic_state.retired_bindings[id] then
+    -- Never reissue a live binding even if Director reports no address for
+    -- it (for example an idle SOAP binding after disconnect): the hub and
+    -- SOAP users would overwrite each other's connection configuration.
+    if
+      ok
+      and (address == nil or address == "")
+      and not st.retired_bindings[id]
+      and st.binding ~= id
+      and st.soap_binding ~= id
+    then
       return id
     end
   end
@@ -168,17 +178,35 @@ local function flogic_tcp_open(host, port, callbacks)
   if binding == nil then
     return nil, err
   end
-  flogic_state.tcp_callbacks = callbacks
+  -- Only a binding that actually connected can have an OFFLINE in flight.
+  -- Retiring a never-connected binding would strand the id forever when
+  -- Director sends no OFFLINE for it, leaking the pool one id per aborted
+  -- connect; instead release it for immediate reuse.
+  local connected = false
+  local tracked = {
+    on_open = function()
+      connected = true
+      callbacks.on_open()
+    end,
+    on_data = callbacks.on_data,
+    on_close = callbacks.on_close,
+    on_error = callbacks.on_error,
+  }
+  flogic_state.tcp_callbacks = tracked
   C4:NetConnect(binding, port)
   local handle = {}
   function handle.send(bytes)
     C4:SendToNetwork(binding, port, bytes)
   end
   function handle.close()
-    if flogic_state.tcp_callbacks == callbacks then
+    if flogic_state.tcp_callbacks == tracked then
       flogic_state.tcp_callbacks = nil
       flogic_state.binding = nil
-      flogic_state.retired_bindings[binding] = port
+      if connected then
+        flogic_state.retired_bindings[binding] = port
+      else
+        C4:SetBindingAddress(binding, "")
+      end
       C4:NetDisconnect(binding, port)
     end
   end
@@ -296,10 +324,22 @@ end
 -- --- Self-update install transports (file store + local Composer SOAP) -----
 
 local function flogic_file_set_dir(alias)
-  local ok = pcall(function()
-    C4:FileSetDir(alias)
-  end)
-  return ok
+  -- C4Z_ROOT follows the proflame pattern but is not in the published
+  -- alias list; C4Z (the driver's own package directory) is. Try the
+  -- requested alias first, then fall back to the documented one.
+  local candidates = { alias }
+  if alias ~= "C4Z" then
+    candidates[#candidates + 1] = "C4Z"
+  end
+  for _, candidate in ipairs(candidates) do
+    local ok = pcall(function()
+      C4:FileSetDir(candidate)
+    end)
+    if ok then
+      return true
+    end
+  end
+  return false
 end
 
 local function flogic_file_exists(name)
@@ -470,8 +510,14 @@ local function flogic_install_update(force)
         timer:Cancel()
       end
     end,
+    -- The DriverWorks example looks up "name.c4i", but combo-driver
+    -- registration is undocumented: try the .c4i proxy name first, then the
+    -- bare proxy name, then the package filename, so no single wrong guess
+    -- can disable installs. Confirm which key matches on a live Director.
     get_installed = function()
-      return flogic_get_installed(FloUpdate.ASSET)
+      return flogic_get_installed("flologic_valve.c4i")
+        or flogic_get_installed("flologic_valve")
+        or flogic_get_installed(FloUpdate.ASSET)
     end,
     file_set_dir = flogic_file_set_dir,
     file_exists = flogic_file_exists,
@@ -522,22 +568,55 @@ end
 
 -- --- Crypto / randomness (platform-backed, probed once) --------------------
 
+local function flogic_hex_to_raw(hex)
+  if type(hex) ~= "string" or #hex ~= 40 or hex:find("[^0-9a-fA-F]") then
+    error("C4:Hash returned an unexpected digest shape")
+  end
+  return (hex:gsub("..", function(pair)
+    return string.char(tonumber(pair, 16))
+  end))
+end
+
+--- Probe every plausible C4:Hash shape: the 3-argument raw form first, then
+--- the 2-argument form accepting raw bytes or hex. Returns
+--- { digest, arity, encoding } or nil when nothing usable answers.
 local function flogic_probe_sha1()
   for _, name in ipairs({ "SHA1", "sha1", "SHA-1" }) do
     local ok, result, err = pcall(function()
       return C4:Hash(name, "test", { return_encoding = "NONE", data_encoding = "NONE" })
     end)
     if ok and result ~= nil and err == nil and #result == 20 then
-      return name
+      return { digest = name, arity = 3, encoding = "raw" }
+    end
+  end
+  for _, name in ipairs({ "SHA1", "sha1", "SHA-1" }) do
+    local ok, result, herr = pcall(function()
+      return C4:Hash(name, "test")
+    end)
+    if ok and herr == nil and type(result) == "string" then
+      if #result == 20 then
+        return { digest = name, arity = 2, encoding = "raw" }
+      elseif #result == 40 and not result:find("[^0-9a-fA-F]") then
+        return { digest = name, arity = 2, encoding = "hex" }
+      end
     end
   end
   return nil
 end
 
 local function flogic_sha1(data)
-  local out, err = C4:Hash(flogic_state.sha1_digest, data, { return_encoding = "NONE", data_encoding = "NONE" })
+  local probe = flogic_state.sha1_probe
+  local out, err
+  if probe.arity == 3 then
+    out, err = C4:Hash(probe.digest, data, { return_encoding = "NONE", data_encoding = "NONE" })
+  else
+    out, err = C4:Hash(probe.digest, data)
+  end
   if out == nil then
     error("C4:Hash failed: " .. tostring(err))
+  end
+  if probe.encoding == "hex" then
+    return flogic_hex_to_raw(out)
   end
   return out
 end
@@ -881,13 +960,14 @@ local function flogic_on_snapshot(snap, session)
     st.relog_token = session.relog_token
     C4:PersistSetValue("flologic_relog", session.relog_token, true)
   end
-  flogic_set_connection(snap.valve == nil or snap.valve.online == true, "selected valve offline")
   flogic_update_picker(snap.devices)
   if snap.valve == nil then
     st.last_snapshot, st.contact_states = nil, nil
+    flogic_set_connection(true)
     flogic_set_prop(FLOGIC_PROP_CONNECTION, "Select a valve")
     return
   end
+  flogic_set_connection(snap.valve.online == true, "selected valve offline")
   flogic_update_properties(snap)
   flogic_update_contacts(snap.valve)
   flogic_process_edges(snap)
@@ -961,14 +1041,14 @@ end
 function flogic_poll_now()
   local st = flogic_state
   if st.busy or not st.initialized then
-    flogic_log("poll skipped: session busy")
+    print("[flologic] poll skipped: session busy or driver not ready")
     return
   end
   if flogic_prop(FLOGIC_PROP_EMAIL) == "" or flogic_prop(FLOGIC_PROP_PASSWORD) == "" then
     flogic_set_prop(FLOGIC_PROP_CONNECTION, "Not configured")
     return
   end
-  if st.sha1_digest == nil then
+  if st.sha1_probe == nil then
     flogic_set_connection(false, "no SHA1 digest available")
     return
   end
@@ -1148,8 +1228,8 @@ function OnDriverLateInit(driver_init_type)
     end
     flogic_state[key] = saved
   end
-  flogic_state.sha1_digest = flogic_probe_sha1()
-  if flogic_state.sha1_digest == nil then
+  flogic_state.sha1_probe = flogic_probe_sha1()
+  if flogic_state.sha1_probe == nil then
     flogic_set_prop(FLOGIC_PROP_CONNECTION, "Offline: no SHA1 digest available")
     flogic_log_warn("no working SHA1 digest; websocket handshake impossible")
     return

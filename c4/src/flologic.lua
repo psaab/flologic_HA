@@ -37,9 +37,6 @@ function FloLogic.parse_hub_url(hub_url)
   if not path:lower():find("/signalr$") then
     path = path .. "/signalr"
   end
-  if path == "" then
-    path = "/signalr"
-  end
   return { host = host, port = port, path = path }
 end
 
@@ -279,9 +276,8 @@ function FloLogic.new_session(opts)
     local parser = WS.new_parser({
       on_message = function(payload, is_binary)
         if is_binary then
-          if not self._done then
-            on_fail("ws:binary-frame")
-          end
+          -- The Home Assistant reader skips non-text messages; do the same.
+          self._log_debug("ignoring binary websocket frame")
           return
         end
         self._dispatcher.feed(payload)
@@ -439,7 +435,9 @@ function FloLogic.new_session(opts)
     self._dispatcher = SignalR.new_dispatcher({
       on_event = function(target, args)
         if target == "ErrorOccured" then
-          on_fail("cloud-error")
+          -- The Home Assistant client logs this and continues; a cloud
+          -- error notice must not abort a fetch that is otherwise healthy.
+          self._log("cloud ErrorOccured event ignored")
         elseif target == "ValveArraySent" and self._devices then
           local devices = validate_inventory(args[1])
           if not devices then
@@ -448,14 +446,31 @@ function FloLogic.new_session(opts)
           end
           self._devices = devices
         elseif target == "ValveSent" and type(args[1]) == "table" and self._devices then
-          for index, valve in ipairs(self._devices) do
-            if valve.id == args[1].id then
-              self._devices[index] = args[1]
+          -- Merge, mirroring the Home Assistant cache: replace the matching
+          -- valve, or add a pushed valve the array has not listed yet.
+          local incoming = args[1]
+          if incoming.id ~= nil then
+            local merged = false
+            for index, valve in ipairs(self._devices) do
+              if tostring(valve.id) == tostring(incoming.id) then
+                self._devices[index] = incoming
+                merged = true
+                break
+              end
+            end
+            if not merged then
+              self._devices[#self._devices + 1] = incoming
             end
           end
         end
       end,
       on_error = function(msg)
+        -- The Home Assistant client ignores undecodable and malformed
+        -- frames; only transport-level failures abort the session.
+        if msg == "undecodable SignalR frame" or msg == "bad-event" then
+          self._log_debug("ignoring " .. msg)
+          return
+        end
         on_fail("signalr:" .. msg)
       end,
     })
@@ -492,7 +507,9 @@ function FloLogic.new_session(opts)
         end
       end
       on_ok(access)
-    end, on_fail)
+    end, function(_timeout_err)
+      on_ok(nil) -- access is optional; timeouts degrade like scheduler/notifications
+    end)
     if not self._invoke("RequestUserAccesses", { user }) then
       on_fail("ws:send-failed")
     end

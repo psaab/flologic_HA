@@ -1,7 +1,7 @@
 # FloLogic Control4 Driver
 
 Control4 DriverWorks driver for FloLogic Connect valves, based on the
-[Home Assistant integration](../README.md). Version **2026090708**, targeting
+[Home Assistant integration](../README.md). Version **2026090709**, targeting
 Control4 OS **3.3.0 or newer**. One instance monitors one explicitly selected
 valve. This is a poll-based programming driver; it has no Navigator interface
 or sensor proxy bindings. Two contact sensor connections report valve-closed
@@ -74,7 +74,7 @@ ignored. A build newer than GitHub is reported explicitly. A repository with
 no eligible C4 asset is reported as such, rather than as up to date.
 
 To publish after committing and pushing a tested build, create and push a tag
-matching the XML/Lua version (for this build, `c4-v2026090708`). The
+matching the XML/Lua version (for this build, `c4-v2026090709`). The
 `release-c4.yml` workflow verifies the tag, tests/rebuilds the driver, and uploads
 its asset. C4 releases are not marked as GitHub's latest release, preserving
 that designation for Home Assistant. No tag or release is published merely by
@@ -175,10 +175,32 @@ Test the cloud connection, bad-certificate behavior, Composer import, actions,
 repeated reconnects, and multiple driver instances on the target OS before
 production use.
 
-A retired binding is held until Director reports OFFLINE, then released.
-Callbacks for other bindings or ports are ignored. A controller that never
-reports disconnect completion can exhaust the bounded dynamic binding pool;
+A binding that connected is retired until Director reports OFFLINE, then
+released; a binding closed before connecting is released immediately so a
+missing OFFLINE cannot strand it. The allocator never reissues a live hub or
+Composer binding id even when Director reports no address for it. Callbacks
+for other bindings or ports are ignored. If the bounded pool ever exhausts,
 the driver reports an allocation failure rather than reusing a live binding.
+
+## Director acceptance checklist
+
+The offline suite plus the published
+[DriverWorks API](https://control4.github.io/docs-driverworks-api/) verify the
+timer, hash, transfer, file, TLS, UUID, and contact-notify contracts, but
+these behaviors need a real controller:
+
+- Which `GetDevicesByC4iName` key matches (`flologic_valve.c4i`,
+  `flologic_valve`, or the package filename). The driver tries all three.
+- Which `FileSetDir` alias stages where the Composer trigger finds the
+  package (`C4Z_ROOT` first, documented `C4Z` on denial).
+- End-to-end Install Latest Release and Force Reinstall: the
+  `UpdateProjectC4i` SOAP trigger on port 5020 is undocumented folk
+  knowledge, so confirm Director actually loads the staged build.
+- `STATE_OPENED`/`STATE_CLOSED` initial sync versus `OPENED`/`CLOSED`
+  transitions on real CONTACT_SENSOR bindings (the base vocabulary matches
+  the documented `SendToProxy` example; the `STATE_` distinction is ours).
+- A live cloud poll and a mode command round trip, repeated reconnects,
+  credential/selection changes, and two driver instances polling together.
 
 Polling is not an alarm delivery guarantee. WAN outages and cloud latency can
 delay events, and transitions between polls may be missed. FloLogic's own

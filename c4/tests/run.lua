@@ -482,7 +482,8 @@ T.test("session: auth, timeout, and missing-valve errors", function()
     err2 = e
   end)
   T.check_equal(err2, "valve-not-found", "unknown selection")
-  -- Metadata timeout fails the snapshot and closes up.
+  -- Metadata timeouts degrade like the Home Assistant client: access
+  -- degrades to nil instead of failing the snapshot.
   local hanging = TestHelp.new_fake_server({
     {
       expect_target = "Login",
@@ -493,15 +494,24 @@ T.test("session: auth, timeout, and missing-valve errors", function()
     },
     { expect_target = "RefreshValveArray", reply_target = "ValveArraySent", reply_args = { { v1 } } },
     { expect_target = "RequestUserAccesses" }, -- never replies
+    { expect_target = "RequestSchedulerEvents" }, -- never replies
+    { expect_target = "RefreshValvesNotificationsHistory" }, -- never replies
   })
-  local err3 = nil
-  new_test_session(hanging, timers).fetch_snapshot(HUB_URL, "uuid-1", function(e)
-    err3 = e
+  local err3, snap3 = nil, nil
+  new_test_session(hanging, timers).fetch_snapshot(HUB_URL, "uuid-1", function(e, s)
+    err3, snap3 = e, s
   end)
   T.check(err3 == nil, "waits for the timeout")
   timers.advance(30000)
-  T.check_equal(err3, "timeout:UserAccessesSent", "step timeout")
-  T.check(hanging._tcp_closed, "closed after timeout")
+  T.check(err3 == nil, "access timeout degrades instead of failing")
+  timers.advance(30000)
+  T.check(err3 == nil, "scheduler timeout degrades instead of failing")
+  timers.advance(30000)
+  T.check(err3 == nil, "snapshot completes, got " .. tostring(err3))
+  T.check(snap3 ~= nil and snap3.access == nil, "access degrades to nil")
+  T.check(snap3 ~= nil and #snap3.scheduler == 0, "scheduler degrades to empty")
+  T.check(hanging._tcp_closed, "closed after completion")
+  T.check_equal(timers.pending_count(), 0, "no timers leak")
 end)
 
 T.test("session: hub URL parsing", function()
@@ -587,6 +597,84 @@ T.test("session: discovery honors full inventory despite an early primary push",
     snapshot = snap
   end)
   T.check(snapshot ~= nil and #snapshot.devices == 0, "primary push cannot resurrect removed valve")
+  T.check_equal(timers.pending_count(), 0, "cleanup")
+end)
+
+T.test("session: pushed valves merge into a live inventory", function()
+  local timers = TestHelp.new_fake_timers()
+  local v2 = make_valve({ id = 22, uuid = "uuid-2", mode = 2 })
+  local updated = make_valve({ mode = 8 })
+  -- Split declaration: captures inside the initializer must see this local.
+  local server
+  server = TestHelp.new_fake_server({
+    { expect_target = "Login", reply_target = "LoggedIn", reply_args = { test_user() } },
+    { expect_target = "RefreshValveArray", reply_target = "ValveArraySent", reply_args = { { make_valve() } } },
+    {
+      expect_target = "RequestUserAccesses",
+      reply_target = "UserAccessesSent",
+      reply_args = { {} },
+      capture = function()
+        -- A replacement and a brand-new valve arrive mid-fetch.
+        server._emit(
+          JSON.encode({ type = 1, target = "ValveSent", arguments = { updated } }) .. SignalR.RECORD_SEPARATOR
+        )
+        server._emit(JSON.encode({ type = 1, target = "ValveSent", arguments = { v2 } }) .. SignalR.RECORD_SEPARATOR)
+      end,
+    },
+    { expect_target = "RequestSchedulerEvents", reply_target = "SchedulerEventsSent", reply_args = { {} } },
+    {
+      expect_target = "RefreshValvesNotificationsHistory",
+      reply_target = "NotificationsHistorySent",
+      reply_args = { {} },
+    },
+  })
+  local err, snap = nil, nil
+  new_test_session(server, timers).fetch_snapshot(HUB_URL, "11", function(e, s)
+    err, snap = e, s
+  end)
+  T.check(err == nil, "no error, got " .. tostring(err))
+  T.check_equal(#snap.devices, 2, "pushed valve joins the inventory")
+  T.check_equal(snap.valve.mode, 8, "matching push replaces the cached valve")
+  T.check_equal(FloModel.find_valve(snap.devices, 22).uuid, "uuid-2", "new push is selectable")
+  T.check_equal(timers.pending_count(), 0, "cleanup")
+end)
+
+T.test("session: cloud error notices and malformed frames do not abort a fetch", function()
+  local timers = TestHelp.new_fake_timers()
+  -- Split declaration: captures inside the initializer must see this local.
+  local server
+  server = TestHelp.new_fake_server({
+    {
+      expect_target = "Login",
+      replies = {
+        { target = "LoggedIn", args = { test_user() } },
+        { target = "ErrorOccured", args = { { message = "spurious" } } },
+      },
+    },
+    {
+      expect_target = "RefreshValveArray",
+      reply_target = "ValveArraySent",
+      reply_args = { { make_valve() } },
+      capture = function()
+        server._emit("not json at all" .. SignalR.RECORD_SEPARATOR)
+        server._emit('{"type":1,"target":12345}' .. SignalR.RECORD_SEPARATOR)
+        server._tcp_callbacks.on_data(string.char(130, 4) .. "junk")
+      end,
+    },
+    { expect_target = "RequestUserAccesses", reply_target = "UserAccessesSent", reply_args = { {} } },
+    { expect_target = "RequestSchedulerEvents", reply_target = "SchedulerEventsSent", reply_args = { {} } },
+    {
+      expect_target = "RefreshValvesNotificationsHistory",
+      reply_target = "NotificationsHistorySent",
+      reply_args = { {} },
+    },
+  })
+  local err, snap = nil, nil
+  new_test_session(server, timers).fetch_snapshot(HUB_URL, "11", function(e, s)
+    err, snap = e, s
+  end)
+  T.check(err == nil, "fetch survives, got " .. tostring(err))
+  T.check(snap ~= nil and snap.valve.id == 11, "snapshot completes")
   T.check_equal(timers.pending_count(), 0, "cleanup")
 end)
 

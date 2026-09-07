@@ -14,6 +14,7 @@ local function director()
     saved = {},
     files = {},
     file_dirs = {},
+    dir_attempts = {},
     files_denied = false,
     installed = {},
     soap_packets = {},
@@ -114,7 +115,8 @@ local function director()
     OnConnectionStatusChanged(id, port, "OFFLINE")
   end
   function C4:FileSetDir(alias)
-    if env.files_denied then
+    env.dir_attempts[#env.dir_attempts + 1] = alias
+    if env.files_denied or (env.denied_dirs ~= nil and env.denied_dirs[alias]) then
       error("Restricted path specified")
     end
     env.file_dirs[#env.file_dirs + 1] = alias
@@ -521,7 +523,7 @@ end
 
 D.test("director: install command stages the package and triggers Composer", function()
   local env = director()
-  env.installed["flologic_valve.c4z"] = { [1] = true }
+  env.installed["flologic_valve.c4i"] = { [1] = true }
   env.files["flologic_valve.c4z"] = "OLD-DRIVER-BYTES"
   ExecuteCommand("Install Latest Release", {})
   D.check_equal(env.transfers[1].url, FloUpdate.API_URL, "install queries releases first")
@@ -540,6 +542,7 @@ end)
 
 D.test("director: force reinstall bypasses the version compare", function()
   local env = director()
+  -- The package filename is the fallback lookup key when the proxy name misses.
   env.installed["flologic_valve.c4z"] = { [1] = true }
   ExecuteCommand("Force Reinstall Latest Release", {})
   env.transfers[1].done(nil, { { code = 200, body = director_release(FLOGIC_DRIVER_VERSION) } }, 0)
@@ -552,7 +555,7 @@ end)
 
 D.test("director: denied file store fails loudly and keeps the old driver", function()
   local env = director()
-  env.installed["flologic_valve.c4z"] = { [1] = true }
+  env.installed["flologic_valve"] = { [1] = true }
   env.files["flologic_valve.c4z"] = "OLD-DRIVER-BYTES"
   env.files_denied = true
   ExecuteCommand("Install Latest Release", {})
@@ -565,5 +568,120 @@ D.test("director: denied file store fails loudly and keeps the old driver", func
       and Properties["Update Status"]:find("Composer", 1, true) ~= nil,
     "denial points at the manual path, got " .. tostring(Properties["Update Status"])
   )
+  OnDriverDestroyed()
+end)
+
+D.test("director: staging falls back to the documented C4Z alias", function()
+  local env = director()
+  env.installed["flologic_valve.c4i"] = { [1] = true }
+  env.denied_dirs = { C4Z_ROOT = true }
+  ExecuteCommand("Install Latest Release", {})
+  env.transfers[1].done(nil, { { code = 200, body = director_release("2026090801") } }, 0)
+  env.transfers[2].done(nil, { { code = 200, body = "NEW-C4Z-BYTES" } }, 0)
+  D.check_equal(env.dir_attempts[1], "C4Z_ROOT", "proflame alias tried first")
+  D.check_equal(env.dir_attempts[2], "C4Z", "documented alias tried on denial")
+  D.check_equal(env.files["flologic_valve.c4z"], "NEW-C4Z-BYTES", "staging completes via fallback")
+  D.check_equal(#env.soap_packets, 1, "install triggers after fallback staging")
+  OnDriverDestroyed()
+end)
+
+D.test("director: install without a store entry reports not-installed", function()
+  local env = director()
+  ExecuteCommand("Install Latest Release", {})
+  D.check_equal(#env.transfers, 0, "no GitHub query without a store entry")
+  D.check(
+    Properties["Update Status"]:find("not found on controller", 1, true) ~= nil,
+    "skip names the missing package, got " .. tostring(Properties["Update Status"])
+  )
+  OnDriverDestroyed()
+end)
+
+D.test("director: websocket handshake survives a hex-only C4:Hash", function()
+  local env = director()
+  -- Colon definition: the probe's C4:Hash(...) calls pass C4 as self.
+  function C4:Hash(_, data, opts)
+    if opts ~= nil then
+      error("options unsupported")
+    end
+    return D.sha1_hex(data)
+  end
+  OnDriverLateInit("test")
+  D.check_equal(flogic_state.sha1_probe.encoding, "hex", "hex fallback probed")
+  D.check_equal(flogic_state.sha1_probe.arity, 2, "two-argument call shape")
+  Properties["Select Valve"] = ""
+  env.server = D.new_fake_server({
+    { expect_target = "Login", reply_target = "LoggedIn", reply_args = { { id = 7 } } },
+    {
+      expect_target = "RefreshValveArray",
+      reply_target = "ValveArraySent",
+      reply_args = { { { id = 11, name = "Kitchen" } } },
+    },
+  })
+  flogic_poll_now()
+  D.check_equal(Properties.Connection, "Select a valve", "discovery completes on hex digests")
+  D.check(not flogic_state.busy, "completion releases busy flag")
+  OnDriverDestroyed()
+end)
+
+D.test("director: unusable C4:Hash parks the driver with a clear status", function()
+  local env = director()
+  C4.Hash = function()
+    error("no hash")
+  end
+  OnDriverLateInit("test")
+  D.check(flogic_state.sha1_probe == nil, "no probe result")
+  D.check(not flogic_state.initialized, "driver stays uninitialized")
+  flogic_poll_now()
+  D.check_equal(#env.transfers, 0, "no poll without a digest")
+  D.check(
+    Properties.Connection:find("no SHA1", 1, true) ~= nil,
+    "status names the missing digest, got " .. tostring(Properties.Connection)
+  )
+  OnDriverDestroyed()
+end)
+
+D.test("director: polls never steal the idle Composer binding", function()
+  local env = director()
+  env.installed["flologic_valve"] = { [1] = true }
+  ExecuteCommand("Install Latest Release", {})
+  env.transfers[1].done(nil, { { code = 200, body = director_release("2026090801") } }, 0)
+  env.transfers[2].done(nil, { { code = 200, body = "NEW-C4Z-BYTES" } }, 0)
+  local soap_id = env.binding
+  D.check(soap_id ~= nil, "install used a binding")
+  -- Director clears the address when the SOAP connection drops; the id must
+  -- still be reserved for the Composer endpoint.
+  C4:SetBindingAddress(soap_id, "")
+  Properties["Select Valve"] = ""
+  env.server = D.new_fake_server({
+    { expect_target = "Login", reply_target = "LoggedIn", reply_args = { { id = 7 } } },
+    {
+      expect_target = "RefreshValveArray",
+      reply_target = "ValveArraySent",
+      reply_args = { { { id = 11, name = "Kitchen" } } },
+    },
+  })
+  flogic_poll_now()
+  D.check(env.binding ~= soap_id, "poll takes a fresh binding")
+  D.check_equal(Properties.Connection, "Select a valve", "poll completes")
+  OnDriverDestroyed()
+end)
+
+D.test("director: cancelling before connect releases the binding for reuse", function()
+  local env = director()
+  flogic_poll_now()
+  env.transfers[1].done(nil, { { code = 200, body = '{"connectionToken":"token"}' } }, 0)
+  local first_id = env.binding
+  -- Simulate a Director that never reports OFFLINE for the aborted connect.
+  local disconnects = 0
+  C4.NetDisconnect = function()
+    disconnects = disconnects + 1
+  end
+  Properties["Select Valve"] = "Garden (22)"
+  OnPropertyChanged("Select Valve")
+  D.check(flogic_state.retired_bindings[first_id] == nil, "unconnected binding not retired")
+  D.check_equal(disconnects, 1, "aborted connect still disconnects")
+  flogic_poll_now()
+  env.transfers[2].done(nil, { { code = 200, body = '{"connectionToken":"token"}' } }, 0)
+  D.check_equal(env.binding, first_id, "binding reused immediately")
   OnDriverDestroyed()
 end)
