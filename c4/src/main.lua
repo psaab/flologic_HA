@@ -8,7 +8,7 @@
 -- Lua 5.1 safe.
 -- ============================================================================
 
-FLOGIC_DRIVER_VERSION = "2026090705"
+FLOGIC_DRIVER_VERSION = "2026090706"
 print("[flologic] Lua loaded: " .. FLOGIC_DRIVER_VERSION)
 FLOGIC_DEFAULT_HUB = "https://hub-cloudapps-prod.azurewebsites.net"
 FLOGIC_BINDING_FIRST = 6100

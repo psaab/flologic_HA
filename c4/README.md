@@ -1,7 +1,7 @@
 # FloLogic Control4 Driver
 
 Control4 DriverWorks driver for FloLogic Connect valves, based on the
-[Home Assistant integration](../README.md). Version **2026090705**, targeting
+[Home Assistant integration](../README.md). Version **2026090706**, targeting
 Control4 OS **3.3.0 or newer**. One instance monitors one explicitly selected
 valve. This is a poll-based programming driver; it has no Navigator interface
 or sensor proxy bindings. Two relay connections report valve-closed and away status.
@@ -36,7 +36,7 @@ repeated late-init/update callbacks leave one timer set. Persistent device ident
 credentials, and valve selection survive. Retired network bindings remain
 reserved until Director acknowledges their disconnection.
 
-Version 2026090705 uses an explicit closing `script` tag, matching Proflame's
+Version 2026090706 uses an explicit closing `script` tag, matching Proflame's
 [working reload manifest](https://github.com/psaab/proflame_c4/commit/c295ce0678b3).
 This is a compatibility change; its effect still needs verification on Director.
 Lua Output now reports `Lua loaded`, each initialization callback with its reason,
@@ -67,7 +67,7 @@ ignored. A build newer than GitHub is reported explicitly. A repository with
 no eligible C4 asset is reported as such, rather than as up to date.
 
 To publish after committing and pushing a tested build, create and push a tag
-matching the XML/Lua version (for this build, `c4-v2026090705`). The
+matching the XML/Lua version (for this build, `c4-v2026090706`). The
 `release-c4.yml` workflow verifies the tag, tests/rebuilds the driver, and uploads
 its asset. C4 releases are not marked as GitHub's latest release, preserving
 that designation for Home Assistant. No tag or release is published merely by
