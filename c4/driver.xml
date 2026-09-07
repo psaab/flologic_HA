@@ -8,9 +8,10 @@
   <manufacturer>FloLogic</manufacturer>
   <driver>DriverWorks</driver>
   <control>lua_gen</control>
-  <version>2026090601</version>
+  <version>2026090701</version>
+  <minimum_os_version>3.3.0</minimum_os_version>
   <created>09/06/2026 12:00 PM</created>
-  <modified>09/06/2026 12:00 PM</modified>
+  <modified>09/07/2026 12:00 PM</modified>
   <!-- Self-distributed via GitHub; Control4's native driver-update database
        will never carry this driver, so disable that path. -->
   <auto_update>false</auto_update>
@@ -21,7 +22,7 @@
       <property>
         <name>Driver Version</name>
         <type>STRING</type>
-        <default>2026090601</default>
+        <default>2026090701</default>
         <readonly>true</readonly>
       </property>
       <property>
@@ -33,6 +34,7 @@
       </property>
       <property>
         <name>Password</name>
+        <password>true</password>
         <type>STRING</type>
         <default/>
         <readonly>false</readonly>
@@ -58,7 +60,7 @@
         <name>Select Valve</name>
         <type>DYNAMIC_LIST</type>
         <readonly>false</readonly>
-        <description>Valve this driver monitors, populated from the account after the first poll. Blank means the primary valve.</description>
+        <description>Valve this driver monitors, populated from the account after the first poll. Select a valve explicitly before monitoring or sending commands.</description>
       </property>
       <property>
         <name>Valve ID Override</name>
@@ -79,6 +81,12 @@
       </property>
       <property>
         <name>Connection</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>Last Command</name>
         <type>STRING</type>
         <default/>
         <readonly>true</readonly>

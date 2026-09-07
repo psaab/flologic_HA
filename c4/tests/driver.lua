@@ -1,0 +1,282 @@
+-- Director contract tests. No cloud credentials or network access required.
+local D = TestHelp
+local original_factory = FloLogic.new_session
+
+local function director()
+  local timers = D.new_fake_timers()
+  local env = { timers = timers, sessions = {}, transfers = {}, events = {}, addresses = {}, saved = {} }
+  Properties = { Email = "test@example.invalid", Password = "test", ["Select Valve"] = "Kitchen (11)" }
+  flogic_state = { command_queue = {}, retired_bindings = {}, relog_token = "" }
+  C4 = {}
+  function C4:UpdateProperty(name, value)
+    Properties[name] = value
+  end
+  function C4:UpdatePropertyList(name, list, value)
+    env.list = list
+    Properties[name] = value
+  end
+  function C4:FireEvent(name)
+    env.events[#env.events + 1] = name
+  end
+  function C4:PersistGetValue(key)
+    return env.saved[key]
+  end
+  function C4:PersistSetValue(key, value)
+    env.saved[key] = value
+  end
+  function C4:UUID()
+    return "12345678-1234-4234-8234-123456789abc"
+  end
+  function C4:Hash(_, value)
+    return D.sha1(value)
+  end
+  function C4:Base64Encode(value)
+    return D.b64encode(value)
+  end
+  function C4:SetTimer(ms, callback, repeating)
+    local timer = {}
+    function timer:Cancel()
+      self.cancelled = true
+      if self.cancel then
+        self.cancel()
+      end
+    end
+    local function fire()
+      if timer.cancelled then
+        return
+      end
+      callback(timer)
+      if repeating and not timer.cancelled then
+        timer.cancel = timers.set_timeout(ms, fire)
+      end
+    end
+    timer.cancel = timers.set_timeout(ms, fire)
+    return timer
+  end
+  function C4:GetBindingAddress(id)
+    return env.addresses[id]
+  end
+  function C4:SetBindingAddress(id, value)
+    env.addresses[id] = value
+  end
+  function C4:CreateNetworkConnection(id, host, protocol)
+    env.addresses[id], env.protocol = host, protocol
+  end
+  function C4:NetPortOptions(_, _, protocol, options)
+    env.tls, env.tls_protocol = options, protocol
+  end
+  function C4:NetConnect(id, port)
+    env.binding, env.port = id, port
+    if env.server then
+      env.socket = env.server.tcp_open(env.addresses[id], port, {
+        on_open = function()
+          OnConnectionStatusChanged(id, port, "ONLINE")
+        end,
+        on_data = function(bytes)
+          ReceivedFromNetwork(id, port, bytes)
+        end,
+        on_close = function()
+          OnConnectionStatusChanged(id, port, "OFFLINE")
+        end,
+      })
+    end
+  end
+  function C4:SendToNetwork(_, _, bytes)
+    env.socket.send(bytes)
+  end
+  function C4:NetDisconnect(id, port)
+    if env.socket then
+      env.socket.close()
+    end
+    OnConnectionStatusChanged(id, port, "OFFLINE")
+  end
+  function C4:url()
+    local transfer = {}
+    function transfer:SetOptions(options)
+      self.options = options
+    end
+    function transfer:OnDone(callback)
+      self.done = callback
+    end
+    function transfer:Cancel()
+      self.cancelled = true
+    end
+    function transfer:Post(url, body, headers)
+      self.url, self.headers = url, headers
+      if env.server then
+        env.server.http_post(url, body, headers, function(err, data, code)
+          self.done(self, { { code = code, body = data } }, err and 1 or 0, err)
+        end)
+      end
+    end
+    env.transfers[#env.transfers + 1] = transfer
+    return transfer
+  end
+  FloLogic.new_session = original_factory
+  OnDriverInit()
+  OnDriverLateInit()
+  return env
+end
+
+local function stub_sessions(env)
+  FloLogic.new_session = function()
+    local session = {}
+    env.sessions[#env.sessions + 1] = session
+    function session.cancel()
+      session.cancelled = true
+    end
+    function session.fetch_snapshot(_, selected, cb)
+      session.selected, session.callback = selected, cb
+    end
+    function session.send_command(_, selected, fields, cb)
+      session.selected, session.fields, session.callback = selected, fields, cb
+    end
+    return session
+  end
+end
+
+D.test("director: configuration cancels work and ignores late callbacks", function()
+  local env = director()
+  stub_sessions(env)
+  flogic_poll_now()
+  local first = env.sessions[1]
+  ExecuteCommand("Set Mode Shutoff", {})
+  D.check_equal(flogic_state.command_queue[1].selected, "11", "queue pins valve")
+  Properties["Select Valve"] = "Garden (22)"
+  OnPropertyChanged("Select Valve")
+  D.check(first.cancelled, "active session cancelled")
+  D.check_equal(#flogic_state.command_queue, 0, "queue cancelled")
+  flogic_poll_now()
+  first.callback("old failure")
+  D.check(flogic_state.busy, "old callback cannot release new session")
+  D.check_equal(env.sessions[2].selected, "22", "new session uses new valve")
+  OnDriverDestroyed()
+  D.check_equal(env.timers.pending_count(), 0, "destroy cancels every timer")
+  env.sessions[2].callback("late failure")
+  D.check_equal(#env.events, 0, "destroyed driver emits no events")
+end)
+
+D.test("director: picker preserves identity and never selects another site", function()
+  local env = director()
+  stub_sessions(env)
+  Properties["Select Valve"] = ""
+  flogic_poll_now()
+  env.sessions[1].callback(nil, { devices = { { id = 11, name = "Kitchen, downstairs", deviceType = "valve" } } })
+  D.check_equal(Properties["Select Valve"], "Select a valve", "discovery requires selection")
+  ExecuteCommand("Set Mode Shutoff", {})
+  D.check_equal(#env.sessions, 1, "unselected command never starts")
+  Properties["Select Valve"] = "Kitchen (11)"
+  flogic_poll_now()
+  env.sessions[2].callback(nil, { devices = { { id = 22, name = "Garden" } } })
+  D.check_equal(Properties["Select Valve"], "Unavailable (11)", "missing valve retained")
+  OnDriverDestroyed()
+end)
+
+D.test("director: queue overflow preserves earlier commands and validates integers", function()
+  local env = director()
+  stub_sessions(env)
+  flogic_poll_now()
+  ExecuteCommand("Set Mode Shutoff", {})
+  for _ = 1, 8 do
+    ExecuteCommand("Set Mode Home", {})
+  end
+  D.check_equal(#flogic_state.command_queue, 8, "queue bounded")
+  D.check_equal(flogic_state.command_queue[1].name, "Set Mode Shutoff", "oldest write preserved")
+  flogic_state.command_queue = {}
+  ExecuteCommand("Set Home Limit", { Minutes = 0 / 0 })
+  ExecuteCommand("Set Home Limit", { Minutes = 1.5 })
+  D.check_equal(#flogic_state.command_queue, 0, "nonfinite/fractional commands rejected")
+  ExecuteCommand("Set Away Limit", { Minutes = 0.5 })
+  ExecuteCommand("Set Flow Sensitivity", { Value = 0.25 })
+  D.check_equal(#flogic_state.command_queue, 2, "fractional settings preserved")
+  OnDriverDestroyed()
+end)
+
+D.test("director: native HTTP errors, cancellation, and startup guard", function()
+  local env = director()
+  flogic_poll_now()
+  local request = env.transfers[1]
+  D.check(request.options.ssl_verify_peer and request.options.ssl_verify_host, "HTTP verifies TLS")
+  request.done(request, {}, 28, "timeout")
+  D.check(not flogic_state.busy, "HTTP error completes session")
+  D.check(Properties.Connection:find("transport%-28") ~= nil, "transport error surfaced")
+  flogic_poll_now()
+  local pending = env.transfers[2]
+  OnDriverDestroyed()
+  D.check(pending.cancelled, "HTTP cancelled on destroy")
+  pending.done(pending, { { code = 200, body = '{"connectionToken":"late"}' } }, 0)
+  D.check(env.binding == nil, "late HTTP completion opens no socket")
+  OnPropertyChanged("Email")
+  D.check_equal(env.timers.pending_count(), 0, "property callback cannot restart destroyed driver")
+end)
+
+D.test("director: full adapter discovery and verified TLS options", function()
+  local env = director()
+  Properties["Select Valve"] = ""
+  env.server = D.new_fake_server({
+    { expect_target = "Login", reply_target = "LoggedIn", reply_args = { { id = 7 } } },
+    {
+      expect_target = "RefreshValveArray",
+      reply_target = "ValveArraySent",
+      reply_args = { { { id = 11, name = "Kitchen" } } },
+    },
+  })
+  flogic_poll_now()
+  D.check_equal(Properties.Connection, "Select a valve", "adapter completes discovery")
+  D.check_equal(env.tls.VERIFY_MODE, "peer", "raw TLS peer verification")
+  D.check_equal(env.tls.CACERTFILE, "./ca-bundle.pem", "packaged trust store")
+  D.check_equal(env.tls_protocol, "SSL", "documented socket protocol")
+  D.check(not flogic_state.busy, "completion releases busy flag")
+  D.check(env.server._tcp_closed, "socket closed")
+  OnDriverDestroyed()
+  D.check_equal(env.timers.pending_count(), 0, "no timer leaks")
+end)
+
+D.test("director: port mismatch and obsolete binding cannot affect active session", function()
+  local env = director()
+  flogic_poll_now()
+  env.transfers[1].done(nil, { { code = 200, body = '{"connectionToken":"token"}' } }, 0)
+  OnConnectionStatusChanged(env.binding, env.port + 1, "OFFLINE")
+  ReceivedFromNetwork(env.binding + 1, env.port, "irrelevant")
+  D.check(flogic_state.busy, "unrelated network callbacks ignored")
+  OnDriverDestroyed()
+end)
+
+FloLogic.new_session = original_factory
+
+D.test("director: Composer actions dispatch and offline snapshots stop local ticks", function()
+  local env = director()
+  stub_sessions(env)
+  ExecuteCommand("LUA_ACTION", { ACTION = "Refresh" })
+  D.check_equal(#env.sessions, 1, "Composer action starts refresh")
+  local valve = {
+    id = 11,
+    online = true,
+    flowState = 2,
+    mode = 1,
+    lastNewFlow = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+    homeIntervalTime = 30,
+  }
+  env.sessions[1].callback(nil, { valve = valve, devices = { valve }, scheduler = {}, notifications = {} })
+  D.check(flogic_state.tick_timer ~= nil, "flow starts local timer")
+  flogic_poll_now()
+  env.sessions[2].callback("offline")
+  D.check(flogic_state.tick_timer == nil and flogic_state.last_snapshot == nil, "offline clears ticking snapshot")
+  local event_count = #env.events
+  env.timers.advance(5000)
+  D.check_equal(#env.events, event_count, "stale sample generates no valve events")
+  OnDriverDestroyed()
+end)
+
+D.test("director: changing accounts discards old target and relog credentials", function()
+  local env = director()
+  flogic_state.relog_token = "old-account-token"
+  Properties["Valve ID Override"] = "old-valve"
+  Properties.Email = "new@example.invalid"
+  OnPropertyChanged("Email")
+  D.check_equal(flogic_state.relog_token, "", "account token cleared")
+  D.check_equal(env.saved.flologic_relog, "", "persisted token cleared")
+  D.check_equal(Properties["Valve ID Override"], "", "override cleared")
+  D.check_equal(Properties["Select Valve"], "Select a valve", "new account requires explicit selection")
+  OnDriverDestroyed()
+end)

@@ -116,12 +116,8 @@ function TestHelp.sha1(message)
   end
   local out = {}
   for _, h in ipairs({ h0, h1, h2, h3, h4 }) do
-    out[#out + 1] = string.char(
-      math.floor(h / 16777216) % 256,
-      math.floor(h / 65536) % 256,
-      math.floor(h / 256) % 256,
-      h % 256
-    )
+    out[#out + 1] =
+      string.char(math.floor(h / 16777216) % 256, math.floor(h / 65536) % 256, math.floor(h / 256) % 256, h % 256)
   end
   return table.concat(out)
 end
@@ -300,6 +296,7 @@ function TestHelp.new_fake_server(script)
   local function client_parser()
     if parser_holder.p == nil then
       parser_holder.p = WS.new_parser({
+        expect_masked = true,
         on_message = function(payload)
           handle_client_text(payload)
         end,
@@ -332,7 +329,9 @@ function TestHelp.new_fake_server(script)
         local response = "HTTP/1.1 101 Switching Protocols\r\n"
           .. "Upgrade: websocket\r\n"
           .. "Connection: Upgrade\r\n"
-          .. "Sec-WebSocket-Accept: " .. accept .. "\r\n\r\n"
+          .. "Sec-WebSocket-Accept: "
+          .. accept
+          .. "\r\n\r\n"
         server._tcp_callbacks.on_data(response)
       else
         client_parser().feed(bytes)
@@ -367,8 +366,13 @@ end
 function TestHelp.check_equal(actual, expected, message)
   if actual ~= expected then
     error(
-      "check failed (" .. tostring(message) .. "): expected <"
-        .. tostring(expected) .. "> got <" .. tostring(actual) .. ">",
+      "check failed ("
+        .. tostring(message)
+        .. "): expected <"
+        .. tostring(expected)
+        .. "> got <"
+        .. tostring(actual)
+        .. ">",
       2
     )
   end

@@ -69,6 +69,9 @@ end
 -- success; nil, "need_more" when the headers are incomplete; nil, err otherwise.
 function WS.parse_handshake_response(buffer)
   local cut = buffer:find("\r\n\r\n", 1, true)
+  if (cut and cut > 16384) or (not cut and #buffer > 16384) then
+    return nil, "websocket headers too large"
+  end
   if cut == nil then
     return nil, "need_more"
   end
@@ -79,13 +82,19 @@ function WS.parse_handshake_response(buffer)
   end
   -- Match the header name case-insensitively but keep the original value:
   -- Base64 is case-sensitive.
-  local accept = nil
+  local accept, upgrade, connection = nil, nil, nil
   for line in (head .. "\r\n"):gmatch("([^\r\n]*)\r\n") do
     local name, value = line:match("^([^:]+):%s*(.-)%s*$")
     if name ~= nil and name:lower() == "sec-websocket-accept" then
       accept = value
-      break
+    elseif name ~= nil and name:lower() == "upgrade" then
+      upgrade = value:lower()
+    elseif name ~= nil and name:lower() == "connection" then
+      connection = "," .. value:lower():gsub("%s", "") .. ","
     end
+  end
+  if upgrade ~= "websocket" or not connection or not connection:find(",upgrade,", 1, true) then
+    return nil, "websocket upgrade headers invalid"
   end
   if accept == nil or accept == "" then
     return nil, "websocket upgrade missing Sec-WebSocket-Accept"
@@ -101,16 +110,17 @@ function WS.build_client_frame(payload, mask, opcode)
   if len < 126 then
     head = string.char(128 + opcode, 128 + len)
   elseif len < 65536 then
-    head = string.char(
-      128 + opcode, 128 + 126,
-      math.floor(len / 256) % 256, len % 256
-    )
+    head = string.char(128 + opcode, 128 + 126, math.floor(len / 256) % 256, len % 256)
   else
     local high = math.floor(len / 4294967296)
     local low = len % 4294967296
     head = string.char(
-      128 + opcode, 128 + 127,
-      0, 0, 0, 0,
+      128 + opcode,
+      128 + 127,
+      0,
+      0,
+      0,
+      0,
       math.floor(low / 16777216) % 256,
       math.floor(low / 65536) % 256,
       math.floor(low / 256) % 256,
@@ -120,9 +130,7 @@ function WS.build_client_frame(payload, mask, opcode)
       error("websocket payload too large")
     end
   end
-  return head
-    .. string.char(mask[1], mask[2], mask[3], mask[4])
-    .. WS.xor_mask(payload, mask)
+  return head .. string.char(mask[1], mask[2], mask[3], mask[4]) .. WS.xor_mask(payload, mask)
 end
 
 function WS.build_close_payload(code, reason)
@@ -141,6 +149,18 @@ function WS.new_parser(callbacks)
   callbacks = callbacks or {}
   local self = { _buffer = "", _frag_opcode = nil, _frag_parts = {} }
 
+  local max_size = callbacks.max_message_size or 1048576
+  function self.stop()
+    self._stopped = true
+    self._buffer, self._frag_parts, self._frag_size = "", {}, 0
+  end
+  local function fail(message)
+    self.stop()
+    if callbacks.on_error then
+      callbacks.on_error(message)
+    end
+  end
+
   local function parse_one()
     local buf, blen = self._buffer, #self._buffer
     if blen < 2 then
@@ -153,7 +173,16 @@ function WS.new_parser(callbacks)
       return nil, "websocket RSV bits set without negotiated extensions"
     end
     local masked = b2 >= 128
+    if masked ~= (callbacks.expect_masked == true) then
+      return nil, "incorrect websocket masking"
+    end
+    if opcode ~= 0 and opcode ~= 1 and opcode ~= 2 and opcode ~= 8 and opcode ~= 9 and opcode ~= 10 then
+      return nil, "unknown websocket opcode"
+    end
     local len = b2 % 128
+    if opcode >= 8 and (not fin or len > 125 or (opcode == 8 and len == 1)) then
+      return nil, "invalid websocket control frame"
+    end
     local pos = 3
     if len == 126 then
       if blen < 4 then
@@ -165,15 +194,16 @@ function WS.new_parser(callbacks)
       if blen < 10 then
         return nil
       end
-      local high = buf:byte(3) * 16777216 + buf:byte(4) * 65536
-        + buf:byte(5) * 256 + buf:byte(6)
-      local low = buf:byte(7) * 16777216 + buf:byte(8) * 65536
-        + buf:byte(9) * 256 + buf:byte(10)
+      local high = buf:byte(3) * 16777216 + buf:byte(4) * 65536 + buf:byte(5) * 256 + buf:byte(6)
+      local low = buf:byte(7) * 16777216 + buf:byte(8) * 65536 + buf:byte(9) * 256 + buf:byte(10)
       if high ~= 0 then
         return nil, "websocket frame too large"
       end
       len = low
       pos = 11
+    end
+    if len > max_size then
+      return nil, "websocket frame too large"
     end
     local mask = nil
     if masked then
@@ -195,13 +225,18 @@ function WS.new_parser(callbacks)
   end
 
   function self.feed(data)
+    if self._stopped then
+      return
+    end
     self._buffer = self._buffer .. data
-    while true do
+    if #self._buffer > max_size + 14 then
+      fail("websocket buffer too large")
+      return
+    end
+    while not self._stopped do
       local frame, err = parse_one()
       if err ~= nil then
-        if callbacks.on_error ~= nil then
-          callbacks.on_error(err)
-        end
+        fail(err)
         return
       end
       if frame == nil then
@@ -210,9 +245,12 @@ function WS.new_parser(callbacks)
       local op, payload = frame.opcode, frame.payload
       if op == WS.OP_CONT then
         if self._frag_opcode == nil then
-          if callbacks.on_error ~= nil then
-            callbacks.on_error("stray websocket continuation frame")
-          end
+          fail("stray websocket continuation frame")
+          return
+        end
+        self._frag_size = (self._frag_size or 0) + #payload
+        if self._frag_size > max_size then
+          fail("websocket message too large")
           return
         end
         self._frag_parts[#self._frag_parts + 1] = payload
@@ -226,9 +264,7 @@ function WS.new_parser(callbacks)
         end
       elseif op == WS.OP_TEXT or op == WS.OP_BINARY then
         if self._frag_opcode ~= nil then
-          if callbacks.on_error ~= nil then
-            callbacks.on_error("interleaved websocket data frame")
-          end
+          fail("interleaved websocket data frame")
           return
         end
         if frame.fin then
@@ -236,7 +272,7 @@ function WS.new_parser(callbacks)
             callbacks.on_message(payload, op == WS.OP_BINARY)
           end
         else
-          self._frag_opcode, self._frag_parts = op, { payload }
+          self._frag_opcode, self._frag_parts, self._frag_size = op, { payload }, #payload
         end
       elseif op == WS.OP_PING then
         local want_pong = true
@@ -251,6 +287,7 @@ function WS.new_parser(callbacks)
           callbacks.on_pong(payload)
         end
       elseif op == WS.OP_CLOSE then
+        self.stop()
         local code, reason = 1005, ""
         if #payload >= 2 then
           code = payload:byte(1) * 256 + payload:byte(2)

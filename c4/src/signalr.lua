@@ -15,8 +15,7 @@ function SignalR.handshake_message()
 end
 
 function SignalR.build_invoke(target, args)
-  return JSON.encode({ type = 1, target = target, arguments = args or {} })
-    .. SignalR.RECORD_SEPARATOR
+  return JSON.encode({ type = 1, target = target, arguments = args or {} }) .. SignalR.RECORD_SEPARATOR
 end
 
 -- Dispatcher matches hub events to one-shot waiters, like the Home Assistant
@@ -58,9 +57,15 @@ function SignalR.new_dispatcher(opts)
     return list ~= nil and #list or 0
   end
 
+  function self.stop()
+    self._stopped = true
+    self._buffer, self._waiters = "", {}
+  end
+
   function self.fail_all(err)
-    for event_name, list in pairs(self._waiters) do
-      self._waiters[event_name] = {}
+    local waiters = self._waiters
+    self._waiters = {}
+    for _, list in pairs(waiters) do
       for _, fn in ipairs(list) do
         fn(nil, err)
       end
@@ -68,6 +73,18 @@ function SignalR.new_dispatcher(opts)
   end
 
   local function handle_frame(frame)
+    if type(frame) == "table" and (frame.error ~= nil or frame.type == 7) then
+      if self._on_error then
+        self._on_error("server-closed")
+      end
+      return
+    end
+    if type(frame) == "table" and frame.type == nil and self.on_handshake then
+      local callback = self.on_handshake
+      self.on_handshake = nil
+      callback()
+      return
+    end
     if type(frame) ~= "table" or frame.type ~= 1 then
       return
     end
@@ -76,19 +93,38 @@ function SignalR.new_dispatcher(opts)
       return
     end
     local args = frame.arguments or {}
+    if type(target) ~= "string" or type(args) ~= "table" then
+      if self._on_error then
+        self._on_error("bad-event")
+      end
+      return
+    end
+    if self._on_event ~= nil then
+      self._on_event(target, args)
+    end
+    if self._stopped then
+      return
+    end
     local list = self._waiters[target]
     if list ~= nil and #list > 0 then
       local fn = table.remove(list, 1)
       fn(args, nil)
     end
-    if self._on_event ~= nil then
-      self._on_event(target, args)
-    end
   end
 
   function self.feed(text)
+    if self._stopped then
+      return
+    end
     self._buffer = self._buffer .. text
-    while true do
+    if #self._buffer > 1048576 then
+      self.stop()
+      if self._on_error then
+        self._on_error("record-too-large")
+      end
+      return
+    end
+    while not self._stopped do
       local cut = self._buffer:find(SignalR.RECORD_SEPARATOR, 1, true)
       if cut == nil then
         return
@@ -100,7 +136,7 @@ function SignalR.new_dispatcher(opts)
         if ok then
           handle_frame(frame)
         elseif self._on_error ~= nil then
-          self._on_error("undecodable SignalR frame: " .. raw:sub(1, 120))
+          self._on_error("undecodable SignalR frame")
         end
       end
     end

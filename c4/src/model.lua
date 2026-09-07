@@ -13,16 +13,34 @@ FloModel.VALVE_MODES = { home = 1, away = 2, bypass = 4, shutoff = 8, disabled =
 FloModel.MODE_NAMES = { [1] = "home", [2] = "away", [4] = "bypass", [8] = "shutoff", [16] = "disabled" }
 
 FloModel.VALVE_MODE_FLAGS = {
-  home = 1, away = 2, bypass = 4, shutoff = 8, disabled = 16,
-  flow_time_exceeded = 32, external_leak = 64, auto_away = 128,
-  external_bypass = 256, delay_away = 512, external_away = 1024,
-  override = 2048, ac_lost = 4096, change_battery = 8192, error = 16384,
-  sensor_leak = 32768, system_down = 65536, valve_failure = 131072,
-  communication_error = 262144, external_home = 524288,
-  external_emergency_shutdown = 1048576, updating = 2097152,
-  external_override = 4194304, low_temp_alert = 8388608,
-  low_temp_shutoff = 16777216, humidity_sensor_shutoff = 33554432,
-  low_temp_sensor_shutoff = 67108864, unknown = 268435456,
+  home = 1,
+  away = 2,
+  bypass = 4,
+  shutoff = 8,
+  disabled = 16,
+  flow_time_exceeded = 32,
+  external_leak = 64,
+  auto_away = 128,
+  external_bypass = 256,
+  delay_away = 512,
+  external_away = 1024,
+  override = 2048,
+  ac_lost = 4096,
+  change_battery = 8192,
+  error = 16384,
+  sensor_leak = 32768,
+  system_down = 65536,
+  valve_failure = 131072,
+  communication_error = 262144,
+  external_home = 524288,
+  external_emergency_shutdown = 1048576,
+  updating = 2097152,
+  external_override = 4194304,
+  low_temp_alert = 8388608,
+  low_temp_shutoff = 16777216,
+  humidity_sensor_shutoff = 33554432,
+  low_temp_sensor_shutoff = 67108864,
+  unknown = 268435456,
 }
 
 local F = FloModel.VALVE_MODE_FLAGS
@@ -32,30 +50,64 @@ for name, bit in pairs(F) do
 end
 
 FloModel.WATER_OFF_MODE_FLAGS = {
-  F.flow_time_exceeded, F.external_leak, F.sensor_leak, F.shutoff,
-  F.external_emergency_shutdown, F.low_temp_shutoff,
-  F.humidity_sensor_shutoff, F.low_temp_sensor_shutoff,
+  F.flow_time_exceeded,
+  F.external_leak,
+  F.sensor_leak,
+  F.shutoff,
+  F.external_emergency_shutdown,
+  F.low_temp_shutoff,
+  F.humidity_sensor_shutoff,
+  F.low_temp_sensor_shutoff,
 }
 FloModel.WARNING_ALERT_MODE_FLAGS = {
-  F.low_temp_alert, F.change_battery, F.ac_lost, F.communication_error, F.updating,
+  F.low_temp_alert,
+  F.change_battery,
+  F.ac_lost,
+  F.communication_error,
+  F.updating,
 }
 FloModel.CRITICAL_MODE_FLAGS = { F.error, F.system_down, F.valve_failure, F.unknown }
 
 FloModel.MODE_STATUS_PRIORITY = {
-  F.flow_time_exceeded, F.sensor_leak, F.external_leak,
-  F.external_emergency_shutdown, F.low_temp_shutoff,
-  F.humidity_sensor_shutoff, F.low_temp_sensor_shutoff, F.shutoff,
-  F.delay_away, F.auto_away, F.external_away, F.away, F.external_bypass,
-  F.bypass, F.external_home, F.home, F.disabled, F.updating,
-  F.communication_error, F.valve_failure, F.system_down, F.error, F.unknown,
+  F.flow_time_exceeded,
+  F.sensor_leak,
+  F.external_leak,
+  F.external_emergency_shutdown,
+  F.low_temp_shutoff,
+  F.humidity_sensor_shutoff,
+  F.low_temp_sensor_shutoff,
+  F.shutoff,
+  F.delay_away,
+  F.auto_away,
+  F.external_away,
+  F.away,
+  F.external_bypass,
+  F.bypass,
+  F.external_home,
+  F.home,
+  F.disabled,
+  F.updating,
+  F.communication_error,
+  F.valve_failure,
+  F.system_down,
+  F.error,
+  F.unknown,
 }
 
 FloModel.FLOW_STATE_NAMES = { [1] = "No flow", [2] = "New flow", [4] = "Flow", [8] = "Valve closed" }
 
 FloModel.NOTIFICATION_FLAGS = {
-  always = 1, never = 2, mode_change = 4, auto_shutoff = 8, auto_away = 16,
-  delay_away = 32, advance_shutoff = 64, guest_mode = 128,
-  connection_change = 256, general_alert = 512, critical_error = 1024,
+  always = 1,
+  never = 2,
+  mode_change = 4,
+  auto_shutoff = 8,
+  auto_away = 16,
+  delay_away = 32,
+  advance_shutoff = 64,
+  guest_mode = 128,
+  connection_change = 256,
+  general_alert = 512,
+  critical_error = 1024,
   no_flow = 2048,
 }
 
@@ -96,11 +148,7 @@ function FloModel.unique_id_prefix(valve)
 end
 
 function FloModel.valve_name(valve)
-  return valve.valveFriendlyName
-    or valve.combinedName
-    or valve.name
-    or valve.uuid
-    or "FloLogic"
+  return valve.valveFriendlyName or valve.combinedName or valve.name or valve.uuid or "FloLogic"
 end
 
 function FloModel.mode_name(valve)
@@ -183,29 +231,39 @@ function FloModel.is_water_flowing(valve)
   return state ~= nil and state ~= 1 and state ~= 8
 end
 
--- Parse a FloLogic ISO-8601 timestamp as a UTC epoch. Returns nil when the
--- value is absent or malformed. os.time interprets tables as local time, so
--- the result is shifted by the controller's UTC offset.
+--- Parse cloud timestamps without depending on Director's timezone or DST.
+--- Missing timezone suffixes follow the cloud's UTC convention.
+--- @param value string ISO-8601 date/time with optional fraction and numeric offset.
+--- @return number|nil UTC epoch seconds, or nil for invalid input.
 function FloModel.parse_datetime_utc(value)
-  if type(value) ~= "string" or value == "" then
+  if type(value) ~= "string" then
     return nil
   end
-  local y, mo, d, h, mi, s = value:match(
-    "^(%d%d%d%d)%-(%d%d)%-(%d%d)[T ](%d%d):(%d%d):(%d%d)"
-  )
-  if y == nil then
+  local y, mo, d, h, mi, sec, suffix = value:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)[T ](%d%d):(%d%d):(%d%d)(.*)$")
+  if not y then
     return nil
   end
-  local as_local = os.time({
-    year = tonumber(y), month = tonumber(mo), day = tonumber(d),
-    hour = tonumber(h), min = tonumber(mi), sec = tonumber(s),
-  })
-  if as_local == nil then
+  y, mo, d, h, mi, sec = tonumber(y), tonumber(mo), tonumber(d), tonumber(h), tonumber(mi), tonumber(sec)
+  local leap = y % 4 == 0 and (y % 100 ~= 0 or y % 400 == 0)
+  local month_days = { 31, leap and 29 or 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 }
+  if y < 1 or mo < 1 or mo > 12 or d < 1 or d > month_days[mo] or h > 23 or mi > 59 or sec > 59 then
     return nil
   end
-  local now = os.time()
-  local utc_offset = os.difftime(now, os.time(os.date("!*t", now)))
-  return as_local + utc_offset
+  suffix = suffix:gsub("^%.%d+", "")
+  local offset = 0
+  if suffix ~= "" and suffix ~= "Z" then
+    local sign, oh, om = suffix:match("^([+-])(%d%d):(%d%d)$")
+    if not sign or tonumber(oh) > 23 or tonumber(om) > 59 then
+      return nil
+    end
+    offset = (tonumber(oh) * 60 + tonumber(om)) * 60 * (sign == "+" and 1 or -1)
+  end
+  local prior = y - 1
+  local days = 365 * prior + math.floor(prior / 4) - math.floor(prior / 100) + math.floor(prior / 400) - 719162 + d - 1
+  for month = 1, mo - 1 do
+    days = days + month_days[month]
+  end
+  return days * 86400 + h * 3600 + mi * 60 + sec - offset
 end
 
 local function current_flow_limit_minutes(valve)
@@ -299,10 +357,7 @@ function FloModel.controllable_valves(devices)
   local valves = {}
   for _, device in ipairs(candidates) do
     local type_name = string.lower(tostring(device.deviceTypeName or ""))
-    if device.isZConnect == true
-      or device.isAnyConnect == true
-      or type_name:find("connect", 1, true) ~= nil
-    then
+    if device.isZConnect == true or device.isAnyConnect == true or type_name:find("connect", 1, true) ~= nil then
       valves[#valves + 1] = device
     end
   end
@@ -328,26 +383,26 @@ function FloModel.choose_valve(devices)
   return valves[1]
 end
 
+--- Match an ID or UUID, rejecting absent and ambiguous identities.
 function FloModel.find_valve(devices, needle)
-  local want = tostring(needle)
-  local want_folded = string.lower(want)
-  for _, device in ipairs(devices) do
+  if needle == nil or tostring(needle) == "" then
+    return nil
+  end
+  local want = tostring(needle):lower()
+  local found
+  for _, device in ipairs(devices or {}) do
     if type(device) == "table" then
-      if tostring(device.id) == want or tostring(device.uuid) == want then
-        return device
+      local matches = (device.id ~= nil and tostring(device.id):lower() == want)
+        or (device.uuid ~= nil and tostring(device.uuid):lower() == want)
+      if matches then
+        if found then
+          return nil
+        end
+        found = device
       end
     end
   end
-  for _, device in ipairs(devices) do
-    if type(device) == "table" then
-      if string.lower(tostring(device.id)) == want_folded
-        or string.lower(tostring(device.uuid)) == want_folded
-      then
-        return device
-      end
-    end
-  end
-  return nil
+  return found
 end
 
 function FloModel.mode_value(mode)

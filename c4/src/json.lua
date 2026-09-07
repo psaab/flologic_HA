@@ -84,16 +84,9 @@ local function utf8_encode(code)
   if code < 128 then
     return string.char(code)
   elseif code < 2048 then
-    return string.char(
-      192 + math.floor(code / 64),
-      128 + (code % 64)
-    )
+    return string.char(192 + math.floor(code / 64), 128 + (code % 64))
   elseif code < 65536 then
-    return string.char(
-      224 + math.floor(code / 4096),
-      128 + (math.floor(code / 64) % 64),
-      128 + (code % 64)
-    )
+    return string.char(224 + math.floor(code / 4096), 128 + (math.floor(code / 64) % 64), 128 + (code % 64))
   end
   return string.char(
     240 + math.floor(code / 262144),

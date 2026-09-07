@@ -21,11 +21,17 @@ end
 
 -- Split an https:// hub URL into host, port, and signalr base path.
 function FloLogic.parse_hub_url(hub_url)
-  local host, port, path = hub_url:match("^https?://([^:/%s]+):?(%d*)([^%s]*)")
+  if type(hub_url) ~= "string" or hub_url:find("[%s?#@]") then
+    return nil, "bad hub URL"
+  end
+  local host, port, path = hub_url:match("^https://([%w%.%-]+):?(%d*)(/?.*)$")
   if host == nil then
-    return nil, "bad hub URL: " .. tostring(hub_url)
+    return nil, "bad hub URL"
   end
   port = tonumber(port) or 443
+  if port < 1 or port > 65535 or (path ~= "" and path:sub(1, 1) ~= "/") then
+    return nil, "bad hub URL"
+  end
   path = path or ""
   path = path:gsub("/+$", "")
   if not path:lower():find("/signalr$") then
@@ -37,6 +43,37 @@ function FloLogic.parse_hub_url(hub_url)
   return { host = host, port = port, path = path }
 end
 
+--- Validate a dense, unambiguous cloud inventory before replacing cached devices.
+local function validate_inventory(devices)
+  if type(devices) ~= "table" then
+    return nil
+  end
+  local clean, ids, count = {}, {}, 0
+  for index, device in pairs(devices) do
+    count = count + 1
+    if
+      type(index) ~= "number"
+      or index < 1
+      or index % 1 ~= 0
+      or type(device) ~= "table"
+      or (type(device.id) ~= "number" and type(device.id) ~= "string")
+      or tostring(device.id) == ""
+      or ids[tostring(device.id)]
+    then
+      return nil
+    end
+    ids[tostring(device.id)] = true
+    clean[index] = device
+  end
+  if count ~= #clean then
+    return nil
+  end
+  return clean
+end
+
+--- Create a single-use asynchronous session.
+--- @param opts table Injected HTTP/TCP, timers, crypto, credentials, and device identity.
+--- @return table session fetch_snapshot/send_command complete once; cancel is silent.
 function FloLogic.new_session(opts)
   local self = {
     _email = opts.email,
@@ -60,7 +97,6 @@ function FloLogic.new_session(opts)
     _timers = {},
     _user = nil,
     _devices = nil,
-    _late_valve = nil,
     relog_token = opts.relog_token or "",
   }
 
@@ -94,11 +130,24 @@ function FloLogic.new_session(opts)
     if self._dispatcher ~= nil then
       self._dispatcher.fail_all(err or "closed")
     end
-    self.close()
+    self.cancel()
     callback(err, result)
   end
 
-  function self.close()
+  --- Cancel all owned work without calling the result callback.
+  function self.cancel()
+    self._done = true
+    self._cancel_timers()
+    if self._http_cancel then
+      pcall(self._http_cancel)
+      self._http_cancel = nil
+    end
+    if self._ws_parser then
+      self._ws_parser.stop()
+    end
+    if self._dispatcher then
+      self._dispatcher.stop()
+    end
     if self._tcp ~= nil then
       local tcp = self._tcp
       self._tcp = nil
@@ -108,14 +157,15 @@ function FloLogic.new_session(opts)
     end
   end
 
+  self.close = self.cancel
+
   function self._send_text(text)
     if self._tcp == nil then
       return false
     end
     local mask = self._random_mask()
     local frame = WS.build_client_frame(text, mask, WS.OP_TEXT)
-    self._tcp.send(frame)
-    return true
+    return pcall(self._tcp.send, frame)
   end
 
   function self._invoke(target, args)
@@ -169,7 +219,7 @@ function FloLogic.new_session(opts)
       DeviceName = self._device_name,
     }
     self._log_debug("negotiate " .. url)
-    self._http_post(url, "", headers, function(err, data, code)
+    local ok_post, cancel = pcall(self._http_post, url, "", headers, function(err, data, code)
       if self._done then
         return
       end
@@ -191,12 +241,23 @@ function FloLogic.new_session(opts)
         return
       end
       local token = payload.connectionToken or payload.connectionId
-      if token == nil or token == "" then
+      if type(token) ~= "string" or token == "" then
         on_fail("http:no-connection-token")
         return
       end
       on_ok(token)
     end)
+    if not ok_post then
+      on_fail("http:adapter-error")
+      return
+    end
+    if self._done then
+      if cancel then
+        pcall(cancel)
+      end
+    else
+      self._http_cancel = cancel
+    end
   end
 
   function self._open_websocket(hub, token, on_ok, on_fail)
@@ -204,6 +265,13 @@ function FloLogic.new_session(opts)
     local key = self._client_key()
     local expected = WS.expected_accept(key, self._sha1, self._b64encode)
     local handshake_done = false
+    local cancel_upgrade = self._after(30000, function()
+      on_fail("timeout:upgrade")
+    end)
+    self._dispatcher.on_handshake = function()
+      cancel_upgrade()
+      on_ok()
+    end
     local handshake_buffer = ""
     local parser = WS.new_parser({
       on_message = function(payload, is_binary)
@@ -240,12 +308,12 @@ function FloLogic.new_session(opts)
         return
       end
       handshake_sent = true
-      local request = WS.build_handshake_request(
-        hub.host .. ":" .. tostring(hub.port), ws_path, key
-      )
-      self._tcp.send(request)
+      local request = WS.build_handshake_request(hub.host .. ":" .. tostring(hub.port), ws_path, key)
+      if not pcall(self._tcp.send, request) then
+        on_fail("ws:send-failed")
+      end
     end
-    local tcp, tcp_err = self._tcp_open(hub.host, hub.port, {
+    local ok_open, tcp, tcp_err = pcall(self._tcp_open, hub.host, hub.port, {
       on_open = function()
         opened = true
         send_handshake()
@@ -275,7 +343,6 @@ function FloLogic.new_session(opts)
             on_fail("ws:send-failed")
             return
           end
-          on_ok()
           if rest ~= "" then
             parser.feed(rest)
           end
@@ -294,8 +361,16 @@ function FloLogic.new_session(opts)
         end
       end,
     })
+    if not ok_open then
+      on_fail("ws:adapter-error")
+      return
+    end
     if tcp == nil then
       on_fail("ws:" .. tostring(tcp_err or "tcp-open-failed"))
+      return
+    end
+    if self._done then
+      tcp.close()
       return
     end
     self._tcp = tcp
@@ -305,40 +380,22 @@ function FloLogic.new_session(opts)
   end
 
   function self._login(on_ok, on_fail)
-    self._log_debug("login as " .. self._email)
+    self._log_debug("login")
     self._wait_for("LoggedIn", 30000, function(args)
       local user = args[1]
-      if type(user) ~= "table" then
+      if type(user) ~= "table" or user.id == nil then
         on_fail("auth")
         return
       end
       self._user = user
-      if user.relogToken ~= nil and user.relogToken ~= "" then
+      if type(user.relogToken) == "string" and user.relogToken ~= "" then
         self._relog_token = user.relogToken
         self.relog_token = user.relogToken
       end
-      -- Fast path: a ValveSent usually follows immediately. Fall back to
-      -- RefreshValveArray after 3s, merging a late ValveSent if one lands.
-      self._late_valve = nil
-      local got_valve = false
-      local function use_devices(devices)
-        if got_valve then
-          return
-        end
-        got_valve = true
+      self._refresh_valve_array(user, function(devices)
         self._devices = devices
         on_ok(user, devices)
-      end
-      self._wait_for("ValveSent", 3000, function(valve_args)
-        local valve = valve_args[1]
-        if type(valve) == "table" then
-          use_devices({ valve })
-        else
-          self._refresh_valve_array(user, use_devices, on_fail)
-        end
-      end, function(_timeout_err)
-        self._refresh_valve_array(user, use_devices, on_fail)
-      end)
+      end, on_fail)
     end, on_fail)
     if not self._invoke("Login", { self._email, self._password, self._device_name, JSON.null }) then
       on_fail("ws:send-failed")
@@ -347,27 +404,10 @@ function FloLogic.new_session(opts)
 
   function self._refresh_valve_array(user, on_ok, on_fail)
     self._wait_for("ValveArraySent", 30000, function(args)
-      local devices = args[1]
-      if type(devices) ~= "table" then
-        devices = {}
-      end
-      local clean = {}
-      for _, device in ipairs(devices) do
-        if type(device) == "table" then
-          clean[#clean + 1] = device
-        end
-      end
-      if self._late_valve ~= nil then
-        local seen = false
-        for _, device in ipairs(clean) do
-          if device.id == self._late_valve.id then
-            seen = true
-            break
-          end
-        end
-        if not seen then
-          clean[#clean + 1] = self._late_valve
-        end
+      local clean = validate_inventory(args[1])
+      if not clean then
+        on_fail("bad-valve-array")
+        return
       end
       on_ok(clean)
     end, on_fail)
@@ -376,15 +416,10 @@ function FloLogic.new_session(opts)
     end
   end
 
-  local function observe_valve_sent(self_ref, target, args)
-    if target == "ValveSent" and args[1] ~= nil and type(args[1]) == "table" then
-      self_ref._late_valve = args[1]
-    elseif target == "ErrorOccured" then
-      self_ref._log_debug("cloud error event")
-    end
-  end
-
   function self._connect(hub_url, on_ready, on_fail)
+    self._after(180000, function()
+      on_fail("timeout:session")
+    end)
     local hub, hub_err = FloLogic.parse_hub_url(hub_url)
     if hub == nil then
       on_fail(hub_err)
@@ -392,10 +427,25 @@ function FloLogic.new_session(opts)
     end
     self._dispatcher = SignalR.new_dispatcher({
       on_event = function(target, args)
-        observe_valve_sent(self, target, args)
+        if target == "ErrorOccured" then
+          on_fail("cloud-error")
+        elseif target == "ValveArraySent" and self._devices then
+          local devices = validate_inventory(args[1])
+          if not devices then
+            on_fail("bad-valve-array")
+            return
+          end
+          self._devices = devices
+        elseif target == "ValveSent" and type(args[1]) == "table" and self._devices then
+          for index, valve in ipairs(self._devices) do
+            if valve.id == args[1].id then
+              self._devices[index] = args[1]
+            end
+          end
+        end
       end,
       on_error = function(msg)
-        self._log_debug(msg)
+        on_fail("signalr:" .. msg)
       end,
     })
     self._negotiate(hub, function(token)
@@ -407,37 +457,15 @@ function FloLogic.new_session(opts)
     end, on_fail)
   end
 
-  -- Resolve the effective valve. A nil/blank selection means the primary
-  -- valve. When a selection is not among the login devices, the login fast
-  -- path may have sent only the primary valve, so the full array is fetched
-  -- before reporting valve-not-found.
+  --- Resolve an explicit selection against the authoritative controllable inventory.
   function self._ensure_valve(user, devices, selected, on_ok, on_fail)
     local valves = FloModel.controllable_valves(devices)
-    local valve = nil
-    if selected == nil or selected == "" then
-      valve = FloModel.choose_valve(devices)
-    else
-      valve = FloModel.find_valve(valves, selected)
-        or FloModel.find_valve(devices, selected)
-    end
-    if valve ~= nil then
-      on_ok(valve, devices, valves)
+    local valve = selected and selected ~= "" and FloModel.find_valve(valves, selected)
+    if not valve then
+      on_fail(selected and selected ~= "" and "valve-not-found" or "select-valve")
       return
     end
-    if selected == nil or selected == "" then
-      on_fail("no-valve")
-      return
-    end
-    self._refresh_valve_array(user, function(full)
-      local full_valves = FloModel.controllable_valves(full)
-      local found = FloModel.find_valve(full_valves, selected)
-        or FloModel.find_valve(full, selected)
-      if found == nil then
-        on_fail("valve-not-found")
-        return
-      end
-      on_ok(found, full, full_valves)
-    end, on_fail)
+    on_ok(valve, devices, valves)
   end
 
   function self._fetch_access(user, valve, on_ok, on_fail)
@@ -493,7 +521,7 @@ function FloLogic.new_session(opts)
   end
 
   -- Fetch one poll snapshot for the selected valve. selected may be a valve
-  -- id, uuid, or unique-id prefix, or nil for the primary valve.
+  -- ID or UUID. A blank selection discovers inventory only.
   -- cb(err, snapshot) with snapshot = { user, devices, valves, valve,
   -- access, scheduler, notifications }.
   function self.fetch_snapshot(hub_url, selected, cb)
@@ -501,15 +529,25 @@ function FloLogic.new_session(opts)
       self._finish(err, nil, cb)
     end
     self._connect(hub_url, function(user, devices)
-      self._ensure_valve(user, devices, selected, function(valve, all_devices, valves)
+      if selected == nil or selected == "" then
+        self._finish(nil, { user = user, devices = devices }, cb)
+        return
+      end
+      self._ensure_valve(user, devices, selected, function(valve)
         self._fetch_access(user, valve, function(access)
           self._fetch_scheduler(user, valve, function(scheduler)
             self._fetch_notifications(user, valve, function(notifications)
+              local valves = FloModel.controllable_valves(self._devices)
+              local latest = FloModel.find_valve(valves, valve.id)
+              if not latest then
+                fail("valve-not-found")
+                return
+              end
               self._finish(nil, {
                 user = user,
-                devices = all_devices,
+                devices = self._devices,
                 valves = valves,
-                valve = valve,
+                valve = latest,
                 access = access,
                 scheduler = scheduler,
                 notifications = notifications,
@@ -526,6 +564,10 @@ function FloLogic.new_session(opts)
     local function fail(err)
       self._finish(err, nil, cb)
     end
+    if selected == nil or selected == "" then
+      fail("select-valve")
+      return
+    end
     self._connect(hub_url, function(user, devices)
       self._ensure_valve(user, devices, selected, function(valve)
         local command = {
@@ -535,9 +577,18 @@ function FloLogic.new_session(opts)
           valveId = valve.id,
         }
         for k, v in pairs(fields) do
+          if command[k] ~= nil then
+            fail("reserved-command-field")
+            return
+          end
           command[k] = v
         end
-        self._wait_for("StateChangeResult", 45000, function(_args)
+        self._wait_for("StateChangeResult", 45000, function(args)
+          local result = args[1]
+          if result == false or (type(result) == "table" and (result.ok == false or result.success == false)) then
+            fail("command-rejected")
+            return
+          end
           self._finish(nil, { valve = valve }, cb)
         end, function(err)
           self._finish(err, nil, cb)

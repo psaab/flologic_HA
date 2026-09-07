@@ -91,16 +91,9 @@ local function utf8_encode(code)
   if code < 128 then
     return string.char(code)
   elseif code < 2048 then
-    return string.char(
-      192 + math.floor(code / 64),
-      128 + (code % 64)
-    )
+    return string.char(192 + math.floor(code / 64), 128 + (code % 64))
   elseif code < 65536 then
-    return string.char(
-      224 + math.floor(code / 4096),
-      128 + (math.floor(code / 64) % 64),
-      128 + (code % 64)
-    )
+    return string.char(224 + math.floor(code / 4096), 128 + (math.floor(code / 64) % 64), 128 + (code % 64))
   end
   return string.char(
     240 + math.floor(code / 262144),
@@ -329,16 +322,34 @@ FloModel.VALVE_MODES = { home = 1, away = 2, bypass = 4, shutoff = 8, disabled =
 FloModel.MODE_NAMES = { [1] = "home", [2] = "away", [4] = "bypass", [8] = "shutoff", [16] = "disabled" }
 
 FloModel.VALVE_MODE_FLAGS = {
-  home = 1, away = 2, bypass = 4, shutoff = 8, disabled = 16,
-  flow_time_exceeded = 32, external_leak = 64, auto_away = 128,
-  external_bypass = 256, delay_away = 512, external_away = 1024,
-  override = 2048, ac_lost = 4096, change_battery = 8192, error = 16384,
-  sensor_leak = 32768, system_down = 65536, valve_failure = 131072,
-  communication_error = 262144, external_home = 524288,
-  external_emergency_shutdown = 1048576, updating = 2097152,
-  external_override = 4194304, low_temp_alert = 8388608,
-  low_temp_shutoff = 16777216, humidity_sensor_shutoff = 33554432,
-  low_temp_sensor_shutoff = 67108864, unknown = 268435456,
+  home = 1,
+  away = 2,
+  bypass = 4,
+  shutoff = 8,
+  disabled = 16,
+  flow_time_exceeded = 32,
+  external_leak = 64,
+  auto_away = 128,
+  external_bypass = 256,
+  delay_away = 512,
+  external_away = 1024,
+  override = 2048,
+  ac_lost = 4096,
+  change_battery = 8192,
+  error = 16384,
+  sensor_leak = 32768,
+  system_down = 65536,
+  valve_failure = 131072,
+  communication_error = 262144,
+  external_home = 524288,
+  external_emergency_shutdown = 1048576,
+  updating = 2097152,
+  external_override = 4194304,
+  low_temp_alert = 8388608,
+  low_temp_shutoff = 16777216,
+  humidity_sensor_shutoff = 33554432,
+  low_temp_sensor_shutoff = 67108864,
+  unknown = 268435456,
 }
 
 local F = FloModel.VALVE_MODE_FLAGS
@@ -348,30 +359,64 @@ for name, bit in pairs(F) do
 end
 
 FloModel.WATER_OFF_MODE_FLAGS = {
-  F.flow_time_exceeded, F.external_leak, F.sensor_leak, F.shutoff,
-  F.external_emergency_shutdown, F.low_temp_shutoff,
-  F.humidity_sensor_shutoff, F.low_temp_sensor_shutoff,
+  F.flow_time_exceeded,
+  F.external_leak,
+  F.sensor_leak,
+  F.shutoff,
+  F.external_emergency_shutdown,
+  F.low_temp_shutoff,
+  F.humidity_sensor_shutoff,
+  F.low_temp_sensor_shutoff,
 }
 FloModel.WARNING_ALERT_MODE_FLAGS = {
-  F.low_temp_alert, F.change_battery, F.ac_lost, F.communication_error, F.updating,
+  F.low_temp_alert,
+  F.change_battery,
+  F.ac_lost,
+  F.communication_error,
+  F.updating,
 }
 FloModel.CRITICAL_MODE_FLAGS = { F.error, F.system_down, F.valve_failure, F.unknown }
 
 FloModel.MODE_STATUS_PRIORITY = {
-  F.flow_time_exceeded, F.sensor_leak, F.external_leak,
-  F.external_emergency_shutdown, F.low_temp_shutoff,
-  F.humidity_sensor_shutoff, F.low_temp_sensor_shutoff, F.shutoff,
-  F.delay_away, F.auto_away, F.external_away, F.away, F.external_bypass,
-  F.bypass, F.external_home, F.home, F.disabled, F.updating,
-  F.communication_error, F.valve_failure, F.system_down, F.error, F.unknown,
+  F.flow_time_exceeded,
+  F.sensor_leak,
+  F.external_leak,
+  F.external_emergency_shutdown,
+  F.low_temp_shutoff,
+  F.humidity_sensor_shutoff,
+  F.low_temp_sensor_shutoff,
+  F.shutoff,
+  F.delay_away,
+  F.auto_away,
+  F.external_away,
+  F.away,
+  F.external_bypass,
+  F.bypass,
+  F.external_home,
+  F.home,
+  F.disabled,
+  F.updating,
+  F.communication_error,
+  F.valve_failure,
+  F.system_down,
+  F.error,
+  F.unknown,
 }
 
 FloModel.FLOW_STATE_NAMES = { [1] = "No flow", [2] = "New flow", [4] = "Flow", [8] = "Valve closed" }
 
 FloModel.NOTIFICATION_FLAGS = {
-  always = 1, never = 2, mode_change = 4, auto_shutoff = 8, auto_away = 16,
-  delay_away = 32, advance_shutoff = 64, guest_mode = 128,
-  connection_change = 256, general_alert = 512, critical_error = 1024,
+  always = 1,
+  never = 2,
+  mode_change = 4,
+  auto_shutoff = 8,
+  auto_away = 16,
+  delay_away = 32,
+  advance_shutoff = 64,
+  guest_mode = 128,
+  connection_change = 256,
+  general_alert = 512,
+  critical_error = 1024,
   no_flow = 2048,
 }
 
@@ -412,11 +457,7 @@ function FloModel.unique_id_prefix(valve)
 end
 
 function FloModel.valve_name(valve)
-  return valve.valveFriendlyName
-    or valve.combinedName
-    or valve.name
-    or valve.uuid
-    or "FloLogic"
+  return valve.valveFriendlyName or valve.combinedName or valve.name or valve.uuid or "FloLogic"
 end
 
 function FloModel.mode_name(valve)
@@ -499,29 +540,39 @@ function FloModel.is_water_flowing(valve)
   return state ~= nil and state ~= 1 and state ~= 8
 end
 
--- Parse a FloLogic ISO-8601 timestamp as a UTC epoch. Returns nil when the
--- value is absent or malformed. os.time interprets tables as local time, so
--- the result is shifted by the controller's UTC offset.
+--- Parse cloud timestamps without depending on Director's timezone or DST.
+--- Missing timezone suffixes follow the cloud's UTC convention.
+--- @param value string ISO-8601 date/time with optional fraction and numeric offset.
+--- @return number|nil UTC epoch seconds, or nil for invalid input.
 function FloModel.parse_datetime_utc(value)
-  if type(value) ~= "string" or value == "" then
+  if type(value) ~= "string" then
     return nil
   end
-  local y, mo, d, h, mi, s = value:match(
-    "^(%d%d%d%d)%-(%d%d)%-(%d%d)[T ](%d%d):(%d%d):(%d%d)"
-  )
-  if y == nil then
+  local y, mo, d, h, mi, sec, suffix = value:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)[T ](%d%d):(%d%d):(%d%d)(.*)$")
+  if not y then
     return nil
   end
-  local as_local = os.time({
-    year = tonumber(y), month = tonumber(mo), day = tonumber(d),
-    hour = tonumber(h), min = tonumber(mi), sec = tonumber(s),
-  })
-  if as_local == nil then
+  y, mo, d, h, mi, sec = tonumber(y), tonumber(mo), tonumber(d), tonumber(h), tonumber(mi), tonumber(sec)
+  local leap = y % 4 == 0 and (y % 100 ~= 0 or y % 400 == 0)
+  local month_days = { 31, leap and 29 or 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 }
+  if y < 1 or mo < 1 or mo > 12 or d < 1 or d > month_days[mo] or h > 23 or mi > 59 or sec > 59 then
     return nil
   end
-  local now = os.time()
-  local utc_offset = os.difftime(now, os.time(os.date("!*t", now)))
-  return as_local + utc_offset
+  suffix = suffix:gsub("^%.%d+", "")
+  local offset = 0
+  if suffix ~= "" and suffix ~= "Z" then
+    local sign, oh, om = suffix:match("^([+-])(%d%d):(%d%d)$")
+    if not sign or tonumber(oh) > 23 or tonumber(om) > 59 then
+      return nil
+    end
+    offset = (tonumber(oh) * 60 + tonumber(om)) * 60 * (sign == "+" and 1 or -1)
+  end
+  local prior = y - 1
+  local days = 365 * prior + math.floor(prior / 4) - math.floor(prior / 100) + math.floor(prior / 400) - 719162 + d - 1
+  for month = 1, mo - 1 do
+    days = days + month_days[month]
+  end
+  return days * 86400 + h * 3600 + mi * 60 + sec - offset
 end
 
 local function current_flow_limit_minutes(valve)
@@ -615,10 +666,7 @@ function FloModel.controllable_valves(devices)
   local valves = {}
   for _, device in ipairs(candidates) do
     local type_name = string.lower(tostring(device.deviceTypeName or ""))
-    if device.isZConnect == true
-      or device.isAnyConnect == true
-      or type_name:find("connect", 1, true) ~= nil
-    then
+    if device.isZConnect == true or device.isAnyConnect == true or type_name:find("connect", 1, true) ~= nil then
       valves[#valves + 1] = device
     end
   end
@@ -644,26 +692,26 @@ function FloModel.choose_valve(devices)
   return valves[1]
 end
 
+--- Match an ID or UUID, rejecting absent and ambiguous identities.
 function FloModel.find_valve(devices, needle)
-  local want = tostring(needle)
-  local want_folded = string.lower(want)
-  for _, device in ipairs(devices) do
+  if needle == nil or tostring(needle) == "" then
+    return nil
+  end
+  local want = tostring(needle):lower()
+  local found
+  for _, device in ipairs(devices or {}) do
     if type(device) == "table" then
-      if tostring(device.id) == want or tostring(device.uuid) == want then
-        return device
+      local matches = (device.id ~= nil and tostring(device.id):lower() == want)
+        or (device.uuid ~= nil and tostring(device.uuid):lower() == want)
+      if matches then
+        if found then
+          return nil
+        end
+        found = device
       end
     end
   end
-  for _, device in ipairs(devices) do
-    if type(device) == "table" then
-      if string.lower(tostring(device.id)) == want_folded
-        or string.lower(tostring(device.uuid)) == want_folded
-      then
-        return device
-      end
-    end
-  end
-  return nil
+  return found
 end
 
 function FloModel.mode_value(mode)
@@ -699,8 +747,7 @@ function SignalR.handshake_message()
 end
 
 function SignalR.build_invoke(target, args)
-  return JSON.encode({ type = 1, target = target, arguments = args or {} })
-    .. SignalR.RECORD_SEPARATOR
+  return JSON.encode({ type = 1, target = target, arguments = args or {} }) .. SignalR.RECORD_SEPARATOR
 end
 
 -- Dispatcher matches hub events to one-shot waiters, like the Home Assistant
@@ -742,9 +789,15 @@ function SignalR.new_dispatcher(opts)
     return list ~= nil and #list or 0
   end
 
+  function self.stop()
+    self._stopped = true
+    self._buffer, self._waiters = "", {}
+  end
+
   function self.fail_all(err)
-    for event_name, list in pairs(self._waiters) do
-      self._waiters[event_name] = {}
+    local waiters = self._waiters
+    self._waiters = {}
+    for _, list in pairs(waiters) do
       for _, fn in ipairs(list) do
         fn(nil, err)
       end
@@ -752,6 +805,18 @@ function SignalR.new_dispatcher(opts)
   end
 
   local function handle_frame(frame)
+    if type(frame) == "table" and (frame.error ~= nil or frame.type == 7) then
+      if self._on_error then
+        self._on_error("server-closed")
+      end
+      return
+    end
+    if type(frame) == "table" and frame.type == nil and self.on_handshake then
+      local callback = self.on_handshake
+      self.on_handshake = nil
+      callback()
+      return
+    end
     if type(frame) ~= "table" or frame.type ~= 1 then
       return
     end
@@ -760,19 +825,38 @@ function SignalR.new_dispatcher(opts)
       return
     end
     local args = frame.arguments or {}
+    if type(target) ~= "string" or type(args) ~= "table" then
+      if self._on_error then
+        self._on_error("bad-event")
+      end
+      return
+    end
+    if self._on_event ~= nil then
+      self._on_event(target, args)
+    end
+    if self._stopped then
+      return
+    end
     local list = self._waiters[target]
     if list ~= nil and #list > 0 then
       local fn = table.remove(list, 1)
       fn(args, nil)
     end
-    if self._on_event ~= nil then
-      self._on_event(target, args)
-    end
   end
 
   function self.feed(text)
+    if self._stopped then
+      return
+    end
     self._buffer = self._buffer .. text
-    while true do
+    if #self._buffer > 1048576 then
+      self.stop()
+      if self._on_error then
+        self._on_error("record-too-large")
+      end
+      return
+    end
+    while not self._stopped do
       local cut = self._buffer:find(SignalR.RECORD_SEPARATOR, 1, true)
       if cut == nil then
         return
@@ -784,7 +868,7 @@ function SignalR.new_dispatcher(opts)
         if ok then
           handle_frame(frame)
         elseif self._on_error ~= nil then
-          self._on_error("undecodable SignalR frame: " .. raw:sub(1, 120))
+          self._on_error("undecodable SignalR frame")
         end
       end
     end
@@ -867,6 +951,9 @@ end
 -- success; nil, "need_more" when the headers are incomplete; nil, err otherwise.
 function WS.parse_handshake_response(buffer)
   local cut = buffer:find("\r\n\r\n", 1, true)
+  if (cut and cut > 16384) or (not cut and #buffer > 16384) then
+    return nil, "websocket headers too large"
+  end
   if cut == nil then
     return nil, "need_more"
   end
@@ -877,13 +964,19 @@ function WS.parse_handshake_response(buffer)
   end
   -- Match the header name case-insensitively but keep the original value:
   -- Base64 is case-sensitive.
-  local accept = nil
+  local accept, upgrade, connection = nil, nil, nil
   for line in (head .. "\r\n"):gmatch("([^\r\n]*)\r\n") do
     local name, value = line:match("^([^:]+):%s*(.-)%s*$")
     if name ~= nil and name:lower() == "sec-websocket-accept" then
       accept = value
-      break
+    elseif name ~= nil and name:lower() == "upgrade" then
+      upgrade = value:lower()
+    elseif name ~= nil and name:lower() == "connection" then
+      connection = "," .. value:lower():gsub("%s", "") .. ","
     end
+  end
+  if upgrade ~= "websocket" or not connection or not connection:find(",upgrade,", 1, true) then
+    return nil, "websocket upgrade headers invalid"
   end
   if accept == nil or accept == "" then
     return nil, "websocket upgrade missing Sec-WebSocket-Accept"
@@ -899,16 +992,17 @@ function WS.build_client_frame(payload, mask, opcode)
   if len < 126 then
     head = string.char(128 + opcode, 128 + len)
   elseif len < 65536 then
-    head = string.char(
-      128 + opcode, 128 + 126,
-      math.floor(len / 256) % 256, len % 256
-    )
+    head = string.char(128 + opcode, 128 + 126, math.floor(len / 256) % 256, len % 256)
   else
     local high = math.floor(len / 4294967296)
     local low = len % 4294967296
     head = string.char(
-      128 + opcode, 128 + 127,
-      0, 0, 0, 0,
+      128 + opcode,
+      128 + 127,
+      0,
+      0,
+      0,
+      0,
       math.floor(low / 16777216) % 256,
       math.floor(low / 65536) % 256,
       math.floor(low / 256) % 256,
@@ -918,9 +1012,7 @@ function WS.build_client_frame(payload, mask, opcode)
       error("websocket payload too large")
     end
   end
-  return head
-    .. string.char(mask[1], mask[2], mask[3], mask[4])
-    .. WS.xor_mask(payload, mask)
+  return head .. string.char(mask[1], mask[2], mask[3], mask[4]) .. WS.xor_mask(payload, mask)
 end
 
 function WS.build_close_payload(code, reason)
@@ -939,6 +1031,18 @@ function WS.new_parser(callbacks)
   callbacks = callbacks or {}
   local self = { _buffer = "", _frag_opcode = nil, _frag_parts = {} }
 
+  local max_size = callbacks.max_message_size or 1048576
+  function self.stop()
+    self._stopped = true
+    self._buffer, self._frag_parts, self._frag_size = "", {}, 0
+  end
+  local function fail(message)
+    self.stop()
+    if callbacks.on_error then
+      callbacks.on_error(message)
+    end
+  end
+
   local function parse_one()
     local buf, blen = self._buffer, #self._buffer
     if blen < 2 then
@@ -951,7 +1055,16 @@ function WS.new_parser(callbacks)
       return nil, "websocket RSV bits set without negotiated extensions"
     end
     local masked = b2 >= 128
+    if masked ~= (callbacks.expect_masked == true) then
+      return nil, "incorrect websocket masking"
+    end
+    if opcode ~= 0 and opcode ~= 1 and opcode ~= 2 and opcode ~= 8 and opcode ~= 9 and opcode ~= 10 then
+      return nil, "unknown websocket opcode"
+    end
     local len = b2 % 128
+    if opcode >= 8 and (not fin or len > 125 or (opcode == 8 and len == 1)) then
+      return nil, "invalid websocket control frame"
+    end
     local pos = 3
     if len == 126 then
       if blen < 4 then
@@ -963,15 +1076,16 @@ function WS.new_parser(callbacks)
       if blen < 10 then
         return nil
       end
-      local high = buf:byte(3) * 16777216 + buf:byte(4) * 65536
-        + buf:byte(5) * 256 + buf:byte(6)
-      local low = buf:byte(7) * 16777216 + buf:byte(8) * 65536
-        + buf:byte(9) * 256 + buf:byte(10)
+      local high = buf:byte(3) * 16777216 + buf:byte(4) * 65536 + buf:byte(5) * 256 + buf:byte(6)
+      local low = buf:byte(7) * 16777216 + buf:byte(8) * 65536 + buf:byte(9) * 256 + buf:byte(10)
       if high ~= 0 then
         return nil, "websocket frame too large"
       end
       len = low
       pos = 11
+    end
+    if len > max_size then
+      return nil, "websocket frame too large"
     end
     local mask = nil
     if masked then
@@ -993,13 +1107,18 @@ function WS.new_parser(callbacks)
   end
 
   function self.feed(data)
+    if self._stopped then
+      return
+    end
     self._buffer = self._buffer .. data
-    while true do
+    if #self._buffer > max_size + 14 then
+      fail("websocket buffer too large")
+      return
+    end
+    while not self._stopped do
       local frame, err = parse_one()
       if err ~= nil then
-        if callbacks.on_error ~= nil then
-          callbacks.on_error(err)
-        end
+        fail(err)
         return
       end
       if frame == nil then
@@ -1008,9 +1127,12 @@ function WS.new_parser(callbacks)
       local op, payload = frame.opcode, frame.payload
       if op == WS.OP_CONT then
         if self._frag_opcode == nil then
-          if callbacks.on_error ~= nil then
-            callbacks.on_error("stray websocket continuation frame")
-          end
+          fail("stray websocket continuation frame")
+          return
+        end
+        self._frag_size = (self._frag_size or 0) + #payload
+        if self._frag_size > max_size then
+          fail("websocket message too large")
           return
         end
         self._frag_parts[#self._frag_parts + 1] = payload
@@ -1024,9 +1146,7 @@ function WS.new_parser(callbacks)
         end
       elseif op == WS.OP_TEXT or op == WS.OP_BINARY then
         if self._frag_opcode ~= nil then
-          if callbacks.on_error ~= nil then
-            callbacks.on_error("interleaved websocket data frame")
-          end
+          fail("interleaved websocket data frame")
           return
         end
         if frame.fin then
@@ -1034,7 +1154,7 @@ function WS.new_parser(callbacks)
             callbacks.on_message(payload, op == WS.OP_BINARY)
           end
         else
-          self._frag_opcode, self._frag_parts = op, { payload }
+          self._frag_opcode, self._frag_parts, self._frag_size = op, { payload }, #payload
         end
       elseif op == WS.OP_PING then
         local want_pong = true
@@ -1049,6 +1169,7 @@ function WS.new_parser(callbacks)
           callbacks.on_pong(payload)
         end
       elseif op == WS.OP_CLOSE then
+        self.stop()
         local code, reason = 1005, ""
         if #payload >= 2 then
           code = payload:byte(1) * 256 + payload:byte(2)
@@ -1096,11 +1217,17 @@ end
 
 -- Split an https:// hub URL into host, port, and signalr base path.
 function FloLogic.parse_hub_url(hub_url)
-  local host, port, path = hub_url:match("^https?://([^:/%s]+):?(%d*)([^%s]*)")
+  if type(hub_url) ~= "string" or hub_url:find("[%s?#@]") then
+    return nil, "bad hub URL"
+  end
+  local host, port, path = hub_url:match("^https://([%w%.%-]+):?(%d*)(/?.*)$")
   if host == nil then
-    return nil, "bad hub URL: " .. tostring(hub_url)
+    return nil, "bad hub URL"
   end
   port = tonumber(port) or 443
+  if port < 1 or port > 65535 or (path ~= "" and path:sub(1, 1) ~= "/") then
+    return nil, "bad hub URL"
+  end
   path = path or ""
   path = path:gsub("/+$", "")
   if not path:lower():find("/signalr$") then
@@ -1112,6 +1239,37 @@ function FloLogic.parse_hub_url(hub_url)
   return { host = host, port = port, path = path }
 end
 
+--- Validate a dense, unambiguous cloud inventory before replacing cached devices.
+local function validate_inventory(devices)
+  if type(devices) ~= "table" then
+    return nil
+  end
+  local clean, ids, count = {}, {}, 0
+  for index, device in pairs(devices) do
+    count = count + 1
+    if
+      type(index) ~= "number"
+      or index < 1
+      or index % 1 ~= 0
+      or type(device) ~= "table"
+      or (type(device.id) ~= "number" and type(device.id) ~= "string")
+      or tostring(device.id) == ""
+      or ids[tostring(device.id)]
+    then
+      return nil
+    end
+    ids[tostring(device.id)] = true
+    clean[index] = device
+  end
+  if count ~= #clean then
+    return nil
+  end
+  return clean
+end
+
+--- Create a single-use asynchronous session.
+--- @param opts table Injected HTTP/TCP, timers, crypto, credentials, and device identity.
+--- @return table session fetch_snapshot/send_command complete once; cancel is silent.
 function FloLogic.new_session(opts)
   local self = {
     _email = opts.email,
@@ -1135,7 +1293,6 @@ function FloLogic.new_session(opts)
     _timers = {},
     _user = nil,
     _devices = nil,
-    _late_valve = nil,
     relog_token = opts.relog_token or "",
   }
 
@@ -1169,11 +1326,24 @@ function FloLogic.new_session(opts)
     if self._dispatcher ~= nil then
       self._dispatcher.fail_all(err or "closed")
     end
-    self.close()
+    self.cancel()
     callback(err, result)
   end
 
-  function self.close()
+  --- Cancel all owned work without calling the result callback.
+  function self.cancel()
+    self._done = true
+    self._cancel_timers()
+    if self._http_cancel then
+      pcall(self._http_cancel)
+      self._http_cancel = nil
+    end
+    if self._ws_parser then
+      self._ws_parser.stop()
+    end
+    if self._dispatcher then
+      self._dispatcher.stop()
+    end
     if self._tcp ~= nil then
       local tcp = self._tcp
       self._tcp = nil
@@ -1183,14 +1353,15 @@ function FloLogic.new_session(opts)
     end
   end
 
+  self.close = self.cancel
+
   function self._send_text(text)
     if self._tcp == nil then
       return false
     end
     local mask = self._random_mask()
     local frame = WS.build_client_frame(text, mask, WS.OP_TEXT)
-    self._tcp.send(frame)
-    return true
+    return pcall(self._tcp.send, frame)
   end
 
   function self._invoke(target, args)
@@ -1244,7 +1415,7 @@ function FloLogic.new_session(opts)
       DeviceName = self._device_name,
     }
     self._log_debug("negotiate " .. url)
-    self._http_post(url, "", headers, function(err, data, code)
+    local ok_post, cancel = pcall(self._http_post, url, "", headers, function(err, data, code)
       if self._done then
         return
       end
@@ -1266,12 +1437,23 @@ function FloLogic.new_session(opts)
         return
       end
       local token = payload.connectionToken or payload.connectionId
-      if token == nil or token == "" then
+      if type(token) ~= "string" or token == "" then
         on_fail("http:no-connection-token")
         return
       end
       on_ok(token)
     end)
+    if not ok_post then
+      on_fail("http:adapter-error")
+      return
+    end
+    if self._done then
+      if cancel then
+        pcall(cancel)
+      end
+    else
+      self._http_cancel = cancel
+    end
   end
 
   function self._open_websocket(hub, token, on_ok, on_fail)
@@ -1279,6 +1461,13 @@ function FloLogic.new_session(opts)
     local key = self._client_key()
     local expected = WS.expected_accept(key, self._sha1, self._b64encode)
     local handshake_done = false
+    local cancel_upgrade = self._after(30000, function()
+      on_fail("timeout:upgrade")
+    end)
+    self._dispatcher.on_handshake = function()
+      cancel_upgrade()
+      on_ok()
+    end
     local handshake_buffer = ""
     local parser = WS.new_parser({
       on_message = function(payload, is_binary)
@@ -1315,12 +1504,12 @@ function FloLogic.new_session(opts)
         return
       end
       handshake_sent = true
-      local request = WS.build_handshake_request(
-        hub.host .. ":" .. tostring(hub.port), ws_path, key
-      )
-      self._tcp.send(request)
+      local request = WS.build_handshake_request(hub.host .. ":" .. tostring(hub.port), ws_path, key)
+      if not pcall(self._tcp.send, request) then
+        on_fail("ws:send-failed")
+      end
     end
-    local tcp, tcp_err = self._tcp_open(hub.host, hub.port, {
+    local ok_open, tcp, tcp_err = pcall(self._tcp_open, hub.host, hub.port, {
       on_open = function()
         opened = true
         send_handshake()
@@ -1350,7 +1539,6 @@ function FloLogic.new_session(opts)
             on_fail("ws:send-failed")
             return
           end
-          on_ok()
           if rest ~= "" then
             parser.feed(rest)
           end
@@ -1369,8 +1557,16 @@ function FloLogic.new_session(opts)
         end
       end,
     })
+    if not ok_open then
+      on_fail("ws:adapter-error")
+      return
+    end
     if tcp == nil then
       on_fail("ws:" .. tostring(tcp_err or "tcp-open-failed"))
+      return
+    end
+    if self._done then
+      tcp.close()
       return
     end
     self._tcp = tcp
@@ -1380,40 +1576,22 @@ function FloLogic.new_session(opts)
   end
 
   function self._login(on_ok, on_fail)
-    self._log_debug("login as " .. self._email)
+    self._log_debug("login")
     self._wait_for("LoggedIn", 30000, function(args)
       local user = args[1]
-      if type(user) ~= "table" then
+      if type(user) ~= "table" or user.id == nil then
         on_fail("auth")
         return
       end
       self._user = user
-      if user.relogToken ~= nil and user.relogToken ~= "" then
+      if type(user.relogToken) == "string" and user.relogToken ~= "" then
         self._relog_token = user.relogToken
         self.relog_token = user.relogToken
       end
-      -- Fast path: a ValveSent usually follows immediately. Fall back to
-      -- RefreshValveArray after 3s, merging a late ValveSent if one lands.
-      self._late_valve = nil
-      local got_valve = false
-      local function use_devices(devices)
-        if got_valve then
-          return
-        end
-        got_valve = true
+      self._refresh_valve_array(user, function(devices)
         self._devices = devices
         on_ok(user, devices)
-      end
-      self._wait_for("ValveSent", 3000, function(valve_args)
-        local valve = valve_args[1]
-        if type(valve) == "table" then
-          use_devices({ valve })
-        else
-          self._refresh_valve_array(user, use_devices, on_fail)
-        end
-      end, function(_timeout_err)
-        self._refresh_valve_array(user, use_devices, on_fail)
-      end)
+      end, on_fail)
     end, on_fail)
     if not self._invoke("Login", { self._email, self._password, self._device_name, JSON.null }) then
       on_fail("ws:send-failed")
@@ -1422,27 +1600,10 @@ function FloLogic.new_session(opts)
 
   function self._refresh_valve_array(user, on_ok, on_fail)
     self._wait_for("ValveArraySent", 30000, function(args)
-      local devices = args[1]
-      if type(devices) ~= "table" then
-        devices = {}
-      end
-      local clean = {}
-      for _, device in ipairs(devices) do
-        if type(device) == "table" then
-          clean[#clean + 1] = device
-        end
-      end
-      if self._late_valve ~= nil then
-        local seen = false
-        for _, device in ipairs(clean) do
-          if device.id == self._late_valve.id then
-            seen = true
-            break
-          end
-        end
-        if not seen then
-          clean[#clean + 1] = self._late_valve
-        end
+      local clean = validate_inventory(args[1])
+      if not clean then
+        on_fail("bad-valve-array")
+        return
       end
       on_ok(clean)
     end, on_fail)
@@ -1451,15 +1612,10 @@ function FloLogic.new_session(opts)
     end
   end
 
-  local function observe_valve_sent(self_ref, target, args)
-    if target == "ValveSent" and args[1] ~= nil and type(args[1]) == "table" then
-      self_ref._late_valve = args[1]
-    elseif target == "ErrorOccured" then
-      self_ref._log_debug("cloud error event")
-    end
-  end
-
   function self._connect(hub_url, on_ready, on_fail)
+    self._after(180000, function()
+      on_fail("timeout:session")
+    end)
     local hub, hub_err = FloLogic.parse_hub_url(hub_url)
     if hub == nil then
       on_fail(hub_err)
@@ -1467,10 +1623,25 @@ function FloLogic.new_session(opts)
     end
     self._dispatcher = SignalR.new_dispatcher({
       on_event = function(target, args)
-        observe_valve_sent(self, target, args)
+        if target == "ErrorOccured" then
+          on_fail("cloud-error")
+        elseif target == "ValveArraySent" and self._devices then
+          local devices = validate_inventory(args[1])
+          if not devices then
+            on_fail("bad-valve-array")
+            return
+          end
+          self._devices = devices
+        elseif target == "ValveSent" and type(args[1]) == "table" and self._devices then
+          for index, valve in ipairs(self._devices) do
+            if valve.id == args[1].id then
+              self._devices[index] = args[1]
+            end
+          end
+        end
       end,
       on_error = function(msg)
-        self._log_debug(msg)
+        on_fail("signalr:" .. msg)
       end,
     })
     self._negotiate(hub, function(token)
@@ -1482,37 +1653,15 @@ function FloLogic.new_session(opts)
     end, on_fail)
   end
 
-  -- Resolve the effective valve. A nil/blank selection means the primary
-  -- valve. When a selection is not among the login devices, the login fast
-  -- path may have sent only the primary valve, so the full array is fetched
-  -- before reporting valve-not-found.
+  --- Resolve an explicit selection against the authoritative controllable inventory.
   function self._ensure_valve(user, devices, selected, on_ok, on_fail)
     local valves = FloModel.controllable_valves(devices)
-    local valve = nil
-    if selected == nil or selected == "" then
-      valve = FloModel.choose_valve(devices)
-    else
-      valve = FloModel.find_valve(valves, selected)
-        or FloModel.find_valve(devices, selected)
-    end
-    if valve ~= nil then
-      on_ok(valve, devices, valves)
+    local valve = selected and selected ~= "" and FloModel.find_valve(valves, selected)
+    if not valve then
+      on_fail(selected and selected ~= "" and "valve-not-found" or "select-valve")
       return
     end
-    if selected == nil or selected == "" then
-      on_fail("no-valve")
-      return
-    end
-    self._refresh_valve_array(user, function(full)
-      local full_valves = FloModel.controllable_valves(full)
-      local found = FloModel.find_valve(full_valves, selected)
-        or FloModel.find_valve(full, selected)
-      if found == nil then
-        on_fail("valve-not-found")
-        return
-      end
-      on_ok(found, full, full_valves)
-    end, on_fail)
+    on_ok(valve, devices, valves)
   end
 
   function self._fetch_access(user, valve, on_ok, on_fail)
@@ -1568,7 +1717,7 @@ function FloLogic.new_session(opts)
   end
 
   -- Fetch one poll snapshot for the selected valve. selected may be a valve
-  -- id, uuid, or unique-id prefix, or nil for the primary valve.
+  -- ID or UUID. A blank selection discovers inventory only.
   -- cb(err, snapshot) with snapshot = { user, devices, valves, valve,
   -- access, scheduler, notifications }.
   function self.fetch_snapshot(hub_url, selected, cb)
@@ -1576,15 +1725,25 @@ function FloLogic.new_session(opts)
       self._finish(err, nil, cb)
     end
     self._connect(hub_url, function(user, devices)
-      self._ensure_valve(user, devices, selected, function(valve, all_devices, valves)
+      if selected == nil or selected == "" then
+        self._finish(nil, { user = user, devices = devices }, cb)
+        return
+      end
+      self._ensure_valve(user, devices, selected, function(valve)
         self._fetch_access(user, valve, function(access)
           self._fetch_scheduler(user, valve, function(scheduler)
             self._fetch_notifications(user, valve, function(notifications)
+              local valves = FloModel.controllable_valves(self._devices)
+              local latest = FloModel.find_valve(valves, valve.id)
+              if not latest then
+                fail("valve-not-found")
+                return
+              end
               self._finish(nil, {
                 user = user,
-                devices = all_devices,
+                devices = self._devices,
                 valves = valves,
-                valve = valve,
+                valve = latest,
                 access = access,
                 scheduler = scheduler,
                 notifications = notifications,
@@ -1601,6 +1760,10 @@ function FloLogic.new_session(opts)
     local function fail(err)
       self._finish(err, nil, cb)
     end
+    if selected == nil or selected == "" then
+      fail("select-valve")
+      return
+    end
     self._connect(hub_url, function(user, devices)
       self._ensure_valve(user, devices, selected, function(valve)
         local command = {
@@ -1610,9 +1773,18 @@ function FloLogic.new_session(opts)
           valveId = valve.id,
         }
         for k, v in pairs(fields) do
+          if command[k] ~= nil then
+            fail("reserved-command-field")
+            return
+          end
           command[k] = v
         end
-        self._wait_for("StateChangeResult", 45000, function(_args)
+        self._wait_for("StateChangeResult", 45000, function(args)
+          local result = args[1]
+          if result == false or (type(result) == "table" and (result.ok == false or result.success == false)) then
+            fail("command-rejected")
+            return
+          end
           self._finish(nil, { valve = valve }, cb)
         end, function(err)
           self._finish(err, nil, cb)
@@ -1640,7 +1812,7 @@ end
 -- Lua 5.1 safe.
 -- ============================================================================
 
-FLOGIC_DRIVER_VERSION = "2026090601"
+FLOGIC_DRIVER_VERSION = "2026090701"
 FLOGIC_DEFAULT_HUB = "https://hub-cloudapps-prod.azurewebsites.net"
 FLOGIC_BINDING_FIRST = 6100
 FLOGIC_BINDING_LAST = 6199
@@ -1673,27 +1845,30 @@ FLOGIC_EV_CONN_LOST = "Connection Lost"
 FLOGIC_EV_CONN_RESTORED = "Connection Restored"
 
 -- Driver state. One session at a time; commands queue behind a running poll.
-flogic_state = flogic_state or {
-  binding = nil,
-  hub_host = nil,
-  hub_port = nil,
-  poll_timer = nil,
-  tick_timer = nil,
-  busy = false,
-  command_queue = {},
-  last_snapshot = nil,
-  last_connection_ok = nil,
-  last_mode = nil,
-  last_flowing = nil,
-  last_water_off = nil,
-  last_warning = nil,
-  last_critical = nil,
-  last_advance = nil,
-  relog_token = "",
-  sha1_digest = nil,
-  tcp_callbacks = nil,
-  last_picker_labels = nil,
-}
+flogic_state = flogic_state
+  or {
+    binding = nil,
+    initialized = false,
+    retired_bindings = {},
+    hub_host = nil,
+    hub_port = nil,
+    poll_timer = nil,
+    tick_timer = nil,
+    busy = false,
+    command_queue = {},
+    last_snapshot = nil,
+    last_connection_ok = nil,
+    last_mode = nil,
+    last_flowing = nil,
+    last_water_off = nil,
+    last_warning = nil,
+    last_critical = nil,
+    last_advance = nil,
+    relog_token = "",
+    sha1_digest = nil,
+    tcp_callbacks = nil,
+    last_picker_labels = nil,
+  }
 
 local function flogic_log(message)
   if Properties ~= nil and Properties[FLOGIC_PROP_DEBUG] == "On" then
@@ -1716,19 +1891,22 @@ local function flogic_set_prop(name, value)
   if value == nil then
     value = ""
   end
-  C4:UpdateProperty(name, tostring(value))
+  value = tostring(value)
+  if flogic_prop(name) ~= value then
+    C4:UpdateProperty(name, value)
+  end
 end
 
 -- --- Transport: Director-managed TLS TCP connection -----------------------
--- One dynamic binding is allocated at startup and reused for every session
--- (sessions run serially, so one connection suffices and nothing leaks).
+-- Sessions run serially. A closing binding remains reserved until OFFLINE;
+-- another session must not inherit its asynchronous disconnect callbacks.
 
 local function flogic_find_free_binding()
   for id = FLOGIC_BINDING_FIRST, FLOGIC_BINDING_LAST do
     local ok, address = pcall(function()
       return C4:GetBindingAddress(id)
     end)
-    if not ok or address == nil or address == "" then
+    if ok and (address == nil or address == "") and not flogic_state.retired_bindings[id] then
       return id
     end
   end
@@ -1737,47 +1915,44 @@ end
 
 local function flogic_ensure_binding(host, port)
   local st = flogic_state
-  if st.binding ~= nil and st.hub_host == host and st.hub_port == port then
-    return st.binding
+  local id = flogic_find_free_binding()
+  if id == nil then
+    return nil, "no free network binding"
   end
-  if st.binding == nil then
-    local id = flogic_find_free_binding()
-    if id == nil then
-      return nil, "no free network binding"
-    end
-    st.binding = id
-  end
+  st.binding = id
   st.hub_host, st.hub_port = host, port
   C4:CreateNetworkConnection(st.binding, host, "SSL")
-  -- NOTE: VERIFY_MODE none. Director documents no system CA bundle for raw
-  -- socket connections (unlike the URL APIs), so peer verification would
-  -- fail closed and brick the driver. The negotiate POST still runs over
-  -- verified platform TLS. Revisit if Director documents CA handling here.
-  C4:NetPortOptions(st.binding, port, "TCP/SSL", {
+  C4:NetPortOptions(st.binding, port, "SSL", {
     AUTO_CONNECT = false,
     MONITOR_CONNECTION = false,
     KEEP_CONNECTION = false,
     KEEP_ALIVE = true,
-    VERIFY_MODE = "none",
+    VERIFY_MODE = "peer",
+    CACERTFILE = "./ca-bundle.pem",
   })
   return st.binding
 end
 
 function ReceivedFromNetwork(idBinding, nPort, strData)
   local st = flogic_state
-  if st.binding == idBinding and st.tcp_callbacks ~= nil then
+  if st.binding == idBinding and st.hub_port == nPort and st.tcp_callbacks ~= nil then
     st.tcp_callbacks.on_data(strData)
   end
 end
 
 function OnConnectionStatusChanged(idBinding, nPort, strStatus)
   local st = flogic_state
-  if st.binding ~= idBinding or st.tcp_callbacks == nil then
+  if strStatus == "OFFLINE" and st.retired_bindings[idBinding] == nPort then
+    st.retired_bindings[idBinding] = nil
+    C4:SetBindingAddress(idBinding, "")
+    return
+  end
+  if st.binding ~= idBinding or st.hub_port ~= nPort or st.tcp_callbacks == nil then
     return
   end
   if strStatus == "ONLINE" then
     st.tcp_callbacks.on_open()
-  else
+  elseif strStatus == "OFFLINE" then
     st.tcp_callbacks.on_close()
   end
 end
@@ -1796,8 +1971,10 @@ local function flogic_tcp_open(host, port, callbacks)
   function handle.close()
     if flogic_state.tcp_callbacks == callbacks then
       flogic_state.tcp_callbacks = nil
+      flogic_state.binding = nil
+      flogic_state.retired_bindings[binding] = port
+      C4:NetDisconnect(binding, port)
     end
-    C4:NetDisconnect(binding, port)
   end
   return handle
 end
@@ -1805,15 +1982,26 @@ end
 -- --- Transport: platform HTTPS for the negotiate step ----------------------
 
 local function flogic_http_post(url, body, headers, cb)
-  -- urlPost delivers (ticket-or-error, data, code, headers); a numeric
-  -- first argument is a request ticket, not a failure.
-  C4:urlPost(url, body, headers, false, function(strError, strData, nCode, _tHeaders)
-    if type(strError) == "string" and strError ~= "" then
-      cb(strError, nil, nCode)
+  local transfer = C4:url()
+  transfer:SetOptions({
+    timeout = 30,
+    connect_timeout = 10,
+    ssl_verify_peer = true,
+    ssl_verify_host = true,
+    fail_on_error = false,
+  })
+  transfer:OnDone(function(_, responses, error_code, _error_message)
+    local response = responses and responses[#responses]
+    if error_code ~= 0 then
+      cb("transport-" .. tostring(error_code), nil, response and response.code)
     else
-      cb(nil, strData or "", nCode)
+      cb(nil, response and response.body or "", response and response.code)
     end
   end)
+  transfer:Post(url, body, headers)
+  return function()
+    transfer:Cancel()
+  end
 end
 
 -- --- Crypto / randomness (platform-backed, probed once) --------------------
@@ -1831,28 +2019,36 @@ local function flogic_probe_sha1()
 end
 
 local function flogic_sha1(data)
-  local out, err = C4:Hash(
-    flogic_state.sha1_digest, data, { return_encoding = "NONE", data_encoding = "NONE" }
-  )
+  local out, err = C4:Hash(flogic_state.sha1_digest, data, { return_encoding = "NONE", data_encoding = "NONE" })
   if out == nil then
     error("C4:Hash failed: " .. tostring(err))
   end
   return out
 end
 
+--- Use the random portion of UUIDv4; omit its version/variant bytes.
+local function flogic_random_bytes(count)
+  local bytes = {}
+  while #bytes < count do
+    local uuid = assert(C4:UUID("RANDOM"), "UUID generation failed")
+    local hex = uuid:gsub("%-", "")
+    assert(#hex == 32 and not hex:find("[^%x]"), "invalid UUID")
+    for i = 1, 12, 2 do
+      bytes[#bytes + 1] = string.char(tonumber(hex:sub(i, i + 1), 16))
+      if #bytes == count then
+        break
+      end
+    end
+  end
+  return table.concat(bytes)
+end
+
 local function flogic_random_mask()
-  return {
-    math.random(0, 255), math.random(0, 255),
-    math.random(0, 255), math.random(0, 255),
-  }
+  return { flogic_random_bytes(4):byte(1, 4) }
 end
 
 local function flogic_client_key()
-  local bytes = {}
-  for _ = 1, 16 do
-    bytes[#bytes + 1] = string.char(math.random(0, 255))
-  end
-  return C4:Base64Encode(table.concat(bytes))
+  return C4:Base64Encode(flogic_random_bytes(16))
 end
 
 -- --- Session orchestration --------------------------------------------------
@@ -1861,6 +2057,8 @@ local function flogic_new_session()
   return FloLogic.new_session({
     email = flogic_prop(FLOGIC_PROP_EMAIL),
     password = flogic_prop(FLOGIC_PROP_PASSWORD),
+    device_code = flogic_state.device_code,
+    device_token = flogic_state.device_token,
     http_post = flogic_http_post,
     tcp_open = flogic_tcp_open,
     set_timeout = function(ms, fn)
@@ -1892,7 +2090,7 @@ local function flogic_hub_url()
 end
 
 -- Effective valve selection: manual override wins, else the picker label's
--- "(id)" suffix, else blank (primary valve).
+-- "(id)" suffix, else blank (discovery only).
 local function flogic_selection()
   local override = flogic_prop(FLOGIC_PROP_OVERRIDE)
   if override ~= nil and override:match("%S") ~= nil then
@@ -1945,31 +2143,31 @@ local function flogic_describe_error(err)
 end
 
 local function flogic_valve_label(valve)
-  return FloModel.valve_name(valve) .. " (" .. tostring(valve.id) .. ")"
+  return FloModel.valve_name(valve):gsub("[,\r\n]", " ") .. " (" .. tostring(valve.id) .. ")"
 end
 
 local function flogic_update_picker(devices)
   local valves = FloModel.controllable_valves(devices)
-  local labels = {}
-  for _, valve in ipairs(valves) do
-    labels[#labels + 1] = flogic_valve_label(valve)
-  end
+  local labels = { "Select a valve" }
   local current = flogic_prop(FLOGIC_PROP_PICKER)
-  local keep = nil
-  for _, label in ipairs(labels) do
-    if label == current then
-      keep = current
-      break
+  local selected_id = current:match("%(([^%)]+)%)%s*$")
+  local keep = labels[1]
+  for _, valve in ipairs(valves) do
+    local label = flogic_valve_label(valve)
+    labels[#labels + 1] = label
+    if tostring(valve.id) == selected_id then
+      keep = label
     end
   end
-  if #labels > 0 then
-    -- Only push the list when it changed: re-pushing an identical list on
-    -- every poll risks feedback through OnPropertyChanged on some OS builds.
-    local joined = table.concat(labels, ",")
-    if joined ~= flogic_state.last_picker_labels then
-      flogic_state.last_picker_labels = joined
-      C4:UpdatePropertyList(FLOGIC_PROP_PICKER, joined, keep or labels[1])
-    end
+  -- Preserve a missing valve's identity; never silently switch the site.
+  if selected_id and keep == labels[1] then
+    keep = "Unavailable (" .. selected_id .. ")"
+    labels[#labels + 1] = keep
+  end
+  local joined = table.concat(labels, ",")
+  if joined ~= flogic_state.last_picker_labels or current ~= keep then
+    flogic_state.last_picker_labels = joined
+    C4:UpdatePropertyList(FLOGIC_PROP_PICKER, joined, keep)
   end
   local lines = {}
   for _, valve in ipairs(valves) do
@@ -2084,9 +2282,7 @@ local function flogic_sync_tick_timer()
       local now = os.time()
       flogic_set_prop("Shutoff Countdown", flogic_num(FloModel.shutoff_countdown_seconds(current.valve, now)))
       flogic_set_prop("Flow Elapsed", flogic_num(FloModel.flow_elapsed_seconds(current.valve, now)))
-      if FloModel.advance_shutoff_warning(current.valve, current.access, now)
-        and not flogic_state.last_advance
-      then
+      if FloModel.advance_shutoff_warning(current.valve, current.access, now) and not flogic_state.last_advance then
         flogic_state.last_advance = true
         flogic_fire(FLOGIC_EV_ADVANCE)
       end
@@ -2100,21 +2296,35 @@ end
 local function flogic_on_snapshot(snap, session)
   local st = flogic_state
   st.last_snapshot = snap
-  if session.relog_token ~= nil
-    and session.relog_token ~= ""
-    and session.relog_token ~= st.relog_token
-  then
+  if session.relog_token ~= nil and session.relog_token ~= "" and session.relog_token ~= st.relog_token then
     st.relog_token = session.relog_token
     C4:PersistSetValue("flologic_relog", session.relog_token, true)
   end
   flogic_set_connection(true)
   flogic_update_picker(snap.devices)
+  if snap.valve == nil then
+    st.last_snapshot = nil
+    flogic_set_prop(FLOGIC_PROP_CONNECTION, "Select a valve")
+    return
+  end
   flogic_update_properties(snap)
   flogic_process_edges(snap)
   flogic_sync_tick_timer()
 end
 
+local function flogic_clear_snapshot()
+  local st = flogic_state
+  st.last_snapshot, st.last_mode = nil, nil
+  if st.tick_timer then
+    st.tick_timer:Cancel()
+    st.tick_timer = nil
+  end
+  flogic_set_prop("Shutoff Countdown", "")
+  flogic_set_prop("Flow Elapsed", "")
+end
+
 local function flogic_on_session_error(where, err)
+  flogic_clear_snapshot()
   flogic_log_warn(where .. " failed: " .. tostring(err))
   flogic_set_connection(false, flogic_describe_error(err))
 end
@@ -2123,7 +2333,7 @@ end
 
 local function flogic_run_next()
   local st = flogic_state
-  if st.busy then
+  if st.busy or not st.initialized then
     return
   end
   local job = table.remove(st.command_queue, 1)
@@ -2132,13 +2342,19 @@ local function flogic_run_next()
   end
   st.busy = true
   local session = flogic_new_session()
-  session.send_command(flogic_hub_url(), flogic_selection(), job.fields, function(err)
+  st.session = session
+  session.send_command(flogic_hub_url(), job.selected, job.fields, function(err)
+    if st.session ~= session then
+      return
+    end
+    st.session = nil
     st.busy = false
     if err ~= nil then
+      flogic_set_prop("Last Command", job.name .. ": failed (" .. flogic_describe_error(err) .. ")")
       flogic_on_session_error("command " .. job.name, err)
     else
       flogic_log("command " .. job.name .. " ok; refreshing")
-      flogic_set_connection(true)
+      flogic_set_prop("Last Command", job.name .. ": acknowledged; awaiting refresh")
       flogic_poll_soon(5000)
     end
     flogic_run_next()
@@ -2146,15 +2362,23 @@ local function flogic_run_next()
 end
 
 function flogic_poll_soon(delay_ms)
-  C4:SetTimer(delay_ms or 1000, function(t)
+  local st = flogic_state
+  if not st.initialized then
+    return
+  end
+  if st.soon_timer then
+    st.soon_timer:Cancel()
+  end
+  st.soon_timer = C4:SetTimer(delay_ms or 1000, function(t)
     t:Cancel()
+    st.soon_timer = nil
     flogic_poll_now()
   end, false)
 end
 
 function flogic_poll_now()
   local st = flogic_state
-  if st.busy then
+  if st.busy or not st.initialized then
     flogic_log("poll skipped: session busy")
     return
   end
@@ -2168,7 +2392,12 @@ function flogic_poll_now()
   end
   st.busy = true
   local session = flogic_new_session()
+  st.session = session
   session.fetch_snapshot(flogic_hub_url(), flogic_selection(), function(err, snap)
+    if st.session ~= session then
+      return
+    end
+    st.session = nil
     st.busy = false
     if err ~= nil then
       flogic_on_session_error("poll", err)
@@ -2181,6 +2410,9 @@ end
 
 local function flogic_poll_interval_ms()
   local seconds = tonumber(flogic_prop(FLOGIC_PROP_POLL)) or 60
+  if seconds ~= seconds then
+    seconds = 60
+  end
   if seconds < FLOGIC_MIN_POLL_SECONDS then
     seconds = FLOGIC_MIN_POLL_SECONDS
   elseif seconds > FLOGIC_MAX_POLL_SECONDS then
@@ -2204,23 +2436,35 @@ end
 
 local function flogic_queue_command(name, fields)
   local st = flogic_state
-  if #st.command_queue >= 8 then
-    table.remove(st.command_queue, 1)
+  local selected = flogic_selection()
+  if
+    not st.initialized
+    or selected == ""
+    or #st.command_queue >= 8
+    or flogic_prop(FLOGIC_PROP_EMAIL) == ""
+    or flogic_prop(FLOGIC_PROP_PASSWORD) == ""
+  then
+    flogic_set_prop("Last Command", name .. ": rejected; check configuration or queue capacity")
+    return
   end
-  st.command_queue[#st.command_queue + 1] = { name = name, fields = fields }
+  st.command_queue[#st.command_queue + 1] = { name = name, fields = fields, selected = selected }
+  flogic_set_prop("Last Command", name .. ": queued")
   flogic_run_next()
 end
 
-local function flogic_param_number(params, name, minimum, maximum)
+local function flogic_param_number(params, name, minimum, maximum, fractional)
   local raw = params ~= nil and params[name] or nil
   local value = tonumber(raw)
-  if value == nil or value < minimum or value > maximum then
+  if value == nil or value ~= value or (not fractional and value % 1 ~= 0) or value < minimum or value > maximum then
     return nil
   end
   return value
 end
 
 function ExecuteCommand(strCommand, tParams)
+  if strCommand == "LUA_ACTION" then
+    strCommand = tParams and tParams.ACTION
+  end
   flogic_log("command: " .. tostring(strCommand))
   if strCommand == "Refresh" then
     flogic_poll_now()
@@ -2230,8 +2474,10 @@ function ExecuteCommand(strCommand, tParams)
     return
   end
   local mode_commands = {
-    ["Set Mode Home"] = "home", ["Set Mode Away"] = "away",
-    ["Set Mode Bypass"] = "bypass", ["Set Mode Shutoff"] = "shutoff",
+    ["Set Mode Home"] = "home",
+    ["Set Mode Away"] = "away",
+    ["Set Mode Bypass"] = "bypass",
+    ["Set Mode Shutoff"] = "shutoff",
     ["Set Mode Disabled"] = "disabled",
   }
   local mode = mode_commands[strCommand]
@@ -2241,21 +2487,21 @@ function ExecuteCommand(strCommand, tParams)
   end
   local value_commands = {
     ["Set Home Limit"] = { param = "Minutes", field = "homeIntervalTime", min = 1, max = 10080 },
-    ["Set Away Limit"] = { param = "Minutes", field = "awayIntervalTime", min = 0, max = 10080 },
+    ["Set Away Limit"] = { param = "Minutes", field = "awayIntervalTime", min = 0, max = 10080, fractional = true },
     ["Set Bypass Time"] = { param = "Minutes", field = "bypassTime", min = 1, max = 10080 },
     ["Set Auto Away"] = { param = "Hours", field = "autoAwayTime", min = 1, max = 8760 },
     ["Set Temp Alert"] = { param = "Temperature", field = "lowTemperatureAlert", min = -50, max = 150 },
     ["Set Temp Shutoff"] = { param = "Temperature", field = "lowTemperatureLimit", min = -50, max = 150 },
     ["Set Pre-Alert"] = { param = "Minutes", field = "preAlertNoticeInterval", min = 1, max = 10080 },
     ["Set No-Flow Notice"] = { param = "Seconds", field = "noFlowNoticeInterval", min = 1, max = 604800 },
-    ["Set Flow Sensitivity"] = { param = "Value", field = "dripRate", min = 0, max = 1000 },
+    ["Set Flow Sensitivity"] = { param = "Value", field = "dripRate", min = 0, max = 1000, fractional = true },
   }
   local spec = value_commands[strCommand]
   if spec == nil then
     flogic_log_warn("unknown command: " .. tostring(strCommand))
     return
   end
-  local value = flogic_param_number(tParams, spec.param, spec.min, spec.max)
+  local value = flogic_param_number(tParams, spec.param, spec.min, spec.max, spec.fractional)
   if value == nil then
     flogic_log_warn("command " .. strCommand .. " rejected: bad " .. spec.param)
     return
@@ -2274,38 +2520,100 @@ function OnDriverInit()
 end
 
 function OnDriverLateInit()
-  math.randomseed(os.time() + (os.clock() * 1000000))
+  flogic_state.initialized = false
+  for _, key in ipairs({ "device_code", "device_token" }) do
+    local saved = C4:PersistGetValue("flologic_" .. key)
+    if type(saved) ~= "string" or saved == "" then
+      saved = assert(C4:UUID("RANDOM"))
+      C4:PersistSetValue("flologic_" .. key, saved, true)
+    end
+    flogic_state[key] = saved
+  end
   flogic_state.sha1_digest = flogic_probe_sha1()
   if flogic_state.sha1_digest == nil then
     flogic_set_prop(FLOGIC_PROP_CONNECTION, "Offline: no SHA1 digest available")
     flogic_log_warn("no working SHA1 digest; websocket handshake impossible")
     return
   end
+  flogic_state.initialized = true
+  flogic_set_prop("Driver Version", FLOGIC_DRIVER_VERSION)
+  OnPropertyChanged(FLOGIC_PROP_DEBUG)
   flogic_restart_poll_timer()
   flogic_poll_soon(2000)
 end
 
-function OnDriverDestroyed()
+local function flogic_cancel_work()
   local st = flogic_state
-  if st.poll_timer ~= nil then
-    st.poll_timer:Cancel()
+  local session = st.session
+  st.session, st.busy = nil, false
+  if session then
+    session.cancel()
   end
-  if st.tick_timer ~= nil then
-    st.tick_timer:Cancel()
+  if st.soon_timer then
+    st.soon_timer:Cancel()
+    st.soon_timer = nil
+  end
+  if #st.command_queue > 0 then
+    flogic_set_prop("Last Command", "Queued commands cancelled")
   end
   st.command_queue = {}
+  flogic_clear_snapshot()
+end
+
+function OnDriverDestroyed()
+  local st = flogic_state
+  st.initialized = false
+  flogic_cancel_work()
+  if st.poll_timer then
+    st.poll_timer:Cancel()
+    st.poll_timer = nil
+  end
+  if st.debug_timer then
+    st.debug_timer:Cancel()
+    st.debug_timer = nil
+  end
+end
+
+function OnDriverRemovedFromProject()
+  OnDriverDestroyed()
 end
 
 function OnPropertyChanged(strProperty)
+  if not flogic_state.initialized then
+    return
+  end
   flogic_log("property changed: " .. tostring(strProperty))
-  if strProperty == FLOGIC_PROP_POLL then
+  if strProperty == FLOGIC_PROP_DEBUG then
+    if flogic_state.debug_timer then
+      flogic_state.debug_timer:Cancel()
+    end
+    if flogic_prop(FLOGIC_PROP_DEBUG) == "On" then
+      flogic_state.debug_timer = C4:SetTimer(10800000, function()
+        flogic_set_prop(FLOGIC_PROP_DEBUG, "Off")
+        flogic_state.debug_timer = nil
+      end, false)
+    end
+  elseif strProperty == FLOGIC_PROP_POLL then
     flogic_restart_poll_timer()
-  elseif strProperty == FLOGIC_PROP_EMAIL
+  elseif
+    strProperty == FLOGIC_PROP_EMAIL
     or strProperty == FLOGIC_PROP_PASSWORD
     or strProperty == FLOGIC_PROP_HUB
     or strProperty == FLOGIC_PROP_PICKER
     or strProperty == FLOGIC_PROP_OVERRIDE
   then
+    flogic_cancel_work()
+    if strProperty == FLOGIC_PROP_EMAIL or strProperty == FLOGIC_PROP_PASSWORD or strProperty == FLOGIC_PROP_HUB then
+      flogic_state.relog_token = ""
+      C4:PersistSetValue("flologic_relog", "", true)
+      flogic_state.last_picker_labels = nil
+    end
+    if strProperty == FLOGIC_PROP_EMAIL or strProperty == FLOGIC_PROP_HUB then
+      flogic_set_prop(FLOGIC_PROP_OVERRIDE, "")
+      C4:UpdatePropertyList(FLOGIC_PROP_PICKER, "Select a valve", "Select a valve")
+      flogic_set_prop("Available Valves", "")
+    end
+    flogic_set_prop(FLOGIC_PROP_CONNECTION, "Refreshing configuration")
     flogic_poll_soon(1000)
   end
 end

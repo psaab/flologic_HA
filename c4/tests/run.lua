@@ -11,9 +11,17 @@ local T = TestHelp
 
 local function make_valve(overrides)
   local valve = {
-    id = 11, uuid = "uuid-1", isZConnect = true, isZGateway = false,
-    mode = 1, online = true, flowState = 1, deviceTypeName = "Connect",
-    homeIntervalTime = 10, awayIntervalTime = 5, bypassTime = 30,
+    id = 11,
+    uuid = "uuid-1",
+    isZConnect = true,
+    isZGateway = false,
+    mode = 1,
+    online = true,
+    flowState = 1,
+    deviceTypeName = "Connect",
+    homeIntervalTime = 10,
+    awayIntervalTime = 5,
+    bypassTime = 30,
     preAlertNoticeInterval = 2,
   }
   if overrides ~= nil then
@@ -41,7 +49,7 @@ end)
 
 T.test("json: decode escapes and unicode", function()
   local t = JSON.decode('"A\\u00e9\\n\\t\\"\\\\\\/\\b\\f\\r"')
-  T.check_equal(t, "A\195\169\n\t\"\\" .. "/" .. "\008\012\r", "escapes")
+  T.check_equal(t, 'A\195\169\n\t"\\' .. "/" .. "\008\012\r", "escapes")
   -- Surrogate pair U+1D11E (musical G clef) -> 4-byte UTF-8.
   local g = JSON.decode('"\\ud834\\udd1e"')
   T.check_equal(#g, 4, "surrogate length")
@@ -63,7 +71,7 @@ T.test("json: encode values and roundtrip", function()
   T.check_equal(JSON.encode({}), "[]", "empty table is array")
   T.check_equal(JSON.encode(JSON.null), "null", "null sentinel")
   T.check_equal(JSON.encode({ "a", JSON.null }), '["a",null]', "null in array")
-  local obj = { mode = 8, name = "Caf\195\169 \"x\"\n", on = true, list = { 1, 2 } }
+  local obj = { mode = 8, name = 'Caf\195\169 "x"\n', on = true, list = { 1, 2 } }
   local back = JSON.decode(JSON.encode(obj))
   T.check_equal(back.mode, 8, "roundtrip number")
   T.check_equal(back.name, obj.name, "roundtrip string")
@@ -99,7 +107,10 @@ T.test("model: flow state, countdowns, notifications", function()
   local now = os.time()
   local started = os.date("!%Y-%m-%dT%H:%M:%SZ", now - 60)
   local valve = make_valve({
-    online = true, flowState = 4, mode = 1, lastNewFlow = started,
+    online = true,
+    flowState = 4,
+    mode = 1,
+    lastNewFlow = started,
     preAlertNoticeInterval = 10,
   })
   local elapsed = FloModel.flow_elapsed_seconds(valve, now)
@@ -174,9 +185,11 @@ T.test("signalr: cancel and fail_all", function()
   d.fail_all("boom")
   T.check_equal(errs, 1, "fail_all delivers")
   local bad = 0
-  local d2 = SignalR.new_dispatcher({ on_error = function()
-    bad = bad + 1
-  end })
+  local d2 = SignalR.new_dispatcher({
+    on_error = function()
+      bad = bad + 1
+    end,
+  })
   d2.feed("not json" .. "\030")
   T.check_equal(bad, 1, "bad frame reported, stream survives")
 end)
@@ -184,14 +197,13 @@ end)
 -- --- WebSocket ---
 
 T.test("websocket: RFC 6455 handshake vector", function()
-  local accept = WS.expected_accept(
-    "dGhlIHNhbXBsZSBub25jZQ==", TestHelp.sha1, TestHelp.b64encode
-  )
+  local accept = WS.expected_accept("dGhlIHNhbXBsZSBub25jZQ==", TestHelp.sha1, TestHelp.b64encode)
   T.check_equal(accept, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", "RFC accept key")
   local req = WS.build_handshake_request("example.com:443", "/ws?id=1", "KEY==")
   T.check(req:find("GET /ws?id=1 HTTP/1.1\r\n", 1, true) == 1, "request line")
   T.check(req:find("Sec-WebSocket-Version: 13\r\n", 1, true) ~= nil, "version header")
-  local good = "HTTP/1.1 101 Switching Protocols\r\nSEC-WEBSOCKET-ACCEPT: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\nEXTRA"
+  local good =
+    "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: keep-alive, Upgrade\r\nSEC-WEBSOCKET-ACCEPT: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\nEXTRA"
   local key, consumed = WS.parse_handshake_response(good)
   T.check_equal(key, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", "accept parsed, case preserved")
   T.check_equal(consumed, #good - 5, "consumed through blank line")
@@ -212,11 +224,7 @@ T.test("websocket: client frame sizes and masking", function()
   T.check_equal(mid:byte(3) * 256 + mid:byte(4), 200, "16-bit length")
   local big = WS.build_client_frame(string.rep("b", 66000), mask)
   T.check_equal(big:byte(2), 128 + 127, "64-bit marker")
-  T.check_equal(
-    big:byte(7) * 16777216 + big:byte(8) * 65536 + big:byte(9) * 256 + big:byte(10),
-    66000,
-    "64-bit length"
-  )
+  T.check_equal(big:byte(7) * 16777216 + big:byte(8) * 65536 + big:byte(9) * 256 + big:byte(10), 66000, "64-bit length")
 end)
 
 T.test("websocket: parser handles fragments, ping, close, partial data", function()
@@ -251,7 +259,7 @@ T.test("websocket: parser handles fragments, ping, close, partial data", functio
   T.check_equal(#errors, 0, "no errors")
   -- Stray continuation is a protocol error, not a crash.
   parser.feed(string.char(128, 1) .. "x")
-  T.check_equal(#errors, 1, "stray continuation reported")
+  T.check_equal(#errors, 0, "closed parser ignores trailing bytes")
 end)
 
 -- --- FloLogic session (scripted fake server) ---
@@ -286,8 +294,7 @@ local function new_test_session(server, timers, overrides)
     random_mask = function()
       return { 9, 8, 7, 6 }
     end,
-    log = function()
-    end,
+    log = function() end,
   }
   if overrides ~= nil then
     for k, v in pairs(overrides) do
@@ -306,6 +313,7 @@ local function fetch_script(user, valves, access_rows, sched_rows, notif_rows)
         { target = "ValveSent", args = { valves[1] } },
       },
     },
+    { expect_target = "RefreshValveArray", reply_target = "ValveArraySent", reply_args = { valves } },
     {
       expect_target = "RequestUserAccesses",
       reply_target = "UserAccessesSent",
@@ -334,13 +342,6 @@ T.test("session: full snapshot for the selected valve", function()
   local sched_rows = { { action = "mode", actionPayload = { mode = 1 } } }
   local notif_rows = { { id = 5 } }
   local script = fetch_script(user, { v1, v2 }, access_rows, sched_rows, notif_rows)
-  -- Login fast path reports only v1; the uuid-2 selection triggers an
-  -- array fetch before metadata is requested.
-  table.insert(script, 2, {
-    expect_target = "RefreshValveArray",
-    reply_target = "ValveArraySent",
-    reply_args = { { v1, v2 } },
-  })
   local server = TestHelp.new_fake_server(script)
   local session = new_test_session(server, timers)
   local err, snap = nil, nil
@@ -367,7 +368,7 @@ T.test("session: full snapshot for the selected valve", function()
   T.check(server._sent_frames[1]:find("id=test%-connection%-token", 1) ~= nil, "token in path")
 end)
 
-T.test("session: ValveSent timeout falls back to the valve array", function()
+T.test("session: inventory arrives without a primary valve push", function()
   local timers = TestHelp.new_fake_timers()
   local user = test_user()
   local v1 = make_valve()
@@ -400,8 +401,7 @@ T.test("session: ValveSent timeout falls back to the valve array", function()
   session.fetch_snapshot(HUB_URL, "uuid-2", function(e, s)
     err, snap = e, s
   end)
-  T.check(snap == nil, "snapshot waits for the array fallback")
-  timers.advance(3000)
+  T.check(snap ~= nil, "inventory does not depend on a primary push")
   T.check(err == nil, "no error, got " .. tostring(err))
   T.check_equal(#snap.devices, 2, "array devices")
   T.check_equal(snap.valve.uuid, "uuid-2", "selected valve resolved")
@@ -423,6 +423,7 @@ T.test("session: sends commands with the cloud envelope", function()
         { target = "ValveSent", args = { v1 } },
       },
     },
+    { expect_target = "RefreshValveArray", reply_target = "ValveArraySent", reply_args = { { v1 } } },
     {
       expect_target = "RequestStateChange",
       capture = function(msg)
@@ -434,7 +435,7 @@ T.test("session: sends commands with the cloud envelope", function()
   })
   local session = new_test_session(server, timers)
   local err, res = nil, nil
-  session.send_command(HUB_URL, nil, { mode = 8 }, function(e, r)
+  session.send_command(HUB_URL, "uuid-1", { mode = 8 }, function(e, r)
     err, res = e, r
   end)
   T.check(err == nil, "no error, got " .. tostring(err))
@@ -490,10 +491,11 @@ T.test("session: auth, timeout, and missing-valve errors", function()
         { target = "ValveSent", args = { v1 } },
       },
     },
+    { expect_target = "RefreshValveArray", reply_target = "ValveArraySent", reply_args = { { v1 } } },
     { expect_target = "RequestUserAccesses" }, -- never replies
   })
   local err3 = nil
-  new_test_session(hanging, timers).fetch_snapshot(HUB_URL, nil, function(e)
+  new_test_session(hanging, timers).fetch_snapshot(HUB_URL, "uuid-1", function(e)
     err3 = e
   end)
   T.check(err3 == nil, "waits for the timeout")
@@ -513,4 +515,183 @@ T.test("session: hub URL parsing", function()
   T.check(FloLogic.parse_hub_url("not a url") == nil, "bad URL rejected")
 end)
 
-TestHelp.run_all()
+T.test("session: deadline cancels stalled HTTP and ignores late completion", function()
+  local timers = TestHelp.new_fake_timers()
+  local callback, cancelled, completions, result = nil, false, 0, nil
+  local session = new_test_session({}, timers, {
+    http_post = function(_, _, _, cb)
+      callback = cb
+      return function()
+        cancelled = true
+      end
+    end,
+  })
+  session.fetch_snapshot(HUB_URL, "11", function(err)
+    result, completions = err, completions + 1
+  end)
+  timers.advance(180000)
+  T.check_equal(result, "timeout:session", "whole-session deadline")
+  T.check(cancelled, "HTTP cancelled")
+  callback(nil, '{"connectionToken":"late"}', 200)
+  T.check_equal(completions, 1, "completion occurs once")
+  T.check_equal(timers.pending_count(), 0, "deadline cleanup")
+end)
+
+T.test("session: websocket waits for SignalR acknowledgement", function()
+  local timers = TestHelp.new_fake_timers()
+  local writes, callbacks, result, closed = {}, nil, nil, false
+  local session = new_test_session(TestHelp.new_fake_server({}), timers, {
+    tcp_open = function(_, _, cb)
+      callbacks = cb
+      cb.on_open()
+      return {
+        send = function(bytes)
+          writes[#writes + 1] = bytes
+        end,
+        close = function()
+          closed = true
+        end,
+      }
+    end,
+  })
+  session.fetch_snapshot(HUB_URL, "11", function(err)
+    result = err
+  end)
+  local accept = WS.expected_accept("dGhlIHNhbXBsZSBub25jZQ==", TestHelp.sha1, TestHelp.b64encode)
+  callbacks.on_data(
+    "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "
+      .. accept
+      .. "\r\n\r\n"
+  )
+  T.check_equal(#writes, 2, "only upgrade and SignalR handshake sent")
+  timers.advance(30000)
+  T.check_equal(result, "timeout:upgrade", "missing acknowledgement times out")
+  T.check(closed, "stalled socket closed")
+end)
+
+T.test("session: discovery honors full inventory despite an early primary push", function()
+  local timers = TestHelp.new_fake_timers()
+  local server = TestHelp.new_fake_server({
+    {
+      expect_target = "Login",
+      replies = {
+        { target = "ValveSent", args = { make_valve() } },
+        { target = "LoggedIn", args = { test_user() } },
+      },
+    },
+    { expect_target = "RefreshValveArray", reply_target = "ValveArraySent", reply_args = { {} } },
+  })
+  local snapshot
+  new_test_session(server, timers).fetch_snapshot(HUB_URL, "", function(err, snap)
+    T.check(err == nil, "discovery succeeded")
+    snapshot = snap
+  end)
+  T.check(snapshot ~= nil and #snapshot.devices == 0, "primary push cannot resurrect removed valve")
+  T.check_equal(timers.pending_count(), 0, "cleanup")
+end)
+
+T.test("session: explicit command selection and negative acknowledgement", function()
+  local timers = TestHelp.new_fake_timers()
+  local untouched = TestHelp.new_fake_server({})
+  local rejected
+  new_test_session(untouched, timers).send_command(HUB_URL, "", { mode = 8 }, function(err)
+    rejected = err
+  end)
+  T.check_equal(rejected, "select-valve", "blank target rejected")
+  T.check_equal(#untouched._http_calls, 0, "no cloud request")
+  local server = TestHelp.new_fake_server({
+    { expect_target = "Login", reply_target = "LoggedIn", reply_args = { test_user() } },
+    { expect_target = "RefreshValveArray", reply_target = "ValveArraySent", reply_args = { { make_valve() } } },
+    { expect_target = "RequestStateChange", reply_target = "StateChangeResult", reply_args = { false } },
+  })
+  new_test_session(server, timers).send_command(HUB_URL, "11", { mode = 8 }, function(err)
+    rejected = err
+  end)
+  T.check_equal(rejected, "command-rejected", "negative cloud result surfaced")
+end)
+
+T.test("session: invalid inventory fails instead of choosing a gateway", function()
+  for _, inventory in ipairs({
+    false,
+    { { id = 11 }, { id = 11 } },
+    { { name = "missing identity" } },
+    { { id = 11, isZGateway = true } },
+  }) do
+    local timers = TestHelp.new_fake_timers()
+    local server = TestHelp.new_fake_server({
+      { expect_target = "Login", reply_target = "LoggedIn", reply_args = { test_user() } },
+      { expect_target = "RefreshValveArray", reply_target = "ValveArraySent", reply_args = { inventory } },
+    })
+    local result
+    new_test_session(server, timers).send_command(HUB_URL, "11", { mode = 8 }, function(err)
+      result = err
+    end)
+    T.check(result ~= nil, "invalid inventory/target rejected")
+    T.check(server._tcp_closed, "socket closed")
+  end
+end)
+
+T.test("websocket: bounded input and protocol errors retire parser", function()
+  local errors, messages = 0, 0
+  local parser = WS.new_parser({
+    max_message_size = 16,
+    on_error = function()
+      errors = errors + 1
+    end,
+    on_message = function()
+      messages = messages + 1
+    end,
+  })
+  parser.feed(string.char(129, 126, 0, 17))
+  parser.feed(string.char(129, 1) .. "x")
+  T.check_equal(errors, 1, "size limit fails once")
+  T.check_equal(messages, 0, "retired parser delivers no messages")
+  local key, err = WS.parse_handshake_response(string.rep("x", 16385))
+  T.check(key == nil and err ~= "need_more", "header bound")
+end)
+
+T.test("model: UTC parsing handles offsets and calendar boundaries", function()
+  T.check_equal(FloModel.parse_datetime_utc("1970-01-01T00:00:00Z"), 0, "epoch")
+  T.check_equal(FloModel.parse_datetime_utc("1970-01-01T01:30:00+01:30"), 0, "positive offset")
+  T.check_equal(FloModel.parse_datetime_utc("1969-12-31T19:00:00-05:00"), 0, "negative offset")
+  T.check_equal(FloModel.parse_datetime_utc("2000-02-29T00:00:00.123Z"), 951782400, "leap day")
+  T.check(FloModel.parse_datetime_utc("1900-02-29T00:00:00Z") == nil, "invalid leap day")
+  T.check(FloModel.parse_datetime_utc("2026-09-07T24:00:00Z") == nil, "invalid hour")
+end)
+
+T.test("session: live inventory removal cannot return a stale selected valve", function()
+  local timers = TestHelp.new_fake_timers()
+  local script = fetch_script(test_user(), { make_valve() }, {}, {}, {})
+  script[3].replies = {
+    { target = "ValveArraySent", args = { {} } },
+    { target = "UserAccessesSent", args = { {} } },
+  }
+  local result, snapshot
+  new_test_session(TestHelp.new_fake_server(script), timers).fetch_snapshot(HUB_URL, "11", function(err, snap)
+    result, snapshot = err, snap
+  end)
+  T.check_equal(result, "valve-not-found", "live removal invalidates snapshot")
+  T.check(snapshot == nil, "old valve cannot be resurrected")
+end)
+
+T.test("session: invalid URLs and transport exceptions fail cleanly", function()
+  for _, url in ipairs({
+    "http://example.com",
+    "https://example.com:70000",
+    "https://user@example.com",
+    "https://example.com?q=1",
+  }) do
+    T.check(FloLogic.parse_hub_url(url) == nil, "unsupported URL rejected")
+  end
+  local timers = TestHelp.new_fake_timers()
+  local result
+  new_test_session({}, timers, {
+    http_post = function()
+      error("private transport details")
+    end,
+  }).fetch_snapshot(HUB_URL, "11", function(err)
+    result = err
+  end)
+  T.check_equal(result, "http:adapter-error", "adapter exception sanitized")
+  T.check_equal(timers.pending_count(), 0, "exception cancels watchdog")
+end)
