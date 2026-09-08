@@ -125,17 +125,34 @@ local function director()
   function C4:FileExists(name)
     return env.files[name] ~= nil
   end
+  -- Faithful position semantics per the DriverWorks docs: FileOpen
+  -- positions at END-of-file (rba mode), reads without a FileSetPos(0)
+  -- return "", and writes always append. This fidelity is load-bearing:
+  -- the 2026090811 field failure (magic gate reading "") passed the
+  -- old position-agnostic mock.
   function C4:FileOpen(name)
-    return { name = name }
+    if env.files[name] == nil then
+      env.files[name] = ""
+    end
+    return { name = name, pos = #(env.files[name] or "") }
+  end
+  function C4:FileSetPos(handle, pos)
+    handle.pos = pos
   end
   function C4:FileWrite(handle, length, data)
-    env.files[handle.name] = data:sub(1, length)
+    env.files[handle.name] = (env.files[handle.name] or "") .. data:sub(1, length)
+    handle.pos = #env.files[handle.name]
+    return length
   end
   function C4:FileGetSize(handle)
     return #(env.files[handle.name] or "")
   end
   function C4:FileRead(handle, count)
-    return (env.files[handle.name] or ""):sub(1, count)
+    local data = env.files[handle.name] or ""
+    local from = (handle.pos or 0) + 1
+    local chunk = data:sub(from, from + count - 1)
+    handle.pos = (handle.pos or 0) + #chunk
+    return chunk
   end
   function C4:FileClose(_) end
   function C4:FileDelete(name)
@@ -145,9 +162,13 @@ local function director()
     if env.move_fail then
       error("move denied")
     end
+    -- The adapter tries bare then leading-slash paths; the store holds
+    -- bare names either way.
+    local from = from_name:gsub("^/", "")
+    local to = to_name:gsub("^/", "")
     env.file_moves[#env.file_moves + 1] = { from = from_name, to = to_name }
-    env.files[to_name] = env.files[from_name]
-    env.files[from_name] = nil
+    env.files[to] = env.files[from]
+    env.files[from] = nil
   end
   function C4:GetDevicesByC4iName(name)
     return env.installed[name] or {}

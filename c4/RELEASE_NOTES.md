@@ -1,5 +1,16 @@
 Control4 DriverWorks package for FloLogic Connect valves (OS 3.3.0+).
 
+Version **2026090812** fixes the self-update read-back the 0811 field
+run caught: `C4:FileOpen` positions at end-of-file, so the staged
+candidate's magic gate read `""` and failed every install. All three
+file adapters now `FileSetPos(handle, 0)` before reading (pinned by a
+packaging test), the updater distinguishes read-back failure from a
+non-archive download, and the Director mock models true position
+semantics (open-at-EOF, seek, append writes) so the regression suite
+fails without the seek. The move adapter also tries both bare and
+leading-slash paths (the documented `FileMove` example uses slashes)
+and believes filesystem existence, not the call's undocumented return.
+
 Version **2026090811** implements the second adversarial-review
 remediation (12 findings, all fixed and covered; see
 `c4/ADVERSARIAL_REVIEW_2026090810.md`).

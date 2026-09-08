@@ -2457,6 +2457,12 @@ function FloUpdate.new_install(opts)
       return
     end
     local head = opts.file_read(candidate, 4)
+    if head == nil then
+      log_warn("update stage: read-back failed for " .. candidate)
+      opts.file_delete(candidate)
+      finish("Staged package could not be verified (read-back failed); installed driver left intact")
+      return
+    end
     if type(head) ~= "string" or head:sub(1, 2) ~= "PK" then
       log_warn("update stage: magic check failed for " .. candidate)
       opts.file_delete(candidate)
@@ -2531,6 +2537,11 @@ function FloUpdate.new_install(opts)
       return
     end
     local installed_head = opts.file_read(filename, 4)
+    if installed_head == nil then
+      log_warn("update stage: replacement read-back failed for " .. filename)
+      roll_back("read-back failed")
+      return
+    end
     if type(installed_head) ~= "string" or installed_head:sub(1, 2) ~= "PK" then
       roll_back("verification failed")
       return
@@ -2945,17 +2956,29 @@ end
 
 local function flogic_file_move(from_name, to_name)
   -- C4:FileMove(alias, from, alias, to) is documented from OS 3.3.0 with
-  -- C4Z among the allowed aliases. Only the pcall status is reported —
-  -- FileMove's own return convention is undocumented, so the updater
-  -- verifies every step by filesystem state (existence + size) instead
-  -- of trusting this bit.
+  -- C4Z among the allowed aliases. The documented example uses
+  -- leading-slash paths, but a bare filename is also a valid relative
+  -- path — and FileMove's own return convention is undocumented. So
+  -- try both forms and believe the filesystem, not the call: our flows
+  -- never move onto an existing destination, so the destination's
+  -- existence proves the move. The updater re-verifies every step by
+  -- state regardless.
   if C4.FileMove == nil then
     return false
   end
-  local ok = pcall(function()
-    C4:FileMove(flogic_file_store, from_name, flogic_file_store, to_name)
-  end)
-  return ok
+  local forms = { { from_name, to_name }, { "/" .. from_name, "/" .. to_name } }
+  for _, form in ipairs(forms) do
+    pcall(function()
+      C4:FileMove(flogic_file_store, form[1], flogic_file_store, form[2])
+    end)
+    local ok, exists = pcall(function()
+      return C4:FileExists(to_name)
+    end)
+    if ok and exists then
+      return true
+    end
+  end
+  return false
 end
 
 local function flogic_file_exists(name)
@@ -3019,6 +3042,10 @@ local function flogic_file_read(name, count)
     if handle == nil or handle == -1 then
       return nil
     end
+    -- FileOpen positions at END-of-file: without the seek every read
+    -- returns "" and no magic gate can ever pass (field failure on
+    -- 2026090811). FileSetPos is available since 1.6.0.
+    C4:FileSetPos(handle, 0)
     return C4:FileRead(handle, count)
   end)
   if handle ~= nil and handle ~= -1 then

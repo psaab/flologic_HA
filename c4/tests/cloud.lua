@@ -187,7 +187,7 @@ local function discover(env, devices, accesses)
 end
 
 T.test("cloud: version, link pin, updater asset, no picker (CLOUD-U6)", function()
-  T.check_equal(FLOCLOUD_DRIVER_VERSION, "2026090811", "cloud version")
+  T.check_equal(FLOCLOUD_DRIVER_VERSION, "2026090812", "cloud version")
   T.check_equal(FLOGIC_LINK_VERSION, 1, "protocol version is 1")
   T.check_equal(FloUpdate.ASSET, "flologic_cloud.c4z", "updater tracks the cloud package")
   T.check_equal(FloUpdate.FAMILY_ASSETS[1], "flologic_cloud.c4z", "updater requires its own package")
@@ -214,13 +214,13 @@ T.test("cloud: version, link pin, updater asset, no picker (CLOUD-U6)", function
     {
       -- Newer tag but missing the valve sibling: not a valid lockstep
       -- release, so the older complete release wins.
-      tag_name = "c4-v2026090811",
+      tag_name = "c4-v2026090812",
       draft = false,
       prerelease = false,
       assets = {
         {
           name = "flologic_cloud.c4z",
-          browser_download_url = "https://github.com/psaab/flologic_HA/releases/download/c4-v2026090811/flologic_cloud.c4z",
+          browser_download_url = "https://github.com/psaab/flologic_HA/releases/download/c4-v2026090812/flologic_cloud.c4z",
         },
       },
     },

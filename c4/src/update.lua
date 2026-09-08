@@ -414,6 +414,12 @@ function FloUpdate.new_install(opts)
       return
     end
     local head = opts.file_read(candidate, 4)
+    if head == nil then
+      log_warn("update stage: read-back failed for " .. candidate)
+      opts.file_delete(candidate)
+      finish("Staged package could not be verified (read-back failed); installed driver left intact")
+      return
+    end
     if type(head) ~= "string" or head:sub(1, 2) ~= "PK" then
       log_warn("update stage: magic check failed for " .. candidate)
       opts.file_delete(candidate)
@@ -488,6 +494,11 @@ function FloUpdate.new_install(opts)
       return
     end
     local installed_head = opts.file_read(filename, 4)
+    if installed_head == nil then
+      log_warn("update stage: replacement read-back failed for " .. filename)
+      roll_back("read-back failed")
+      return
+    end
     if type(installed_head) ~= "string" or installed_head:sub(1, 2) ~= "PK" then
       roll_back("verification failed")
       return

@@ -147,3 +147,26 @@ def test_composer_identities_distinct_valve_asset_never_collides() -> None:
     # no code value may reference the legacy .c4z filename as an asset.
     assert '"flologic_valve.c4z"' not in valve_lua
     assert not LEGACY_C4Z.is_file(), "stale legacy-named package must not exist"
+
+
+def test_file_read_seeks_before_reading_in_all_adapters() -> None:
+    """Every file_read adapter must FileSetPos(0) before FileRead.
+
+    C4:FileOpen positions at end-of-file, so a read without the seek
+    returns "" and the updater's magic gate fails every install (field
+    failure on 2026090811). The three adapters are copy-pasted per
+    driver by bundle design; this pins the invariant in all of them.
+    """
+    sources = {
+        "cloud": (CLOUD_DIR / "cloud.lua").read_text(encoding="utf-8"),
+        "valve": (VALVE_DIR / "valve.lua").read_text(encoding="utf-8"),
+        "monolith": (C4_DIR / "src" / "main.lua").read_text(encoding="utf-8"),
+    }
+    fns = {"cloud": "flocloud_file_read", "valve": "flovalve_file_read", "monolith": "flogic_file_read"}
+    for driver, text in sources.items():
+        fn = fns[driver]
+        start = text.index(f"local function {fn}(")
+        body = text[start : text.index("\nend", start)]
+        seek = body.index("C4:FileSetPos(handle, 0)")
+        read = body.index("C4:FileRead(handle, count)")
+        assert seek < read, f"{driver} {fn} must seek before reading"
