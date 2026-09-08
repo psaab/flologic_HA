@@ -1,5 +1,52 @@
 Control4 DriverWorks package for FloLogic Connect valves (OS 3.3.0+).
 
+Version **2026090811** implements the second adversarial-review
+remediation (12 findings, all fixed and covered; see
+`c4/ADVERSARIAL_REVIEW_2026090810.md`).
+
+- Command identity end to end: jobs carry the expected uuid, scope, and
+  absolute deadline; dequeue revalidates the slot, quarantine purges
+  admitted-but-unsent work, and the command session compares its own
+  freshly fetched row plus the transmit deadline immediately before the
+  irreversible request (pre-transmit expiry reports `expired`, never
+  transmitted). A replaced valve can never receive another valve's
+  queued write.
+- Ordering and freshness: every snapshot/notice carries a per-slot
+  sequence under a persisted cloud epoch, and every snapshot advertises
+  its freshness budget from the configured poll interval. Duplicates
+  and reordered redeliveries drop without renewing the watchdog or
+  revoking newer availability info; cadence is never inferred from
+  traffic. The keys are additive envelope fields, so mixed versions
+  still link (older peers keep legacy semantics).
+- Replacement safety: companions key identity on id + immutable uuid
+  (reset before applying a replacement's first snapshot), persist
+  identity and state as one validated association, and clear both on
+  identity change — a restart before the first new snapshot restores
+  nothing stale.
+- Pending-observation: an ack holds the tile only until the observation
+  deadline; a novel snapshot confirms the request, silence reconciles
+  it. Unbind and unavailability settle in-flight requests at once, and
+  commands block before the first observation (`no state yet`) instead
+  of claiming blindly.
+- Discovery truth: a nil bound-device lookup is observed-unbound (per
+  the published API contract), so genuinely unbound slots recycle and
+  unbound companions stay silent; only a missing API or raised error is
+  indeterminate. Hintless fallback attributes by elimination when
+  exactly one consumer exists (single-valve bootstrap with a broken
+  proxy leg); multi-valve fallback still needs one proxy handshake.
+- Safe replacement: installs move installed → backup → candidate with
+  filesystem verification at each step and rollback on failure, refuse
+  before touching anything without a file move, and report grace
+  expiry before transmission as a connection failure. Legacy-named
+  split assets (`flologic_valve.c4z`) were retired from releases
+  `c4-v2026090801`–`c4-v2026090809` with migration notes, so installed
+  monoliths only ever see monolith releases again.
+- Identity without state owns its own bounded wait (re-requested, then
+  an explicit `Link failed: no state from cloud` with slow recovery);
+  slot identity is scoped to account + endpoint (ID-only records never
+  equate across namespaces); hub-frame logs are shape-only; pending
+  timers cancel explicitly on reset/unbind/retire.
+
 Version **2026090810** implements the adversarial-review remediation (14
 findings, all fixed and covered; see `c4/ADVERSARIAL_REVIEW.md`).
 

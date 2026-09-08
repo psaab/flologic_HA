@@ -928,12 +928,11 @@ function SignalR.new_dispatcher(opts)
         if ok then
           handle_frame(frame)
         elseif self._on_error ~= nil then
-          -- Second arg carries a truncated, single-line copy for traced
-          -- sessions; the message string itself is unchanged for
-          -- existing matchers. Control bytes are blanked so a hostile
-          -- frame cannot inject fake log lines.
-          local snippet = raw:sub(1, 160):gsub("[%c]", " ")
-          self._on_error("undecodable SignalR frame", snippet)
+          -- Second arg carries the frame's byte LENGTH only, never its
+          -- bytes: no payload excerpt may reach the log, redacted or
+          -- otherwise. The message string itself is unchanged for
+          -- existing matchers.
+          self._on_error("undecodable SignalR frame", #raw)
         end
       end
     end
@@ -1280,14 +1279,12 @@ local function pct_encode(text)
   end)
 end
 
--- Scrub hub-supplied text for logs: single-line and bounded, so a
--- hostile frame cannot inject fake log lines or flood the log.
-local function scrub_log_text(value, max_len)
-  local text = tostring(value or ""):gsub("[%c]", " ")
-  if #text > max_len then
-    text = text:sub(1, max_len) .. "..."
-  end
-  return text
+-- Describe a hub frame for logs by shape only (the byte length the
+-- dispatcher reports), never by content: redacting control bytes stops
+-- log injection but a payload excerpt can still leak whatever the
+-- frame carried.
+local function describe_frame_bytes(byte_count)
+  return "frame-bytes=" .. tostring(tonumber(byte_count) or 0)
 end
 
 -- Split an https:// hub URL into host, port, and signalr base path.
@@ -1359,6 +1356,7 @@ function FloLogic.new_session(opts)
     _random_mask = opts.random_mask,
     _log = opts.log or function() end,
     _log_warn = opts.log_warn or function() end,
+    _now = opts.now or os.time,
     _tcp = nil,
     _dispatcher = nil,
     _ws_parser = nil,
@@ -1750,7 +1748,7 @@ function FloLogic.new_session(opts)
         -- frames; only transport-level failures abort the session.
         if msg == "undecodable SignalR frame" or msg == "bad-event" then
           if self._trace_events and detail ~= nil then
-            self._log_warn("undecodable hub frame: " .. scrub_log_text(detail, 160))
+            self._log_warn("undecodable hub frame (" .. describe_frame_bytes(detail) .. ")")
           else
             self._log_debug("ignoring " .. msg)
           end
@@ -1879,7 +1877,18 @@ function FloLogic.new_session(opts)
   -- So the event is only the fast path: inventory verification races it,
   -- and any post-invoke row showing the requested fields counts as
   -- success. Failure needs BOTH the event timeout AND no confirmation.
-  function self.send_command(hub_url, selected, fields, cb)
+  --
+  -- Optional opts (split cloud driver): { expected_uuid, deadline }.
+  -- expected_uuid pins the command to the immutable identity that
+  -- authorized it: the freshly fetched command-session row must carry it,
+  -- or the command fails WITHOUT transmitting — a replaced valve must
+  -- never receive another valve's queued write. deadline is an absolute
+  -- os.time() budget covering session preparation AND transmission: the
+  -- irreversible request is checked against it immediately before it is
+  -- sent, so preparation can never spend the companion's response window
+  -- and still transmit. Pre-transmit expiry fails "expired" (nothing
+  -- sent); post-transmit timeouts keep their uncertain-outcome errors.
+  function self.send_command(hub_url, selected, fields, cb, opts)
     local function fail(err)
       self._finish(err, nil, cb)
     end
@@ -1887,9 +1896,19 @@ function FloLogic.new_session(opts)
       fail("select-valve")
       return
     end
+    opts = opts or {}
+    local expected_uuid = opts.expected_uuid
+    if expected_uuid ~= nil then
+      expected_uuid = tostring(expected_uuid)
+    end
+    local deadline = tonumber(opts.deadline)
     self._trace_events = true
     self._connect(hub_url, function(user, devices)
       self._ensure_valve(user, devices, selected, function(valve)
+        if expected_uuid ~= nil and tostring(valve.uuid or "") ~= expected_uuid then
+          fail("identity-changed")
+          return
+        end
         local command = {
           active = true,
           created = os.date("!%Y-%m-%dT%H:%M:%SZ"),
@@ -1935,7 +1954,13 @@ function FloLogic.new_session(opts)
           end
           for _, row in ipairs(self._devices) do
             if type(row) == "table" then
-              if tostring(row.id) == tostring(valve.id) then
+              -- A pushed merge may replace this id's row mid-command: a
+              -- row carrying a DIFFERENT known uuid is a different
+              -- physical valve and must never confirm this command. Rows
+              -- without a uuid cannot disprove identity, so they still
+              -- match by id (partial pushes carry no uuid).
+              local uuid_ok = valve.uuid == nil or row.uuid == nil or tostring(row.uuid) == tostring(valve.uuid)
+              if tostring(row.id) == tostring(valve.id) and uuid_ok then
                 return row
               end
               if valve.uuid ~= nil and row.uuid == valve.uuid then
@@ -1989,6 +2014,14 @@ function FloLogic.new_session(opts)
         end, function(err)
           self._finish(err, nil, cb)
         end)
+        -- Absolute transmit deadline, checked immediately before the
+        -- irreversible request: session preparation (negotiate, upgrade,
+        -- login, inventory) consumes the same budget the queue granted.
+        if deadline ~= nil and self._now() >= deadline then
+          self._log_warn("command expired during session preparation; never transmitted")
+          self._finish("expired", nil, cb)
+          return
+        end
         self._log_warn("invoke RequestStateChange")
         if not self._invoke("RequestStateChange", { user, valve, command }) then
           self._finish("ws:send-failed", nil, cb)
@@ -2181,18 +2214,25 @@ end
 --- A cancellable install operation; callbacks never run after cancel/reload.
 --- Downloads the latest C4 asset (screened by exact byte size plus an
 --- archive-prefix check before any file is touched), stages it in the C4Z
---- file store via a validated separate candidate (never deleting the
---- installed package first), and triggers Composer to install it by name.
---- force skips the version compare, so it can reinstall the same build or
---- even an older one; that is the intended recovery semantic.
+--- file store via a validated separate candidate, replaces the installed
+--- package by move with a backup (a known-good package survives every
+--- step; any failure rolls back before reporting), and triggers Composer
+--- to install it by name. Without a file move the installed package
+--- cannot be preserved through replacement, so installs refuse before
+--- touching anything. force skips the version compare, so it can
+--- reinstall the same build or even an older one; that is the intended
+--- recovery semantic.
 --- opts.http_get(url, headers, cb) has cb(err, body, code, headers_or_nil)
 --- and returns a cancel function. opts.soap_send(packet, cb(err)) likewise.
 --- File callbacks: get_installed() -> bool, file_set_dir(alias) -> ok,
 --- file_exists(name) -> bool, file_delete(name), file_write(name, data),
---- file_size(name) -> bytes or nil, file_read(name, count) -> string or nil.
+--- file_size(name) -> bytes or nil, file_read(name, count) -> string or nil,
+--- file_move(from_name, to_name) -> bool (same store; REQUIRED).
 --- File callbacks must not throw; the Director adapter wraps every C4 file
---- call in pcall and converts denials to false/nil. opts.log_warn(msg)
---- traces download/stage/trigger milestones to the Lua log (default noop).
+--- call in pcall and converts denials to false/nil. Every replacement
+--- step is verified by filesystem state (existence + size), never by the
+--- move call's return alone. opts.log_warn(msg) traces
+--- download/stage/trigger milestones to the Lua log (default noop).
 --- on_result(err, outcome) has outcome
 --- { attempted = version|nil, latest = version|nil, skipped = reason|nil }.
 function FloUpdate.new_install(opts)
@@ -2360,6 +2400,19 @@ function FloUpdate.new_install(opts)
   end
   local function stage(filename, body, cb)
     arm(30000, "Install staging timed out")
+    -- Without a file move the installed package cannot be preserved
+    -- through replacement (delete + rewrite strands the controller when
+    -- the rewrite fails). Refuse BEFORE touching anything, with explicit
+    -- manual-update guidance: a self-update that can strand the
+    -- controller without a driver is worse than no self-update.
+    if opts.file_move == nil then
+      finish(
+        "This controller cannot replace the package safely (no file move); download "
+          .. filename
+          .. " from the GitHub release and update the driver in Composer"
+      )
+      return
+    end
     -- Switch stores BEFORE touching anything: on denial the installed
     -- file stays intact and no install is triggered.
     progress("Staging " .. filename .. " (" .. #body .. " bytes)")
@@ -2368,19 +2421,28 @@ function FloUpdate.new_install(opts)
       finish("File store " .. FloUpdate.C4Z_ROOT .. " denied; installed driver left intact")
       return
     end
-    -- Validate a SEPARATE candidate before replacing the installed
-    -- package: the installed file is deleted only after the candidate
-    -- verifies, so a failed write or invalid download can never strand
-    -- the controller without a known-good package. No rename API
-    -- exists, so the verified bytes are rewritten from memory — the
-    -- exact download, never a marshalling-mangled read-back. (The zip's
-    -- inner manifest cannot be checked on-Director: no unzip API, and
-    -- binary reads mangle bytes. Identity is established instead by the
-    -- exact asset URL + family match at selection, the exact byte size
-    -- at download, and the archive prefix + size round-trip here.)
     local candidate = filename .. ".new"
+    local backup = filename .. ".bak"
+    if not opts.file_exists(filename) and opts.file_exists(backup) then
+      -- A previous run died between backup and replacement: the store
+      -- holds a known-good backup but no installed file. Restore it
+      -- best-effort before doing anything else; the install proceeds
+      -- from the candidate either way.
+      log_warn("update stage: restoring interrupted backup " .. backup)
+      opts.file_move(backup, filename)
+    end
+    -- Validate a SEPARATE candidate before replacing the installed
+    -- package, so a failed write or invalid download can never strand
+    -- the controller without a known-good package. (The zip's inner
+    -- manifest cannot be checked on-Director: no unzip API, and binary
+    -- reads mangle bytes. Identity is established instead by the exact
+    -- asset URL + family match at selection, the exact byte size at
+    -- download, and the archive prefix + size round-trip here.)
     if opts.file_exists(candidate) then
       opts.file_delete(candidate)
+    end
+    if opts.file_exists(backup) then
+      opts.file_delete(backup)
     end
     opts.file_write(candidate, body)
     -- Never trust the write call: verify by on-disk SIZE (a number), not
@@ -2402,25 +2464,79 @@ function FloUpdate.new_install(opts)
       return
     end
     log_warn("update stage: candidate verified (" .. #body .. " bytes, zip magic ok)")
-    -- Candidate verified: replace the installed package. The only
-    -- remaining failure window is this rewrite itself failing after an
-    -- identical write succeeded seconds ago.
-    if opts.file_exists(filename) then
-      opts.file_delete(filename)
+    -- Candidate verified: replace by move with a backup, verifying each
+    -- step by filesystem state. A known-good package survives every
+    -- step: installed -> backup, candidate -> installed, verify, then
+    -- drop the backup. Any failure rolls back before reporting, and
+    -- every report states only what the filesystem proves.
+    local had_installed = opts.file_exists(filename)
+    local old_size = nil
+    local function installed_ok()
+      if not opts.file_exists(filename) then
+        return false
+      end
+      return old_size == nil or opts.file_size(filename) == old_size
     end
-    opts.file_write(filename, body)
-    if opts.file_size(filename) ~= #body then
-      finish("Installed package rewrite failed; stored package may be missing or incomplete; restore using Composer")
+    -- Roll a failed replacement back to the previous driver when one
+    -- existed; without one, remove any torn file so a later run (or
+    -- Composer) never mistakes it for a package. Reports only what the
+    -- filesystem proves.
+    local function roll_back(why)
+      if had_installed then
+        log_warn("update stage: replacement failed (" .. why .. "); rolling back " .. backup)
+        opts.file_move(backup, filename)
+        if installed_ok() then
+          finish("Installed package replacement failed (" .. why .. "); rolled back to the previous driver")
+        else
+          finish(
+            "Installed package replacement AND rollback failed; stored package may be missing or incomplete; restore using Composer"
+          )
+        end
+      else
+        opts.file_delete(filename)
+        finish(
+          "Installed package replacement failed (" .. why .. ") and no previous driver exists; restore using Composer"
+        )
+      end
+    end
+    if had_installed then
+      old_size = opts.file_size(filename)
+      local backup_made = opts.file_move(filename, backup)
+        and opts.file_exists(backup)
+        and (old_size == nil or opts.file_size(backup) == old_size)
+      if not backup_made then
+        opts.file_delete(candidate)
+        if installed_ok() then
+          -- Clean failure: the move preserved nothing but destroyed
+          -- nothing either; the installed file still verifies.
+          finish("Installed package backup failed; installed driver left intact")
+        else
+          -- The move destroyed without preserving: roll back whatever
+          -- the backup holds, then report only what verifies.
+          log_warn("update stage: backup failed; rolling back " .. backup)
+          opts.file_move(backup, filename)
+          if installed_ok() then
+            finish("Installed package backup failed; rolled back to the previous driver")
+          else
+            finish("Installed package backup failed and the stored package is unverifiable; restore using Composer")
+          end
+        end
+        return
+      end
+      log_warn("update stage: backup staged (" .. tostring(old_size) .. " bytes)")
+    end
+    if not opts.file_move(candidate, filename) or opts.file_size(filename) ~= #body then
+      -- The candidate is kept for forensics alongside the failure report.
+      roll_back("move failed")
       return
     end
     local installed_head = opts.file_read(filename, 4)
     if type(installed_head) ~= "string" or installed_head:sub(1, 2) ~= "PK" then
-      finish(
-        "Installed package rewrite failed verification; stored package may be missing or incomplete; restore using Composer"
-      )
+      roll_back("verification failed")
       return
     end
     opts.file_delete(candidate)
+    opts.file_delete(backup)
     log_warn("update stage: " .. filename .. " verified (" .. #body .. " bytes, zip magic ok)")
     cb()
   end
@@ -2803,6 +2919,9 @@ end
 
 -- --- Self-update install transports (file store + local Composer SOAP) -----
 
+-- The store file_set_dir selected: file_move stays within it.
+local flogic_file_store = "C4Z"
+
 local function flogic_file_set_dir(alias)
   -- C4Z_ROOT follows the proflame pattern but is not in the published
   -- alias list; C4Z (the driver's own package directory) is. Try the
@@ -2816,11 +2935,27 @@ local function flogic_file_set_dir(alias)
       C4:FileSetDir(candidate)
     end)
     if ok then
+      flogic_file_store = candidate
       flogic_log_warn("update file store: " .. candidate)
       return true
     end
   end
   return false
+end
+
+local function flogic_file_move(from_name, to_name)
+  -- C4:FileMove(alias, from, alias, to) is documented from OS 3.3.0 with
+  -- C4Z among the allowed aliases. Only the pcall status is reported —
+  -- FileMove's own return convention is undocumented, so the updater
+  -- verifies every step by filesystem state (existence + size) instead
+  -- of trusting this bit.
+  if C4.FileMove == nil then
+    return false
+  end
+  local ok = pcall(function()
+    C4:FileMove(flogic_file_store, from_name, flogic_file_store, to_name)
+  end)
+  return ok
 end
 
 local function flogic_file_exists(name)
@@ -2953,26 +3088,43 @@ local function flogic_soap_send(packet, cb)
   end
   -- Neither receipt of bytes nor connection closure confirms installation.
   -- The caller must report the result as unconfirmed; only the loaded driver
-  -- can establish its running version.
+  -- can establish its running version. Transmission itself IS tracked:
+  -- grace expiry (or a close, or stray bytes) before the packet was
+  -- handed to the transport reports a connection failure, never a sent
+  -- trigger.
   local opened = false
+  local sent = false
   local grace = flogic_set_timer(3000, function()
-    finish(nil)
+    if sent then
+      finish(nil)
+    else
+      finish("cannot reach Composer endpoint")
+    end
   end, false)
   owner.soap_callbacks = {
     on_data = function()
-      finish(nil)
+      if sent then
+        finish(nil)
+      else
+        finish("cannot reach Composer endpoint")
+      end
     end,
     on_open = function()
       opened = true
-      local sent = pcall(function()
+      -- Handover starts at the call (the transport queues/copies the
+      -- packet then), so mark sent BEFORE it: a transport that answers
+      -- synchronously must still observe a transmitted trigger.
+      sent = true
+      local ok = pcall(function()
         C4:SendToNetwork(binding, FloUpdate.SOAP_PORT, packet)
       end)
-      if not sent then
+      if not ok then
+        sent = false
         finish("cannot reach Composer endpoint")
       end
     end,
     on_close = function()
-      if opened then
+      if opened and sent then
         finish(nil)
       else
         finish("cannot reach Composer endpoint")
@@ -3033,6 +3185,7 @@ local function flogic_install_update(force)
     file_write = flogic_file_write,
     file_size = flogic_file_size,
     file_read = flogic_file_read,
+    file_move = flogic_file_move,
     log_warn = flogic_log_warn,
     soap_send = flogic_soap_send,
     force = force,

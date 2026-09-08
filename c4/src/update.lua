@@ -171,18 +171,25 @@ end
 --- A cancellable install operation; callbacks never run after cancel/reload.
 --- Downloads the latest C4 asset (screened by exact byte size plus an
 --- archive-prefix check before any file is touched), stages it in the C4Z
---- file store via a validated separate candidate (never deleting the
---- installed package first), and triggers Composer to install it by name.
---- force skips the version compare, so it can reinstall the same build or
---- even an older one; that is the intended recovery semantic.
+--- file store via a validated separate candidate, replaces the installed
+--- package by move with a backup (a known-good package survives every
+--- step; any failure rolls back before reporting), and triggers Composer
+--- to install it by name. Without a file move the installed package
+--- cannot be preserved through replacement, so installs refuse before
+--- touching anything. force skips the version compare, so it can
+--- reinstall the same build or even an older one; that is the intended
+--- recovery semantic.
 --- opts.http_get(url, headers, cb) has cb(err, body, code, headers_or_nil)
 --- and returns a cancel function. opts.soap_send(packet, cb(err)) likewise.
 --- File callbacks: get_installed() -> bool, file_set_dir(alias) -> ok,
 --- file_exists(name) -> bool, file_delete(name), file_write(name, data),
---- file_size(name) -> bytes or nil, file_read(name, count) -> string or nil.
+--- file_size(name) -> bytes or nil, file_read(name, count) -> string or nil,
+--- file_move(from_name, to_name) -> bool (same store; REQUIRED).
 --- File callbacks must not throw; the Director adapter wraps every C4 file
---- call in pcall and converts denials to false/nil. opts.log_warn(msg)
---- traces download/stage/trigger milestones to the Lua log (default noop).
+--- call in pcall and converts denials to false/nil. Every replacement
+--- step is verified by filesystem state (existence + size), never by the
+--- move call's return alone. opts.log_warn(msg) traces
+--- download/stage/trigger milestones to the Lua log (default noop).
 --- on_result(err, outcome) has outcome
 --- { attempted = version|nil, latest = version|nil, skipped = reason|nil }.
 function FloUpdate.new_install(opts)
@@ -350,6 +357,19 @@ function FloUpdate.new_install(opts)
   end
   local function stage(filename, body, cb)
     arm(30000, "Install staging timed out")
+    -- Without a file move the installed package cannot be preserved
+    -- through replacement (delete + rewrite strands the controller when
+    -- the rewrite fails). Refuse BEFORE touching anything, with explicit
+    -- manual-update guidance: a self-update that can strand the
+    -- controller without a driver is worse than no self-update.
+    if opts.file_move == nil then
+      finish(
+        "This controller cannot replace the package safely (no file move); download "
+          .. filename
+          .. " from the GitHub release and update the driver in Composer"
+      )
+      return
+    end
     -- Switch stores BEFORE touching anything: on denial the installed
     -- file stays intact and no install is triggered.
     progress("Staging " .. filename .. " (" .. #body .. " bytes)")
@@ -358,19 +378,28 @@ function FloUpdate.new_install(opts)
       finish("File store " .. FloUpdate.C4Z_ROOT .. " denied; installed driver left intact")
       return
     end
-    -- Validate a SEPARATE candidate before replacing the installed
-    -- package: the installed file is deleted only after the candidate
-    -- verifies, so a failed write or invalid download can never strand
-    -- the controller without a known-good package. No rename API
-    -- exists, so the verified bytes are rewritten from memory — the
-    -- exact download, never a marshalling-mangled read-back. (The zip's
-    -- inner manifest cannot be checked on-Director: no unzip API, and
-    -- binary reads mangle bytes. Identity is established instead by the
-    -- exact asset URL + family match at selection, the exact byte size
-    -- at download, and the archive prefix + size round-trip here.)
     local candidate = filename .. ".new"
+    local backup = filename .. ".bak"
+    if not opts.file_exists(filename) and opts.file_exists(backup) then
+      -- A previous run died between backup and replacement: the store
+      -- holds a known-good backup but no installed file. Restore it
+      -- best-effort before doing anything else; the install proceeds
+      -- from the candidate either way.
+      log_warn("update stage: restoring interrupted backup " .. backup)
+      opts.file_move(backup, filename)
+    end
+    -- Validate a SEPARATE candidate before replacing the installed
+    -- package, so a failed write or invalid download can never strand
+    -- the controller without a known-good package. (The zip's inner
+    -- manifest cannot be checked on-Director: no unzip API, and binary
+    -- reads mangle bytes. Identity is established instead by the exact
+    -- asset URL + family match at selection, the exact byte size at
+    -- download, and the archive prefix + size round-trip here.)
     if opts.file_exists(candidate) then
       opts.file_delete(candidate)
+    end
+    if opts.file_exists(backup) then
+      opts.file_delete(backup)
     end
     opts.file_write(candidate, body)
     -- Never trust the write call: verify by on-disk SIZE (a number), not
@@ -392,25 +421,79 @@ function FloUpdate.new_install(opts)
       return
     end
     log_warn("update stage: candidate verified (" .. #body .. " bytes, zip magic ok)")
-    -- Candidate verified: replace the installed package. The only
-    -- remaining failure window is this rewrite itself failing after an
-    -- identical write succeeded seconds ago.
-    if opts.file_exists(filename) then
-      opts.file_delete(filename)
+    -- Candidate verified: replace by move with a backup, verifying each
+    -- step by filesystem state. A known-good package survives every
+    -- step: installed -> backup, candidate -> installed, verify, then
+    -- drop the backup. Any failure rolls back before reporting, and
+    -- every report states only what the filesystem proves.
+    local had_installed = opts.file_exists(filename)
+    local old_size = nil
+    local function installed_ok()
+      if not opts.file_exists(filename) then
+        return false
+      end
+      return old_size == nil or opts.file_size(filename) == old_size
     end
-    opts.file_write(filename, body)
-    if opts.file_size(filename) ~= #body then
-      finish("Installed package rewrite failed; stored package may be missing or incomplete; restore using Composer")
+    -- Roll a failed replacement back to the previous driver when one
+    -- existed; without one, remove any torn file so a later run (or
+    -- Composer) never mistakes it for a package. Reports only what the
+    -- filesystem proves.
+    local function roll_back(why)
+      if had_installed then
+        log_warn("update stage: replacement failed (" .. why .. "); rolling back " .. backup)
+        opts.file_move(backup, filename)
+        if installed_ok() then
+          finish("Installed package replacement failed (" .. why .. "); rolled back to the previous driver")
+        else
+          finish(
+            "Installed package replacement AND rollback failed; stored package may be missing or incomplete; restore using Composer"
+          )
+        end
+      else
+        opts.file_delete(filename)
+        finish(
+          "Installed package replacement failed (" .. why .. ") and no previous driver exists; restore using Composer"
+        )
+      end
+    end
+    if had_installed then
+      old_size = opts.file_size(filename)
+      local backup_made = opts.file_move(filename, backup)
+        and opts.file_exists(backup)
+        and (old_size == nil or opts.file_size(backup) == old_size)
+      if not backup_made then
+        opts.file_delete(candidate)
+        if installed_ok() then
+          -- Clean failure: the move preserved nothing but destroyed
+          -- nothing either; the installed file still verifies.
+          finish("Installed package backup failed; installed driver left intact")
+        else
+          -- The move destroyed without preserving: roll back whatever
+          -- the backup holds, then report only what verifies.
+          log_warn("update stage: backup failed; rolling back " .. backup)
+          opts.file_move(backup, filename)
+          if installed_ok() then
+            finish("Installed package backup failed; rolled back to the previous driver")
+          else
+            finish("Installed package backup failed and the stored package is unverifiable; restore using Composer")
+          end
+        end
+        return
+      end
+      log_warn("update stage: backup staged (" .. tostring(old_size) .. " bytes)")
+    end
+    if not opts.file_move(candidate, filename) or opts.file_size(filename) ~= #body then
+      -- The candidate is kept for forensics alongside the failure report.
+      roll_back("move failed")
       return
     end
     local installed_head = opts.file_read(filename, 4)
     if type(installed_head) ~= "string" or installed_head:sub(1, 2) ~= "PK" then
-      finish(
-        "Installed package rewrite failed verification; stored package may be missing or incomplete; restore using Composer"
-      )
+      roll_back("verification failed")
       return
     end
     opts.file_delete(candidate)
+    opts.file_delete(backup)
     log_warn("update stage: " .. filename .. " verified (" .. #body .. " bytes, zip magic ok)")
     cb()
   end

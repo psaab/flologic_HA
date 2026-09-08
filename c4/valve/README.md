@@ -28,8 +28,10 @@ handshake re-learns the identity.
 
 - **App tile.** A switch (light proxy, on/off only — no dimmer). Tapping
   it sends Close (off) or Open (on, restoring the last non-shutoff mode,
-  default Home) to the cloud. The tile reports optimistically; contacts,
-  properties, and events always follow the cloud's next state push.
+  default Home) to the cloud. The tile reports optimistically until the
+  cloud's ack plus the confirming state push (silence reconciles it to
+  the last observed level); contacts, properties, and events always
+  follow state pushes, never acks alone.
 - **Contacts 101–107** (all `CONTACT_SENSOR`, `CLOSED` = named state
   true; first push reports steady `STATE_*` so binding never fires
   transition programming):
@@ -47,11 +49,15 @@ handshake re-learns the identity.
   no-flow notice, flow sensitivity), Refresh (ask the cloud for state
   now), plus the report-only Check for Update and the Composer install
   commands tracking the `flologic_water_valve.c4z` asset.
-- **Link problems.** `Connection` shows `Not linked` (with the last
-  update time) when the binding drops and `Degraded` when the cloud sends
-  a digest-only snapshot. Last-known contacts and display stay put —
-  programming never flaps on a link outage — and commands issued while
-  unlinked are dropped with a `Last Command` note instead of crashing.
+- **Link problems.** `Connection` shows `Not linked` when the binding
+  drops, `Stale` when snapshots stop arriving inside the cloud's
+  advertised freshness budget, `Link failed` when the handshake or the
+  first snapshot never arrives (bounded retries, then slow recovery),
+  and `Degraded` when the cloud sends a digest-only snapshot.
+  Last-known contacts and display stay put — programming never flaps on
+  a link outage — and commands issued while unlinked, unavailable, or
+  before the first observation are dropped with a `Last Command` note
+  instead of crashing.
 
 ## VALVE-U4: no valve selector on the valve driver
 
@@ -66,8 +72,8 @@ ID Override`. The valve driver deliberately has neither:
   would duplicate the cloud's discovery and could disagree with it. Valve
   targeting comes exclusively from the Composer binding plus the
   handshake-verified identity. `Valve ID` / `Valve Name` are read-only
-  displays; the persisted id is continuity only — it travels solely as
-  a `FLOGIC_FROM` sender hint on the fallback path, which the cloud
+  displays; the live handshake authorizes a `FLOGIC_FROM` sender hint on
+  the fallback path (never a stale pre-rebind id), which the cloud
   re-validates — and every bind re-handshakes from scratch (plan D3).
 
 ## Link action set (valve → cloud `FLOGIC_COMMAND` bodies)

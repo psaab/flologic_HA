@@ -40,17 +40,21 @@ Protocol contract: [`../shared/flologic_link.md`](../shared/flologic_link.md)
   restart-restored connections may not re-fire bind events.
 - **Every bind re-handshakes.** The valve sends `FLOGIC_HELLO`, the
   cloud replies with that slot's valve id, and unmapped slots stay
-  silent. The persisted valve id is continuity only: it travels solely
-  as a `FLOGIC_FROM` sender hint on the fallback path, where the cloud
-  re-validates it against the slot map before acting on anything.
+  silent. The live handshake authorizes a `FLOGIC_FROM` sender hint on
+  the fallback path (never a stale pre-rebind id), which the cloud
+  re-validates against the slot map before acting on anything.
 - **Commands are authorized per slot.** A valve's `FLOGIC_COMMAND` runs
-  only when its slot maps to an available valve; the cloud answers
-  `FLOGIC_CMD_ACK` / `FLOGIC_CMD_NACK` echoing the same `cmd_id`,
-  followed by a post-command refresh (on failure too, so the tile
-  converges to the true state). Success races the hub's confirmation
-  event against inventory verification, so applied commands ack even
-  when the event never arrives. Valve-tagged jobs share
-  one FIFO queue (cap 8); polls drain first, as in the monolith.
+  only when fresh inventory verifies its slot's exact valve identity
+  (id plus immutable uuid, under the current account scope); the cloud
+  answers `FLOGIC_CMD_ACK` / `FLOGIC_CMD_NACK` echoing the same
+  `cmd_id`, followed by a post-command refresh (on failure too, so the
+  tile converges to the true state). Jobs carry an absolute transmit
+  deadline enforced before the irreversible request, never replay,
+  and die with their authorization (quarantine purges unsent work).
+  Success races the hub's confirmation event against inventory
+  verification, so applied commands ack even when the event never
+  arrives. Valve-tagged jobs share one FIFO queue (cap 8); polls drain
+  first, as in the monolith.
 - **Circuit breaker.** Five consecutive session failures open the breaker
   for a 5-minute cooldown (`Connection` shows the backoff countdown) so a
   dead cloud or bad credentials never hot-loop logins. One success closes
@@ -59,8 +63,10 @@ Protocol contract: [`../shared/flologic_link.md`](../shared/flologic_link.md)
   the proxy send raises, the cloud falls back to `SendToDevice` at each
   bound consumer (plan D1). Fallback receives arrive via
   `ExecuteCommand`, which names no sender, so the valve attaches its
-  persisted valve id as an additive `FLOGIC_FROM` hint (ignored by the
-  link parser); unattributable traffic is dropped.
+  live-handshake valve id as an additive `FLOGIC_FROM` hint (ignored by
+  the link parser); hintless traffic attributes by elimination only
+  when exactly one consumer is bound, otherwise it is dropped
+  (multi-valve fallback needs one proxy handshake first).
 - **Self-update.** Report-only GitHub checks plus Composer install, same
   as the monolith, but tracking the `flologic_cloud.c4z` asset. Both new
   drivers share one lockstep version number.
@@ -81,11 +87,13 @@ ID Override`. The cloud driver deliberately has neither:
 
 ## Migrating from the monolith (`FloLogic Valve`)
 
-Installed monoliths keep working, but their updater matches the valve
-package by filename and will offer it as an update: do NOT install it
-over a monolith instance — it is a different driver, not an upgrade.
-Migration is manual; there is no auto-migration (identities, bindings,
-and programming all differ):
+Installed monoliths keep working, and their updater only ever sees
+monolith releases: the valve package ships under its own
+`flologic_water_valve.c4z` asset filename, and the legacy-named split
+assets were retired from the old tags — but a split package is still a
+different driver, not an upgrade, so do NOT install one over a
+monolith instance. Migration is manual; there is no auto-migration
+(identities, bindings, and programming all differ):
 
 1. On a maintenance window, note the monolith's account, selected valve,
    and programming (events, contacts 101/102, commands).
@@ -108,8 +116,8 @@ proxies) are fully distinct, and the valve package ships under its own
 `flologic_water_valve.c4z` asset filename — never the legacy
 `flologic_valve.c4z` filename, so monolith updaters no longer see split
 releases at all. (Tags `c4-v2026090801`–`c4-v2026090809` predate the
-rename and do reuse the legacy filename: installing those over a
-monolith instance is unsupported. Migrate manually instead.)
+rename and briefly reused the legacy filename; those assets were
+retired and the tags marked superseded. Migrate manually instead.)
 
 ## Link action set (valve → cloud `FLOGIC_COMMAND` bodies)
 

@@ -23,6 +23,22 @@
 --   FLOGIC_ERROR human-readable nack reason for FLOGIC_CMD_NACK, or the
 --                unavailability reason for FLOGIC_UNAVAILABLE (whose body
 --                is the raw valve id, like FLOGIC_IDENTITY)
+--   FLOGIC_SEQ   optional per-slot ordering sequence on FLOGIC_STATE and
+--                FLOGIC_UNAVAILABLE: duplicate and out-of-order deliveries
+--                must not renew freshness or revoke newer availability info
+--   FLOGIC_EPOCH optional cloud boot generation beside FLOGIC_SEQ, so a
+--                cloud restart (which restarts numbering) never compares
+--                against the previous boot's sequences
+--   FLOGIC_FRESH optional freshness budget in seconds on FLOGIC_STATE: how
+--                long the snapshot stays current, from the cloud's
+--                configured poll cadence (never inferred from traffic)
+--
+-- The SEQ/EPOCH/FRESH keys are plain top-level envelope keys, so older
+-- peers ignore them (like FLOGIC_FROM) and keep legacy semantics: no
+-- protocol version bump, mixed versions still link with graceful
+-- degradation. New state BODY fields would break old peers instead — the
+-- body validator rejects unknown fields — so ordering/freshness metadata
+-- lives on the envelope, never in the body.
 --
 -- Digest fallback: a full valve_state body always fits the budget in
 -- practice (see flologic_link.md for the measured worst case), but a
@@ -71,6 +87,9 @@ FloLogicLink.K_HASH = "FLOGIC_HASH"
 FloLogicLink.K_CMD = "FLOGIC_CMD"
 FloLogicLink.K_TRUNC = "FLOGIC_TRUNC"
 FloLogicLink.K_ERROR = "FLOGIC_ERROR"
+FloLogicLink.K_SEQ = "FLOGIC_SEQ"
+FloLogicLink.K_EPOCH = "FLOGIC_EPOCH"
+FloLogicLink.K_FRESH = "FLOGIC_FRESH"
 
 -- Budgets and field caps. MAX_BODY_BYTES is the BindMessage-safe budget a
 -- full valve_state body must fit; anything larger degrades to a digest.
@@ -538,6 +557,63 @@ local function check_valve_id(valve_id)
   return valve_id
 end
 
+-- Optional ordering/freshness metadata (see the wire-form note above).
+-- Values are non-negative integer strings; anything else is ignored on
+-- receipt (legacy semantics), never fatal: these keys advise ordering,
+-- they authorize nothing.
+local function is_seq_int(value)
+  return type(value) == "number" and is_finite_number(value) and value % 1 == 0 and value >= 0
+end
+
+local function parse_seq_key(raw)
+  if type(raw) == "number" then
+    if is_seq_int(raw) then
+      return raw
+    end
+    return nil
+  end
+  if type(raw) ~= "string" or raw:match("^%d+$") == nil then
+    return nil
+  end
+  -- A digit string can still overflow to inf: only finite values order.
+  local n = tonumber(raw)
+  if not is_seq_int(n) then
+    return nil
+  end
+  return n
+end
+
+-- Stamp a cloud->valve envelope with ordering/freshness metadata.
+-- extra = { seq = n, epoch = n, fresh_s = n }, all optional; malformed
+-- values fail the build loudly (caller bug) rather than emitting a lie.
+local function stamp_envelope(env, extra, allow_fresh)
+  if extra == nil then
+    return true
+  end
+  if type(extra) ~= "table" then
+    return nil, "bad-extra"
+  end
+  if extra.seq ~= nil then
+    if not is_seq_int(extra.seq) then
+      return nil, "bad-seq"
+    end
+    env[FloLogicLink.K_SEQ] = tostring(extra.seq)
+  end
+  if extra.epoch ~= nil then
+    if not is_seq_int(extra.epoch) then
+      return nil, "bad-epoch"
+    end
+    env[FloLogicLink.K_EPOCH] = tostring(extra.epoch)
+  end
+  if extra.fresh_s ~= nil then
+    if not allow_fresh or not is_seq_int(extra.fresh_s) or extra.fresh_s <= 0 then
+      return nil, "bad-fresh"
+    end
+    env[FloLogicLink.K_FRESH] = tostring(extra.fresh_s)
+  end
+  return true
+end
+
 -- Valve->cloud: handshake opener sent on every bind (D3). The persisted id
 -- is never trusted across binds, so hello carries no identity claim.
 function FloLogicLink.build_hello()
@@ -605,13 +681,19 @@ end
 -- Cloud->valve: per-valve snapshot slice plus access flags. Oversized
 -- bodies degrade to a digest-only envelope instead of failing: TRUNC is
 -- set, BODY is empty, and HASH identifies the unseen full body.
-function FloLogicLink.build_state(state)
+-- Optional extra = { seq, epoch, fresh_s } orders the snapshot against
+-- siblings and advertises its freshness budget (see above).
+function FloLogicLink.build_state(state, extra)
   local body, err = FloLogicLink.build_state_body(state)
   if body == nil then
     return nil, err
   end
   local env = base_envelope(FloLogicLink.MSG_STATE)
   env[FloLogicLink.K_HASH] = FloLogicLink.digest(body)
+  local ok, extra_err = stamp_envelope(env, extra, true)
+  if not ok then
+    return nil, extra_err
+  end
   if #body > FloLogicLink.MAX_BODY_BYTES then
     env[FloLogicLink.K_BODY] = ""
     env[FloLogicLink.K_TRUNC] = "1"
@@ -635,7 +717,9 @@ end
 -- Cloud->valve: the slot's valve left the account or failed identity
 -- verification. Carries the valve id plus a short reason; the companion
 -- stops claiming current knowledge until a new identity + slice arrive.
-function FloLogicLink.build_unavailable(valve_id, reason)
+-- Optional extra = { seq, epoch } orders the notice against snapshots so
+-- a delayed duplicate can never revoke newer availability information.
+function FloLogicLink.build_unavailable(valve_id, reason, extra)
   local id, err = check_valve_id(valve_id)
   if id == nil then
     return nil, err
@@ -644,6 +728,10 @@ function FloLogicLink.build_unavailable(valve_id, reason)
     return nil, "bad-reason"
   end
   local env = base_envelope(FloLogicLink.MSG_UNAVAILABLE)
+  local ok, extra_err = stamp_envelope(env, extra, false)
+  if not ok then
+    return nil, extra_err
+  end
   env[FloLogicLink.K_BODY] = id
   env[FloLogicLink.K_ERROR] = reason
   return env
@@ -668,9 +756,11 @@ end
 -- --- Envelope parser. ---
 -- Validates a received params table and returns a message table:
 --   { version, msg, cmd_id, body, hash, truncated, error_reason,
---     valve_id, fields }
+--     valve_id, fields, seq, epoch, fresh_s }
 -- absent slots stay nil. Digest-only state parses to truncated=true with
--- fields=nil. Returns nil plus one of: envelope-not-table,
+-- fields=nil. Malformed SEQ/EPOCH/FRESH keys parse to nil (legacy
+-- semantics), never to an error: they advise ordering, they authorize
+-- nothing. Returns nil plus one of: envelope-not-table,
 -- version-mismatch, unknown-message, body-not-string, oversize-body,
 -- bad-valve-id, bad-cmd-id, bad-reason, bad-action, bad-param-value:<key>,
 -- digest-missing, hash-mismatch, or any decode_fields / state-field error.
@@ -706,7 +796,13 @@ function FloLogicLink.parse(params)
     error_reason = nil,
     valve_id = nil,
     fields = nil,
+    seq = parse_seq_key(params[FloLogicLink.K_SEQ]),
+    epoch = parse_seq_key(params[FloLogicLink.K_EPOCH]),
+    fresh_s = parse_seq_key(params[FloLogicLink.K_FRESH]),
   }
+  if out.fresh_s == 0 then
+    out.fresh_s = nil
+  end
   if out.hash ~= nil and type(out.hash) ~= "string" then
     return nil, "bad-hash"
   end

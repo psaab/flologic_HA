@@ -194,19 +194,17 @@ T.test("signalr: cancel and fail_all", function()
   T.check_equal(bad, 1, "bad frame reported, stream survives")
 end)
 
-T.test("signalr: undecodable frame detail is truncated and single-line", function()
+T.test("signalr: undecodable frame detail is shape-only, never content", function()
   local detail = nil
+  local secret = "s3cret-p4yload-" .. string.rep("x", 300)
   local d = SignalR.new_dispatcher({
-    on_error = function(_msg, snippet)
-      detail = snippet
+    on_error = function(_msg, byte_count)
+      detail = byte_count
     end,
   })
-  d.feed("FAKE-LOG-LINE\nsecond\001line" .. string.rep("x", 300) .. "\030")
-  T.check(detail ~= nil, "detail supplied")
-  T.check(#detail <= 160, "detail bounded, got " .. #detail)
-  T.check(detail:find("[\r\n]") == nil, "no line injection")
-  T.check(detail:find("%c") == nil, "no control bytes")
-  T.check(detail:sub(1, 14) == "FAKE-LOG-LINE ", "content preserved, blanked")
+  d.feed(secret .. "\030")
+  T.check_equal(detail, #secret, "detail is the byte length")
+  T.check(tostring(detail):find("s3cret", 1, true) == nil, "no payload excerpt escapes")
 end)
 
 -- --- WebSocket ---
@@ -998,6 +996,124 @@ T.test("session: websocket upgrade carries the same identity as negotiation", fu
   end
 end)
 
+T.test("session: command fails without transmitting on identity change", function()
+  local timers = TestHelp.new_fake_timers()
+  local user = test_user()
+  local v1 = make_valve()
+  local server = TestHelp.new_fake_server({
+    { expect_target = "Login", replies = { { target = "LoggedIn", args = { user } } } },
+    { expect_target = "RefreshValveArray", reply_target = "ValveArraySent", reply_args = { { v1 } } },
+    -- No RequestStateChange step: any transmit asserts (unexpected invoke).
+  })
+  local session = new_test_session(server, timers)
+  local err, res = nil, nil
+  session.send_command(HUB_URL, "11", { mode = 8 }, function(e, r)
+    err, res = e, r
+  end, { expected_uuid = "uuid-replacement" })
+  T.check_equal(err, "identity-changed", "replaced identity fails, got " .. tostring(err))
+  T.check(res == nil, "no result on identity failure")
+  T.check(server._tcp_closed, "connection closed without transmitting")
+end)
+
+T.test("session: command expires during slow preparation without transmitting", function()
+  local timers = TestHelp.new_fake_timers()
+  local user = test_user()
+  local v1 = make_valve()
+  local clock = { t = os.time() }
+  local server = TestHelp.new_fake_server({
+    { expect_target = "Login", replies = { { target = "LoggedIn", args = { user } } } },
+    {
+      expect_target = "RefreshValveArray",
+      capture = function()
+        -- Preparation stalls: the job's absolute budget expires while
+        -- the inventory is still in flight.
+        clock.t = clock.t + 91
+      end,
+      reply_target = "ValveArraySent",
+      reply_args = { { v1 } },
+    },
+    -- No RequestStateChange step: any transmit asserts (unexpected invoke).
+  })
+  local session = new_test_session(server, timers, {
+    now = function()
+      return clock.t
+    end,
+  })
+  local err = nil
+  session.send_command(HUB_URL, "11", { mode = 8 }, function(e)
+    err = e
+  end, { expected_uuid = "uuid-1", deadline = clock.t + 90 })
+  T.check_equal(err, "expired", "slow preparation expires, got " .. tostring(err))
+end)
+
+T.test("session: command transmits when preparation stays inside the deadline", function()
+  local timers = TestHelp.new_fake_timers()
+  local user = test_user()
+  local v1 = make_valve()
+  local clock = { t = os.time() }
+  local seen = nil
+  local server = TestHelp.new_fake_server({
+    { expect_target = "Login", replies = { { target = "LoggedIn", args = { user } } } },
+    {
+      expect_target = "RefreshValveArray",
+      capture = function()
+        clock.t = clock.t + 10
+      end,
+      reply_target = "ValveArraySent",
+      reply_args = { { v1 } },
+    },
+    {
+      expect_target = "RequestStateChange",
+      capture = function(msg)
+        seen = msg
+      end,
+      reply_target = "StateChangeResult",
+      reply_args = { { ok = true } },
+    },
+  })
+  local session = new_test_session(server, timers, {
+    now = function()
+      return clock.t
+    end,
+  })
+  local err = nil
+  session.send_command(HUB_URL, "11", { mode = 8 }, function(e)
+    err = e
+  end, { expected_uuid = "uuid-1", deadline = clock.t + 90 })
+  T.check(err == nil, "no error, got " .. tostring(err))
+  T.check(seen ~= nil, "in-budget command transmitted")
+end)
+
+T.test("session: merged replacement row cannot confirm the command", function()
+  local timers = TestHelp.new_fake_timers()
+  local user = test_user()
+  local v1 = make_valve()
+  local replacement = make_valve({ uuid = "uuid-replacement", mode = 8 })
+  local server = TestHelp.new_fake_server({
+    { expect_target = "Login", replies = { { target = "LoggedIn", args = { user } } } },
+    { expect_target = "RefreshValveArray", reply_target = "ValveArraySent", reply_args = { { v1 } } },
+    { expect_target = "RequestStateChange", replies = {} },
+    -- Scheduled verify refreshes re-invoke RefreshValveArray.
+    { expect_target = "RefreshValveArray", reply_target = "ValveArraySent", reply_args = { { v1 } } },
+    { expect_target = "RefreshValveArray", reply_target = "ValveArraySent", reply_args = { { v1 } } },
+    { expect_target = "RefreshValveArray", reply_target = "ValveArraySent", reply_args = { { v1 } } },
+  })
+  local session = new_test_session(server, timers)
+  local done = false
+  session.send_command(HUB_URL, "11", { mode = 8 }, function()
+    done = true
+  end, { expected_uuid = "uuid-1" })
+  -- The hub pushes a replacement row showing the requested mode: same
+  -- id, different uuid — must never confirm this command.
+  session._dispatcher.feed(
+    JSON.encode({ type = 1, target = "ValveSent", arguments = { replacement } }) .. SignalR.RECORD_SEPARATOR
+  )
+  timers.advance(40000)
+  T.check(not done, "replacement push never confirms")
+  timers.advance(10000)
+  T.check(done, "unconfirmed command still settles by timeout")
+end)
+
 T.test("updates: select only stable C4 releases with the expected package", function()
   local function release(version)
     local tag = "c4-v" .. version
@@ -1108,10 +1224,12 @@ local function install_fixtures(version)
   local store = {
     files = files,
     set_dir_calls = {},
+    move_calls = {},
     soap_packets = {},
     denied = false,
     soap_err = nil,
     corrupt_write = false,
+    move_deny = {}, -- "from>to" pairs file_move reports failure for
   }
   local fakes = {
     get_installed = function()
@@ -1146,6 +1264,15 @@ local function install_fixtures(version)
       -- read-back, which is why the stage gate must not depend on the
       -- \003\004 of the zip magic (field failure on 2026090808).
       return (data:gsub("[%z\1-\8\11-\12\14-\31]", ""):sub(1, count))
+    end,
+    file_move = function(from_name, to_name)
+      store.move_calls[#store.move_calls + 1] = { from = from_name, to = to_name }
+      if store.move_deny[from_name .. ">" .. to_name] then
+        return false
+      end
+      files[to_name] = files[from_name]
+      files[from_name] = nil
+      return true
     end,
     soap_send = function(packet, cb)
       store.soap_packets[#store.soap_packets + 1] = packet
@@ -1414,4 +1541,211 @@ T.test("updates: install rejects bare redirects and cancel wins races", function
   answer(nil, "[]", 200, nil)
   timers.advance(200000)
   T.check_equal(count, 0, "cancelled install stays silent")
+end)
+
+T.test("updates: install replaces by move with a backup and cleans up", function()
+  local timers = TestHelp.new_fake_timers()
+  local releases, store, fakes = install_fixtures("2026090808")
+  local seen = {}
+  fakes.http_get = install_http(JSON.encode(releases), "PK\003\004NEW-DRIVER-BYTES", seen)
+  fakes.set_timeout = timers.set_timeout
+  fakes.force, fakes.current_version = false, "2026090705"
+  local err, outcome = nil, nil
+  fakes.on_result = function(e, o)
+    err, outcome = e, o
+  end
+  FloUpdate.new_install(fakes).start()
+  T.check(err == nil, "no error, got " .. tostring(err))
+  T.check_equal(outcome.attempted, "2026090808", "attempted version")
+  T.check_equal(store.files["flologic_valve.c4z"], "PK\003\004NEW-DRIVER-BYTES", "installed bytes replaced")
+  T.check_equal(store.files["flologic_valve.c4z.new"], nil, "candidate cleaned")
+  T.check_equal(store.files["flologic_valve.c4z.bak"], nil, "backup cleaned")
+  T.check_equal(#store.move_calls, 2, "backup move + replacement move")
+  T.check_equal(store.move_calls[1].from, "flologic_valve.c4z", "installed backed up first")
+  T.check_equal(store.move_calls[1].to, "flologic_valve.c4z.bak", "backup name")
+  T.check_equal(store.move_calls[2].from, "flologic_valve.c4z.new", "candidate moved second")
+  T.check_equal(store.move_calls[2].to, "flologic_valve.c4z", "candidate takes the installed name")
+  T.check_equal(#store.soap_packets, 1, "one install trigger")
+end)
+
+T.test("updates: install refuses without a file move before touching anything", function()
+  local timers = TestHelp.new_fake_timers()
+  local releases, store, fakes = install_fixtures("2026090808")
+  local seen = {}
+  fakes.http_get = install_http(JSON.encode(releases), "PK\003\004NEW-DRIVER-BYTES", seen)
+  fakes.set_timeout = timers.set_timeout
+  fakes.force, fakes.current_version = false, "2026090705"
+  fakes.file_move = nil
+  local err = nil
+  fakes.on_result = function(e)
+    err = e
+  end
+  FloUpdate.new_install(fakes).start()
+  T.check(
+    err ~= nil and err:find("cannot replace the package safely", 1, true) ~= nil,
+    "refusal names the missing move"
+  )
+  T.check_equal(#store.set_dir_calls, 0, "store never touched")
+  T.check_equal(store.files["flologic_valve.c4z"], "OLD-DRIVER-BYTES", "installed untouched")
+  T.check_equal(#store.soap_packets, 0, "no trigger")
+end)
+
+T.test("updates: backup failure keeps the installed package", function()
+  local timers = TestHelp.new_fake_timers()
+  local releases, store, fakes = install_fixtures("2026090808")
+  local seen = {}
+  fakes.http_get = install_http(JSON.encode(releases), "PK\003\004NEW-DRIVER-BYTES", seen)
+  fakes.set_timeout = timers.set_timeout
+  fakes.force, fakes.current_version = false, "2026090705"
+  store.move_deny["flologic_valve.c4z>flologic_valve.c4z.bak"] = true
+  local err = nil
+  fakes.on_result = function(e)
+    err = e
+  end
+  FloUpdate.new_install(fakes).start()
+  T.check(err ~= nil and err:find("backup failed", 1, true) ~= nil, "backup failure fails loud, got " .. tostring(err))
+  T.check_equal(store.files["flologic_valve.c4z"], "OLD-DRIVER-BYTES", "installed untouched")
+  T.check_equal(store.files["flologic_valve.c4z.new"], nil, "candidate cleaned")
+  T.check_equal(#store.soap_packets, 0, "no trigger without a backup")
+end)
+
+T.test("updates: lying backup move still rolls back by filesystem state", function()
+  local timers = TestHelp.new_fake_timers()
+  local releases, store, fakes = install_fixtures("2026090808")
+  local seen = {}
+  fakes.http_get = install_http(JSON.encode(releases), "PK\003\004NEW-DRIVER-BYTES", seen)
+  fakes.set_timeout = timers.set_timeout
+  fakes.force, fakes.current_version = false, "2026090705"
+  -- The move reports failure but moved correctly (undocumented return
+  -- convention): verification is by filesystem state, so the backup is
+  -- rolled back and the report stays truthful.
+  local files = store.files
+  fakes.file_move = function(from_name, to_name)
+    files[to_name] = files[from_name]
+    files[from_name] = nil
+    return false
+  end
+  local err = nil
+  fakes.on_result = function(e)
+    err = e
+  end
+  FloUpdate.new_install(fakes).start()
+  T.check(
+    err ~= nil and err:find("backup failed; rolled back", 1, true) ~= nil,
+    "lying move rolls back, got " .. tostring(err)
+  )
+  T.check_equal(files["flologic_valve.c4z"], "OLD-DRIVER-BYTES", "previous driver restored")
+  T.check_equal(#store.soap_packets, 0, "no trigger after rollback")
+end)
+
+T.test("updates: destructive backup failure reports honestly", function()
+  local timers = TestHelp.new_fake_timers()
+  local releases, store, fakes = install_fixtures("2026090808")
+  local seen = {}
+  fakes.http_get = install_http(JSON.encode(releases), "PK\003\004NEW-DRIVER-BYTES", seen)
+  fakes.set_timeout = timers.set_timeout
+  fakes.force, fakes.current_version = false, "2026090705"
+  -- The move destroys without preserving: no "left intact" claim is
+  -- possible, so the report must say the store is unverifiable.
+  local files = store.files
+  fakes.file_move = function(from_name, to_name)
+    files[from_name] = nil
+    return false
+  end
+  local err = nil
+  fakes.on_result = function(e)
+    err = e
+  end
+  FloUpdate.new_install(fakes).start()
+  T.check(
+    err ~= nil and err:find("unverifiable; restore using Composer", 1, true) ~= nil,
+    "destruction reported honestly, got " .. tostring(err)
+  )
+  T.check_equal(#store.soap_packets, 0, "no trigger without a verified package")
+end)
+
+T.test("updates: failed replacement without a previous driver leaves no torn file", function()
+  local timers = TestHelp.new_fake_timers()
+  local releases, store, fakes = install_fixtures("2026090808")
+  store.files["flologic_valve.c4z"] = nil
+  local seen = {}
+  fakes.http_get = install_http(JSON.encode(releases), "PK\003\004NEW-DRIVER-BYTES", seen)
+  fakes.set_timeout = timers.set_timeout
+  fakes.force, fakes.current_version = false, "2026090705"
+  store.move_deny["flologic_valve.c4z.new>flologic_valve.c4z"] = true
+  local err = nil
+  fakes.on_result = function(e)
+    err = e
+  end
+  FloUpdate.new_install(fakes).start()
+  T.check(
+    err ~= nil and err:find("no previous driver exists", 1, true) ~= nil,
+    "missing predecessor reported, got " .. tostring(err)
+  )
+  T.check_equal(store.files["flologic_valve.c4z"], nil, "no torn file left behind")
+  T.check_equal(#store.soap_packets, 0, "no trigger without a verified package")
+end)
+
+T.test("updates: replacement failure rolls back to the backup", function()
+  local timers = TestHelp.new_fake_timers()
+  local releases, store, fakes = install_fixtures("2026090808")
+  local seen = {}
+  fakes.http_get = install_http(JSON.encode(releases), "PK\003\004NEW-DRIVER-BYTES", seen)
+  fakes.set_timeout = timers.set_timeout
+  fakes.force, fakes.current_version = false, "2026090705"
+  -- The candidate verifies, then the installed-file move fails: the
+  -- previous driver must come back before anything reports.
+  store.move_deny["flologic_valve.c4z.new>flologic_valve.c4z"] = true
+  local err = nil
+  fakes.on_result = function(e)
+    err = e
+  end
+  FloUpdate.new_install(fakes).start()
+  T.check(err ~= nil and err:find("rolled back", 1, true) ~= nil, "rollback reported, got " .. tostring(err))
+  T.check_equal(store.files["flologic_valve.c4z"], "OLD-DRIVER-BYTES", "previous driver restored")
+  T.check(store.files["flologic_valve.c4z.new"] ~= nil, "candidate kept for forensics")
+  T.check_equal(#store.soap_packets, 0, "no trigger after rollback")
+end)
+
+T.test("updates: rollback failure reports the stored package honestly", function()
+  local timers = TestHelp.new_fake_timers()
+  local releases, store, fakes = install_fixtures("2026090808")
+  local seen = {}
+  fakes.http_get = install_http(JSON.encode(releases), "PK\003\004NEW-DRIVER-BYTES", seen)
+  fakes.set_timeout = timers.set_timeout
+  fakes.force, fakes.current_version = false, "2026090705"
+  store.move_deny["flologic_valve.c4z.new>flologic_valve.c4z"] = true
+  store.move_deny["flologic_valve.c4z.bak>flologic_valve.c4z"] = true
+  local err = nil
+  fakes.on_result = function(e)
+    err = e
+  end
+  FloUpdate.new_install(fakes).start()
+  T.check(
+    err ~= nil and err:find("replacement AND rollback failed", 1, true) ~= nil,
+    "double failure fails loud, got " .. tostring(err)
+  )
+  T.check_equal(#store.soap_packets, 0, "no trigger without a verified package")
+end)
+
+T.test("updates: interrupted backup restores before staging", function()
+  local timers = TestHelp.new_fake_timers()
+  local releases, store, fakes = install_fixtures("2026090808")
+  -- A previous run died between backup and replacement: no installed
+  -- file, known-good bytes under the backup name.
+  store.files["flologic_valve.c4z"] = nil
+  store.files["flologic_valve.c4z.bak"] = "OLD-DRIVER-BYTES"
+  local seen = {}
+  fakes.http_get = install_http(JSON.encode(releases), "PK\003\004NEW-DRIVER-BYTES", seen)
+  fakes.set_timeout = timers.set_timeout
+  fakes.force, fakes.current_version = false, "2026090705"
+  local err, outcome = nil, nil
+  fakes.on_result = function(e, o)
+    err, outcome = e, o
+  end
+  FloUpdate.new_install(fakes).start()
+  T.check(err == nil, "no error, got " .. tostring(err))
+  T.check_equal(store.move_calls[1].from, "flologic_valve.c4z.bak", "interrupted backup restored first")
+  T.check_equal(store.files["flologic_valve.c4z"], "PK\003\004NEW-DRIVER-BYTES", "install proceeds from the candidate")
+  T.check_equal(outcome.attempted, "2026090808", "attempted version")
 end)

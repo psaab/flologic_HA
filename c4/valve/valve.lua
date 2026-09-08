@@ -26,7 +26,7 @@
 -- C4 calls (safe to load in tests with a stub C4). Lua 5.1 safe.
 -- ============================================================================
 
-FLOVALVE_DRIVER_VERSION = "2026090810"
+FLOVALVE_DRIVER_VERSION = "2026090811"
 print("[flologic-valve] Lua loaded: " .. FLOVALVE_DRIVER_VERSION)
 
 -- Static link consumer (binds to one cloud-driver FLOGIC_VALVE slot) and
@@ -44,12 +44,19 @@ FLOVALVE_ACK_TIMEOUT_S = 120
 
 -- Freshness watchdog: the companion must stop presenting state as
 -- current when snapshots stop arriving, even with the Composer link
--- intact. The cloud's poll cadence is observed from slice spacing; the
--- link goes stale after STALE_MULTIPLE x the observed cadence, never
--- sooner than STALE_MIN_S (a slow poll interval must not false-positive).
+-- intact. The budget comes from the cloud's advertised FLOGIC_FRESH
+-- (three configured poll intervals plus one slow session); STALE_MIN_S
+-- is only the floor for clouds too old to advertise. Cadence is never
+-- inferred from traffic: duplicates and recovery gaps would corrupt it.
+-- Only NOVEL snapshots renew the watchdog — replays of an already
+-- applied snapshot prove the link is alive, not that the data is fresh.
 FLOVALVE_STALE_MIN_S = 300
-FLOVALVE_STALE_MULTIPLE = 3
 FLOVALVE_STALE_CHECK_S = 60
+-- Sanity bounds for an advertised budget: below the floor is a cloud
+-- bug, above twice the worst case (hourly polls) is absurd — both fall
+-- back to the floor rather than wedging the watchdog either way.
+FLOVALVE_FRESH_MIN_S = 300
+FLOVALVE_FRESH_MAX_S = 22000
 
 -- Handshake recovery: a hello that earns no identity is retried on this
 -- cadence up to HELLO_ATTEMPTS times, then the link is marked failed
@@ -58,6 +65,21 @@ FLOVALVE_STALE_CHECK_S = 60
 -- rebind; unbound links (no burst ever started) stay silent.
 FLOVALVE_HELLO_RETRY_S = 10
 FLOVALVE_HELLO_ATTEMPTS = 6
+
+-- Pending-observation deadline: an ACK proves the cloud accepted the
+-- command, not that the valve moved. The cloud hurries a poll after
+-- every ack, so a novel snapshot should confirm the request promptly;
+-- without one the tile reconciles instead of displaying the unconfirmed
+-- request forever.
+FLOVALVE_OBSERVATION_TIMEOUT_S = 120
+
+-- First-state wait: identity alone does not establish a usable link.
+-- After the handshake a usable snapshot must arrive within the timeout
+-- (re-requested, bounded attempts); then the link is marked failed
+-- explicitly instead of hanging in "Linking..." forever. Like the hello
+-- burst, the slow freshness tick restarts a failed wait.
+FLOVALVE_FIRST_STATE_TIMEOUT_S = 90
+FLOVALVE_FIRST_STATE_ATTEMPTS = 3
 
 -- Seven contact outputs (plan D5). 101/102 semantics are ported from
 -- c4/src/main.lua (attribution); 103-107 derive from the same mode flags
@@ -111,6 +133,7 @@ FLOVALVE_EV_CONN_LOST = "Connection Lost"
 FLOVALVE_EV_CONN_RESTORED = "Connection Restored"
 
 FLOVALVE_PERSIST_ID = "flovalve_valve_id"
+FLOVALVE_PERSIST_UUID = "flovalve_valve_uuid"
 FLOVALVE_PERSIST_STATE = "flovalve_last_state"
 FLOVALVE_PERSIST_VERSION = "flovalve_last_version"
 
@@ -156,6 +179,7 @@ function flovalve_retire_runtime()
     "update_start_timer",
     "stale_timer",
     "hello_timer",
+    "state_wait_timer",
     "soap_grace",
   }) do
     local timer = previous[name]
@@ -164,6 +188,21 @@ function flovalve_retire_runtime()
       pcall(function()
         timer:Cancel()
       end)
+    end
+  end
+  -- Pending command timers are per-entry, not named: cancel them
+  -- explicitly so retirement owns the whole timer lifetime instead of
+  -- relying on orphaned ticks to no-op.
+  if previous.pending_commands ~= nil then
+    for cmd_id, pending in pairs(previous.pending_commands) do
+      previous.pending_commands[cmd_id] = nil
+      local timer = pending.timer
+      pending.timer = nil
+      if timer ~= nil then
+        pcall(function()
+          timer:Cancel()
+        end)
+      end
     end
   end
   if previous.updater then
@@ -188,16 +227,22 @@ local function flovalve_fresh_state()
     initialized = false,
     link_bound = false,
     valve_id = nil,
+    valve_uuid = nil,
     valve_id_persisted = flovalve_state and flovalve_state.valve_id_persisted or nil,
+    valve_uuid_persisted = flovalve_state and flovalve_state.valve_uuid_persisted or nil,
     hint_valve_id = nil,
     hello_attempts = 0,
     hello_failed = false,
+    state_wait_attempts = 0,
+    state_failed = false,
     last_state = nil,
     unavailable = nil,
     stale = false,
-    last_slice_at = nil,
-    prev_slice_at = nil,
-    last_slice_updated = nil,
+    last_slice_at = nil, -- receipt time of the last NOVEL snapshot (replays never renew)
+    last_slice_updated = nil, -- cloud observation time of the applied snapshot
+    link_epoch = nil, -- ordering baseline: (epoch, seq) of the newest applied message
+    link_seq = nil,
+    fresh_budget = nil, -- advertised FLOGIC_FRESH seconds, else the floor
     contact_states = nil,
     last_mode = nil,
     last_flowing = nil,
@@ -388,10 +433,14 @@ end
 -- --- Link send: BindMessages primary, SendToDevice fallback -----------------
 
 -- Provider discovery for the fallback leg. Returns an array of cloud
--- driver device ids, or nil when Director cannot answer (the caller then
--- sends to nobody rather than guessing). The plural API answers a map of
--- device-ID keys to device-NAME values (decode by key); the singular API
--- answers one scalar id.
+-- driver device ids: EMPTY when observed unbound, or nil when Director
+-- cannot answer. Director documents null as the SUCCESSFUL no-bindings
+-- result ("null if no bindings..."), so a nil answer is observed-unbound
+-- — only a missing API or a raised error is indeterminate. The plural
+-- API answers a map of device-ID keys to device-NAME values (decode by
+-- key); the singular API answers one scalar id, where nil AND 0 both
+-- mean unbound (0 is the "current device" query alias, never a peer id)
+-- and anything non-numeric is indeterminate.
 local function flovalve_bound_providers()
   local name = nil
   local singular = false
@@ -407,8 +456,11 @@ local function flovalve_bound_providers()
   local ok, found = pcall(function()
     return C4[name](C4, 0, FLOVALVE_LINK_ID)
   end)
-  if not ok or found == nil then
+  if not ok then
     return nil
+  end
+  if found == nil or (singular and found == 0) then
+    return {}
   end
   local ids = {}
   if type(found) == "table" then
@@ -418,10 +470,13 @@ local function flovalve_bound_providers()
         ids[#ids + 1] = num
       end
     end
-  elseif singular and tonumber(found) ~= nil then
-    ids[#ids + 1] = tonumber(found)
+    return ids
   end
-  return ids
+  if singular and tonumber(found) ~= nil and tonumber(found) ~= 0 then
+    ids[#ids + 1] = tonumber(found)
+    return ids
+  end
+  return nil
 end
 
 -- Send one link envelope toward the cloud. Returns "proxy", "device", or
@@ -442,9 +497,10 @@ function flovalve_send_to_cloud(envelope)
   -- The fallback hint is learned from a LIVE handshake on the current
   -- binding only: the persisted id survives rebinds, so attaching it
   -- would route the new binding's traffic to the old valve's slot. A
-  -- hintless hello is unanswerable by the cloud (ExecuteCommand names no
-  -- sender) and dropped there; the proxy hello burst below is the
-  -- bootstrap, not the fallback.
+  -- hintless message attributes by elimination only when exactly one
+  -- consumer is bound; otherwise the cloud drops it (ExecuteCommand
+  -- names no sender), so multi-valve fallback needs one proxy
+  -- handshake first.
   if flovalve_state.hint_valve_id ~= nil and flovalve_state.hint_valve_id ~= "" then
     hinted[FLOVALVE_K_FROM] = flovalve_state.hint_valve_id
   end
@@ -515,6 +571,65 @@ local function flovalve_send_get_state()
   end
 end
 
+-- First-state wait: identity without a usable snapshot owns its own
+-- deadline. Expiry re-requests state up to FIRST_STATE_ATTEMPTS times,
+-- then marks the link failed explicitly instead of hanging in
+-- "Linking..." forever; the slow freshness tick restarts a failed wait.
+-- Only a NOVEL full snapshot disarms the wait — digests prove the peer
+-- is alive (so they extend the wait without consuming an attempt) but
+-- are not usable state.
+local flovalve_arm_state_wait -- forward: the timeout re-arms into the send
+local function flovalve_state_wait_timeout()
+  local st = flovalve_state
+  st.state_wait_timer = nil
+  if st.valve_id == nil or st.last_state ~= nil then
+    return
+  end
+  if st.state_wait_attempts >= FLOVALVE_FIRST_STATE_ATTEMPTS then
+    if not st.state_failed then
+      st.state_failed = true
+      -- The identity itself is suspect now (a misattributed handshake
+      -- answers nothing): drop the hint it authorized so recovery
+      -- re-handshakes hintless instead of perpetuating a wrong route.
+      st.hint_valve_id = nil
+      flovalve_log_warn("link has identity but no usable state after " .. st.state_wait_attempts .. " requests")
+      flovalve_set_prop(FLOVALVE_PROP_CONNECTION, "Link failed: no state from cloud")
+    end
+    return
+  end
+  flovalve_send_get_state()
+  flovalve_arm_state_wait()
+end
+
+flovalve_arm_state_wait = function()
+  local st = flovalve_state
+  if st.state_wait_timer ~= nil then
+    st.state_wait_timer:Cancel()
+    st.state_wait_timer = nil
+  end
+  st.state_wait_attempts = st.state_wait_attempts + 1
+  st.state_wait_timer = flovalve_set_timer(FLOVALVE_FIRST_STATE_TIMEOUT_S * 1000, flovalve_state_wait_timeout, false)
+end
+
+local function flovalve_cancel_state_wait()
+  local st = flovalve_state
+  st.state_wait_attempts = 0
+  st.state_failed = false
+  if st.state_wait_timer ~= nil then
+    st.state_wait_timer:Cancel()
+    st.state_wait_timer = nil
+  end
+end
+
+local function flovalve_extend_state_wait()
+  local st = flovalve_state
+  if st.valve_id == nil or st.last_state ~= nil or st.state_wait_timer == nil then
+    return
+  end
+  st.state_wait_timer:Cancel()
+  st.state_wait_timer = flovalve_set_timer(FLOVALVE_FIRST_STATE_TIMEOUT_S * 1000, flovalve_state_wait_timeout, false)
+end
+
 local function flovalve_next_cmd_id()
   local st = flovalve_state
   st.cmd_seq = st.cmd_seq + 1
@@ -524,11 +639,27 @@ end
 -- Forward one validated link action. Returns true when sent; commands
 -- with no handshake identity are dropped locally (the cloud would drop
 -- them unattributed anyway) with a display note, never a crash.
+-- Reconcile the tile after settling a request without confirmation:
+-- the last OBSERVED level wins; with no observation at all the
+-- pre-command level is restored so the unconfirmed request is withdrawn
+-- from the tile (callers label the state unknown in that case).
+local function flovalve_reconcile_tile(pre_level)
+  local st = flovalve_state
+  if st.last_state ~= nil then
+    flovalve_report_level(flovalve_level_for(st.last_state))
+    return true
+  end
+  if pre_level ~= nil then
+    flovalve_report_level(pre_level)
+  end
+  return false
+end
+
 -- Settle one command whose reply never arrived: drop the pending entry,
--- say so on the display, and reconcile the tile to the last observed
--- level. Physical state (last_state) and requested state (pending plus
--- the optimistic last_level) stay separate; with no reply there is no
--- evidence either way, so the tile must not keep showing the request.
+-- say so on the display, and reconcile the tile. Physical state
+-- (last_state) and requested state (pending plus the optimistic
+-- last_level) stay separate; with no reply there is no evidence either
+-- way, so the tile must not keep showing the request.
 local function flovalve_timeout_pending(cmd_id, pending)
   local st = flovalve_state
   st.pending_commands[cmd_id] = nil
@@ -540,18 +671,63 @@ local function flovalve_timeout_pending(cmd_id, pending)
   if flovalve_prop("Last Command") == pending.label .. ": sent (awaiting cloud refresh)" then
     flovalve_set_prop("Last Command", pending.label .. ": no response from cloud")
   end
-  if st.last_state ~= nil then
-    flovalve_report_level(flovalve_level_for(st.last_state))
+  if not flovalve_reconcile_tile(pending.pre_level) then
+    flovalve_set_prop("Last Command", pending.label .. ": no response from cloud (state unknown)")
   end
 end
 
+-- Settle one ACKED command the following snapshot never confirmed: the
+-- ack proved acceptance, not movement, so the optimistic level cannot
+-- stand past the observation deadline.
+local function flovalve_timeout_observation(cmd_id, pending)
+  local st = flovalve_state
+  st.pending_commands[cmd_id] = nil
+  if pending.timer ~= nil then
+    pending.timer:Cancel()
+    pending.timer = nil
+  end
+  flovalve_log_warn("command " .. pending.label .. " acknowledged but never confirmed by a snapshot; reconciling tile")
+  flovalve_set_prop("Last Command", pending.label .. ": acknowledged but unconfirmed (no refresh)")
+  flovalve_reconcile_tile(pending.pre_level)
+end
+
+-- Settle every in-flight request at once (unbind, unavailable): cancel
+-- their timers, drop the entries, reconcile the tile once, and say so.
+-- Returns the drop count.
+local function flovalve_settle_all_pending(label)
+  local st = flovalve_state
+  local dropped = 0
+  local pre_level = nil
+  for cmd_id, pending in pairs(st.pending_commands) do
+    st.pending_commands[cmd_id] = nil
+    if pending.timer ~= nil then
+      pending.timer:Cancel()
+      pending.timer = nil
+    end
+    if pre_level == nil then
+      pre_level = pending.pre_level
+    end
+    dropped = dropped + 1
+  end
+  if dropped > 0 then
+    flovalve_reconcile_tile(pre_level)
+    flovalve_set_prop("Last Command", label .. ": " .. dropped .. " command(s) dropped")
+  end
+  return dropped
+end
+
 -- Pending entries with no ack/nack (lost reply, cloud restarted
--- mid-command) settle on their own deadline timer; the lazy sweep below
--- is only a backstop for activity that arrives after a missed tick.
+-- mid-command) settle on their own deadline timer; acked entries settle
+-- on the observation deadline instead. The lazy sweep below is only a
+-- backstop for activity that arrives after a missed tick.
 local function flovalve_expire_pending(now)
   local st = flovalve_state
   for cmd_id, pending in pairs(st.pending_commands) do
-    if now - (pending.sent_at or now) >= FLOVALVE_ACK_TIMEOUT_S then
+    if pending.awaiting_obs then
+      if now - (pending.obs_at or now) >= FLOVALVE_OBSERVATION_TIMEOUT_S then
+        flovalve_timeout_observation(cmd_id, pending)
+      end
+    elseif now - (pending.sent_at or now) >= FLOVALVE_ACK_TIMEOUT_S then
       flovalve_timeout_pending(cmd_id, pending)
     end
   end
@@ -570,6 +746,15 @@ function flovalve_send_command(action, params, label)
     flovalve_set_prop("Last Command", label .. ": not available")
     return false
   end
+  if st.last_state == nil then
+    -- No observation yet (first-state wait): a blind write cannot be
+    -- shown truthfully — the tile has no confirmed level to reconcile
+    -- to, so any optimistic level would stand as an unproven physical
+    -- claim. Refuse with an explicit unknown-state note instead.
+    flovalve_log_warn("command " .. label .. " dropped: no state yet (state unknown)")
+    flovalve_set_prop("Last Command", label .. ": no state yet")
+    return false
+  end
   flovalve_expire_pending(os.time())
   local cmd_id = flovalve_next_cmd_id()
   local envelope, err = FloLogicLink.build_command(cmd_id, action, params)
@@ -578,7 +763,7 @@ function flovalve_send_command(action, params, label)
     flovalve_set_prop("Last Command", label .. ": rejected (" .. tostring(err) .. ")")
     return false
   end
-  local pending = { action = action, label = label, sent_at = os.time() }
+  local pending = { action = action, label = label, sent_at = os.time(), pre_level = st.last_level }
   st.pending_commands[cmd_id] = pending
   local route, route_err = flovalve_send_to_cloud(envelope)
   if route == nil then
@@ -672,23 +857,99 @@ local function flovalve_process_edges(fields)
   st.last_critical = critical
 end
 
-local function flovalve_apply_state(fields, body)
+-- Forward: a replacement snapshot resets history mid-apply, but the
+-- reset itself is defined below beside the other identity handling.
+local flovalve_reset_valve_history
+
+-- Ordering gate for stamped cloud->valve messages: a message is novel
+-- only when its (epoch, seq) advances the baseline. Older epochs
+-- (delayed pre-restart traffic) and older-or-equal sequences within the
+-- epoch (duplicates, reordered redeliveries) are dropped WITHOUT
+-- renewing freshness or disturbing availability markings — a replay
+-- proves the link is alive, not that the data is fresh. Unstamped
+-- messages (older clouds) are always novel: legacy semantics.
+-- Returns true when the message is novel (baseline advanced).
+local function flovalve_note_ordered(env)
   local st = flovalve_state
+  if env.seq == nil or env.epoch == nil then
+    return true
+  end
+  if st.link_epoch ~= nil then
+    if env.epoch < st.link_epoch then
+      return false
+    end
+    if env.epoch == st.link_epoch and st.link_seq ~= nil and env.seq <= st.link_seq then
+      return false
+    end
+  end
+  st.link_epoch, st.link_seq = env.epoch, env.seq
+  return true
+end
+
+local function flovalve_apply_state(env)
+  local st = flovalve_state
+  local fields, body = env.fields, env.body
   local now = os.time()
-  -- Ordering runs on the cloud's observation time, not receipt time: a
-  -- delayed duplicate must never roll back a newer snapshot.
+  -- Replacement check BEFORE the ordering gate: a new physical valve
+  -- (same numeric id, different immutable uuid) resets history —
+  -- including the ordering baseline — so its first snapshot always
+  -- applies as novel and never inherits the old valve's restore mode,
+  -- event baselines, or availability markings. The persisted
+  -- association counts as known identity across a restart.
+  local uuid = type(fields.uuid) == "string" and fields.uuid or nil
+  if uuid ~= nil then
+    local known = st.valve_uuid
+    if known == nil then
+      known = st.valve_uuid_persisted
+    end
+    if known ~= nil and known ~= uuid then
+      flovalve_log_warn("link state uuid changed for valve " .. tostring(st.valve_id) .. "; resetting control history")
+      flovalve_reset_valve_history()
+    end
+  end
+  if not flovalve_note_ordered(env) then
+    flovalve_log("link state duplicate or out of order; dropped without renewing freshness")
+    return
+  end
+  -- Ordering also runs on the cloud's observation time, not receipt
+  -- time: a delayed older snapshot must never roll back a newer one.
   local observed = fields.updated or now
   if st.last_slice_updated ~= nil and observed < st.last_slice_updated then
     flovalve_log("link state older than the applied snapshot; dropped")
     return
   end
-  st.prev_slice_at, st.last_slice_at = st.last_slice_at, now
+  if uuid ~= nil and st.valve_uuid ~= uuid then
+    st.valve_uuid = uuid
+    st.valve_uuid_persisted = uuid
+    C4:PersistSetValue(FLOVALVE_PERSIST_UUID, uuid, true)
+  end
+  -- Past every gate: this snapshot is novel. Renew the watchdog from
+  -- its receipt, adopt the advertised freshness budget when sane, and
+  -- clear any unavailability/staleness marking: the valve is back and
+  -- the data is current again.
+  st.last_slice_at = now
   st.last_slice_updated = observed
-  -- A fresh full snapshot clears any unavailability/staleness marking:
-  -- the valve is back and the data is current again.
+  if env.fresh_s ~= nil and env.fresh_s >= FLOVALVE_FRESH_MIN_S and env.fresh_s <= FLOVALVE_FRESH_MAX_S then
+    st.fresh_budget = env.fresh_s
+  end
   st.unavailable, st.stale = nil, false
   st.last_state = fields
   st.digest_retry_at = nil
+  flovalve_cancel_state_wait()
+  -- A novel snapshot confirms every ack-awaiting request: the cloud
+  -- hurries a poll after each ack, so the next novel observation IS the
+  -- confirmation of the outstanding request.
+  for cmd_id, pending in pairs(st.pending_commands) do
+    if pending.awaiting_obs then
+      st.pending_commands[cmd_id] = nil
+      if pending.timer ~= nil then
+        pending.timer:Cancel()
+        pending.timer = nil
+      end
+      flovalve_log("command " .. pending.label .. " confirmed by refresh")
+      flovalve_set_prop("Last Command", pending.label .. ": confirmed")
+    end
+  end
   flovalve_expire_pending(now)
   C4:PersistSetValue(FLOVALVE_PERSIST_STATE, body, true)
   flovalve_track_restore(fields)
@@ -706,23 +967,43 @@ end
 -- commands. The next push from the new valve then establishes a fresh
 -- quiet baseline (STATE_* sync, no transitions) instead of comparing new
 -- observations against old history or restoring another valve's mode.
-local function flovalve_reset_valve_history()
+-- The persisted identity/state association dies with the runtime one: a
+-- restart before the first new snapshot restores NO state for the new
+-- identity, never the old valve's. Pending timers cancel explicitly.
+flovalve_reset_valve_history = function()
   local st = flovalve_state
   st.restore_action = FLOVALVE_RESTORE_DEFAULT
   st.contact_states = nil
   st.last_state = nil
   st.hint_valve_id = nil
+  st.valve_uuid = nil
+  st.valve_uuid_persisted = nil
+  C4:PersistSetValue(FLOVALVE_PERSIST_STATE, "", true)
+  C4:PersistSetValue(FLOVALVE_PERSIST_UUID, "", true)
   st.unavailable = nil
   st.stale = false
   st.last_slice_at = nil
-  st.prev_slice_at = nil
   st.last_slice_updated = nil
+  st.link_epoch = nil
+  st.link_seq = nil
+  st.fresh_budget = nil
   st.last_mode, st.last_flowing = nil, nil
   st.last_water_off, st.last_warning = nil, nil
   st.last_critical = nil
   st.digest_retry_at = nil
-  for cmd_id in pairs(st.pending_commands) do
+  flovalve_cancel_state_wait()
+  local dropped = 0
+  for cmd_id, pending in pairs(st.pending_commands) do
     st.pending_commands[cmd_id] = nil
+    local timer = pending.timer
+    pending.timer = nil
+    if timer ~= nil then
+      timer:Cancel()
+    end
+    dropped = dropped + 1
+  end
+  if dropped > 0 then
+    flovalve_set_prop("Last Command", "Link changed: " .. dropped .. " command(s) dropped")
   end
 end
 
@@ -758,10 +1039,17 @@ local function flovalve_on_identity(valve_id)
   -- The cloud already pushes its latest slice on hello, but a GET_STATE
   -- covers the race where it had nothing cached yet.
   flovalve_send_get_state()
+  -- Identity alone is not a usable link: wait for the first snapshot
+  -- unless an observation already stands (same-valve re-link).
+  flovalve_cancel_state_wait()
+  if st.last_state == nil then
+    flovalve_arm_state_wait()
+  end
 end
 
-local function flovalve_on_unavailable(valve_id, reason)
+local function flovalve_on_unavailable(env)
   local st = flovalve_state
+  local valve_id, reason = env.valve_id, env.error_reason
   -- Attribute strictly once an identity is known: another valve's
   -- notice (fallback cross-talk) must never mark this link.
   if st.valve_id ~= nil and tostring(st.valve_id) ~= tostring(valve_id) then
@@ -774,7 +1062,15 @@ local function flovalve_on_unavailable(valve_id, reason)
     )
     return false
   end
+  if not flovalve_note_ordered(env) then
+    flovalve_log("unavailable notice duplicate or out of order; dropped")
+    return false
+  end
   reason = reason or "unavailable"
+  -- Settle in-flight requests: the valve is gone, so no reply and no
+  -- confirming snapshot can arrive — reconcile the tile now instead of
+  -- letting the optimistic level linger until a deadline.
+  flovalve_settle_all_pending("Not available (" .. reason .. ")")
   if st.unavailable == reason then
     return true
   end
@@ -792,11 +1088,11 @@ local function flovalve_on_unavailable(valve_id, reason)
   return true
 end
 
--- Freshness watchdog: with a known identity and at least one snapshot,
--- silence longer than 3x the observed cloud cadence (never sooner than
--- the floor) means the data is no longer current — even with the
--- Composer link itself intact. Unavailable links are already marked and
--- skip the check.
+-- Freshness watchdog: with a known identity and at least one novel
+-- snapshot, silence longer than the cloud's advertised budget (or the
+-- floor for older clouds) means the data is no longer current — even
+-- with the Composer link itself intact. Unavailable links are already
+-- marked and skip the check.
 function flovalve_check_freshness()
   local st = flovalve_state
   if not st.initialized then
@@ -813,13 +1109,21 @@ function flovalve_check_freshness()
     end
     return
   end
+  if st.state_failed and st.state_wait_timer == nil and st.last_state == nil then
+    -- Slow first-state recovery: a wait that already failed restarts
+    -- here so a late cloud still delivers state without rebind. This
+    -- re-handshakes (single hello — valve_id is set, so no burst)
+    -- rather than just re-requesting: the failed identity may itself
+    -- be wrong, and only a new handshake can replace it.
+    flovalve_cancel_state_wait()
+    flovalve_send_hello()
+    flovalve_arm_state_wait()
+    return
+  end
   if st.unavailable ~= nil or st.stale or st.last_slice_at == nil then
     return
   end
-  local limit = FLOVALVE_STALE_MIN_S
-  if st.prev_slice_at ~= nil and st.last_slice_at > st.prev_slice_at then
-    limit = math.max(limit, (st.last_slice_at - st.prev_slice_at) * FLOVALVE_STALE_MULTIPLE)
-  end
+  local limit = st.fresh_budget or FLOVALVE_STALE_MIN_S
   local silent_for = os.time() - st.last_slice_at
   if silent_for > limit then
     st.stale = true
@@ -838,6 +1142,9 @@ local function flovalve_on_state(env)
     -- until the next poll shrinks the slice.
     flovalve_log_warn("link state digest-only; keeping last full state")
     flovalve_set_prop(FLOVALVE_PROP_CONNECTION, "Degraded: oversized snapshot (retrying)")
+    -- A digest proves the cloud is alive: extend the first-state wait
+    -- (when one runs) without consuming an attempt.
+    flovalve_extend_state_wait()
     local now = os.time()
     if st.digest_retry_at == nil or now - st.digest_retry_at >= FLOVALVE_DIGEST_RETRY_S then
       st.digest_retry_at = now
@@ -868,7 +1175,7 @@ local function flovalve_on_state(env)
     flovalve_send_hello()
     return false
   end
-  flovalve_apply_state(env.fields, env.body)
+  flovalve_apply_state(env)
   return true
 end
 
@@ -885,17 +1192,29 @@ local function flovalve_on_ack(cmd_id, acked, reason)
     pending.timer = nil
   end
   if acked then
+    -- The cloud accepted the command — but acceptance is not movement.
+    -- The tile keeps showing the request ONLY until the observation
+    -- deadline: a novel snapshot confirms it (apply settles the entry),
+    -- silence reconciles it. An ack without a following refresh must
+    -- never linger as an optimistic level.
     flovalve_log("command " .. pending.label .. " acknowledged")
     flovalve_set_prop("Last Command", pending.label .. ": acknowledged; awaiting refresh")
+    st.pending_commands[cmd_id] = pending
+    pending.awaiting_obs = true
+    pending.obs_at = os.time()
+    pending.timer = flovalve_set_timer(FLOVALVE_OBSERVATION_TIMEOUT_S * 1000, function()
+      local still = st.pending_commands[cmd_id]
+      if still ~= nil and still.awaiting_obs then
+        flovalve_timeout_observation(cmd_id, still)
+      end
+    end, false)
   else
     flovalve_log_warn("command " .. pending.label .. " rejected: " .. tostring(reason))
     flovalve_set_prop("Last Command", pending.label .. ": rejected (" .. tostring(reason) .. ")")
     -- The tile level was set optimistically when the command went out;
     -- roll it back to the last cloud-confirmed state so a failed shutoff
     -- (or open) never displays the action that did not happen.
-    if st.last_state ~= nil then
-      flovalve_report_level(flovalve_level_for(st.last_state))
-    end
+    flovalve_reconcile_tile(pending.pre_level)
   end
   return true
 end
@@ -921,7 +1240,7 @@ function flovalve_handle_link(strCommand, params)
   elseif env.msg == FloLogicLink.MSG_STATE then
     return flovalve_on_state(env)
   elseif env.msg == FloLogicLink.MSG_UNAVAILABLE then
-    return flovalve_on_unavailable(env.valve_id, env.error_reason)
+    return flovalve_on_unavailable(env)
   elseif env.msg == FloLogicLink.MSG_CMD_ACK then
     return flovalve_on_ack(env.cmd_id, true)
   elseif env.msg == FloLogicLink.MSG_CMD_NACK then
@@ -950,14 +1269,8 @@ local function flovalve_on_link_unbound()
   -- route the next binding's traffic, and the burst stops with the link.
   st.hint_valve_id = nil
   flovalve_cancel_hello()
-  local dropped = 0
-  for cmd_id in pairs(st.pending_commands) do
-    st.pending_commands[cmd_id] = nil
-    dropped = dropped + 1
-  end
-  if dropped > 0 then
-    flovalve_set_prop("Last Command", "Link lost: " .. dropped .. " command(s) dropped")
-  end
+  flovalve_cancel_state_wait()
+  flovalve_settle_all_pending("Link lost")
   -- Last-known contacts and display stay put (programming must not flap
   -- on a link outage); only the link marking goes stale. The edge fires
   -- first, then the richer text overwrites its generic "Offline" line.
@@ -1235,6 +1548,9 @@ local function flovalve_schedule_update_checks()
   end, true)
 end
 
+-- The store file_set_dir selected: file_move stays within it.
+local flovalve_file_store = "C4Z"
+
 local function flovalve_file_set_dir(alias)
   local candidates = { alias }
   if alias ~= "C4Z" then
@@ -1245,11 +1561,27 @@ local function flovalve_file_set_dir(alias)
       C4:FileSetDir(candidate)
     end)
     if ok then
+      flovalve_file_store = candidate
       flovalve_log_warn("update file store: " .. candidate)
       return true
     end
   end
   return false
+end
+
+local function flovalve_file_move(from_name, to_name)
+  -- C4:FileMove(alias, from, alias, to) is documented from OS 3.3.0 with
+  -- C4Z among the allowed aliases; the valve driver requires 3.3.2+.
+  -- Only the pcall status is reported — FileMove's own return
+  -- convention is undocumented, so the updater verifies every step by
+  -- filesystem state (existence + size) instead of trusting this bit.
+  if C4.FileMove == nil then
+    return false
+  end
+  local ok = pcall(function()
+    C4:FileMove(flovalve_file_store, from_name, flovalve_file_store, to_name)
+  end)
+  return ok
 end
 
 local function flovalve_file_exists(name)
@@ -1398,27 +1730,44 @@ function flovalve_soap_send(packet, cb)
   end
   -- Neither receipt of bytes nor connection closure confirms installation.
   -- The caller must report the result as unconfirmed; only the loaded driver
-  -- can establish its running version.
+  -- can establish its running version. Transmission itself IS tracked:
+  -- grace expiry (or a close, or stray bytes) before the packet was
+  -- handed to the transport reports a connection failure, never a sent
+  -- trigger.
   local opened = false
+  local sent = false
   local grace = flovalve_set_timer(3000, function()
-    finish(nil)
+    if sent then
+      finish(nil)
+    else
+      finish("cannot reach Composer endpoint")
+    end
   end, false)
   owner.soap_grace = grace
   owner.soap_callbacks = {
     on_data = function()
-      finish(nil)
+      if sent then
+        finish(nil)
+      else
+        finish("cannot reach Composer endpoint")
+      end
     end,
     on_open = function()
       opened = true
-      local sent = pcall(function()
+      -- Handover starts at the call (the transport queues/copies the
+      -- packet then), so mark sent BEFORE it: a transport that answers
+      -- synchronously must still observe a transmitted trigger.
+      sent = true
+      local ok = pcall(function()
         C4:SendToNetwork(binding, FloUpdate.SOAP_PORT, packet)
       end)
-      if not sent then
+      if not ok then
+        sent = false
         finish("cannot reach Composer endpoint")
       end
     end,
     on_close = function()
-      if opened then
+      if opened and sent then
         finish(nil)
       else
         finish("cannot reach Composer endpoint")
@@ -1509,6 +1858,7 @@ local function flovalve_install_update(force)
     file_write = flovalve_file_write,
     file_size = flovalve_file_size,
     file_read = flovalve_file_read,
+    file_move = flovalve_file_move,
     log_warn = flovalve_log_warn,
     soap_send = flovalve_soap_send,
     force = force,
@@ -1605,10 +1955,21 @@ local function flovalve_restore_display()
     st.valve_id_persisted = saved_id
     flovalve_set_prop(FLOVALVE_PROP_VALVE_ID, saved_id)
   end
+  local saved_uuid = C4:PersistGetValue(FLOVALVE_PERSIST_UUID)
+  if type(saved_uuid) == "string" and saved_uuid ~= "" then
+    st.valve_uuid_persisted = saved_uuid
+  end
   local saved_body = C4:PersistGetValue(FLOVALVE_PERSIST_STATE)
   if type(saved_body) == "string" and saved_body ~= "" then
     local fields = FloLogicLink.parse_state_body(saved_body)
-    if fields ~= nil then
+    -- Identity and state restore as ONE validated association: the body
+    -- must name the persisted id, and when both sides carry a uuid those
+    -- must match too. Otherwise the body belongs to a valve this link no
+    -- longer serves (identity changed, restart before the first new
+    -- snapshot) and is discarded — never relearned as restore action.
+    local body_uuid = fields ~= nil and type(fields.uuid) == "string" and fields.uuid or nil
+    local uuid_ok = body_uuid == nil or st.valve_uuid_persisted == nil or body_uuid == st.valve_uuid_persisted
+    if fields ~= nil and tostring(fields.id) == tostring(st.valve_id_persisted or "") and uuid_ok then
       flovalve_set_prop(FLOVALVE_PROP_VALVE_NAME, fields.name or ("Valve " .. tostring(fields.id)))
       flovalve_set_prop("Mode", FloModel.mode_status_name({ mode = fields.mode }))
       flovalve_track_restore(fields)

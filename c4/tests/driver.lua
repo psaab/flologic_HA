@@ -14,6 +14,7 @@ local function director()
     saved = {},
     files = {},
     file_dirs = {},
+    file_moves = {},
     dir_attempts = {},
     files_denied = false,
     installed = {},
@@ -139,6 +140,14 @@ local function director()
   function C4:FileClose(_) end
   function C4:FileDelete(name)
     env.files[name] = nil
+  end
+  function C4:FileMove(_, from_name, _, to_name)
+    if env.move_fail then
+      error("move denied")
+    end
+    env.file_moves[#env.file_moves + 1] = { from = from_name, to = to_name }
+    env.files[to_name] = env.files[from_name]
+    env.files[from_name] = nil
   end
   function C4:GetDevicesByC4iName(name)
     return env.installed[name] or {}

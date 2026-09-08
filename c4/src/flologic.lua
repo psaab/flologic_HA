@@ -19,14 +19,12 @@ local function pct_encode(text)
   end)
 end
 
--- Scrub hub-supplied text for logs: single-line and bounded, so a
--- hostile frame cannot inject fake log lines or flood the log.
-local function scrub_log_text(value, max_len)
-  local text = tostring(value or ""):gsub("[%c]", " ")
-  if #text > max_len then
-    text = text:sub(1, max_len) .. "..."
-  end
-  return text
+-- Describe a hub frame for logs by shape only (the byte length the
+-- dispatcher reports), never by content: redacting control bytes stops
+-- log injection but a payload excerpt can still leak whatever the
+-- frame carried.
+local function describe_frame_bytes(byte_count)
+  return "frame-bytes=" .. tostring(tonumber(byte_count) or 0)
 end
 
 -- Split an https:// hub URL into host, port, and signalr base path.
@@ -98,6 +96,7 @@ function FloLogic.new_session(opts)
     _random_mask = opts.random_mask,
     _log = opts.log or function() end,
     _log_warn = opts.log_warn or function() end,
+    _now = opts.now or os.time,
     _tcp = nil,
     _dispatcher = nil,
     _ws_parser = nil,
@@ -489,7 +488,7 @@ function FloLogic.new_session(opts)
         -- frames; only transport-level failures abort the session.
         if msg == "undecodable SignalR frame" or msg == "bad-event" then
           if self._trace_events and detail ~= nil then
-            self._log_warn("undecodable hub frame: " .. scrub_log_text(detail, 160))
+            self._log_warn("undecodable hub frame (" .. describe_frame_bytes(detail) .. ")")
           else
             self._log_debug("ignoring " .. msg)
           end
@@ -618,7 +617,18 @@ function FloLogic.new_session(opts)
   -- So the event is only the fast path: inventory verification races it,
   -- and any post-invoke row showing the requested fields counts as
   -- success. Failure needs BOTH the event timeout AND no confirmation.
-  function self.send_command(hub_url, selected, fields, cb)
+  --
+  -- Optional opts (split cloud driver): { expected_uuid, deadline }.
+  -- expected_uuid pins the command to the immutable identity that
+  -- authorized it: the freshly fetched command-session row must carry it,
+  -- or the command fails WITHOUT transmitting — a replaced valve must
+  -- never receive another valve's queued write. deadline is an absolute
+  -- os.time() budget covering session preparation AND transmission: the
+  -- irreversible request is checked against it immediately before it is
+  -- sent, so preparation can never spend the companion's response window
+  -- and still transmit. Pre-transmit expiry fails "expired" (nothing
+  -- sent); post-transmit timeouts keep their uncertain-outcome errors.
+  function self.send_command(hub_url, selected, fields, cb, opts)
     local function fail(err)
       self._finish(err, nil, cb)
     end
@@ -626,9 +636,19 @@ function FloLogic.new_session(opts)
       fail("select-valve")
       return
     end
+    opts = opts or {}
+    local expected_uuid = opts.expected_uuid
+    if expected_uuid ~= nil then
+      expected_uuid = tostring(expected_uuid)
+    end
+    local deadline = tonumber(opts.deadline)
     self._trace_events = true
     self._connect(hub_url, function(user, devices)
       self._ensure_valve(user, devices, selected, function(valve)
+        if expected_uuid ~= nil and tostring(valve.uuid or "") ~= expected_uuid then
+          fail("identity-changed")
+          return
+        end
         local command = {
           active = true,
           created = os.date("!%Y-%m-%dT%H:%M:%SZ"),
@@ -674,7 +694,13 @@ function FloLogic.new_session(opts)
           end
           for _, row in ipairs(self._devices) do
             if type(row) == "table" then
-              if tostring(row.id) == tostring(valve.id) then
+              -- A pushed merge may replace this id's row mid-command: a
+              -- row carrying a DIFFERENT known uuid is a different
+              -- physical valve and must never confirm this command. Rows
+              -- without a uuid cannot disprove identity, so they still
+              -- match by id (partial pushes carry no uuid).
+              local uuid_ok = valve.uuid == nil or row.uuid == nil or tostring(row.uuid) == tostring(valve.uuid)
+              if tostring(row.id) == tostring(valve.id) and uuid_ok then
                 return row
               end
               if valve.uuid ~= nil and row.uuid == valve.uuid then
@@ -728,6 +754,14 @@ function FloLogic.new_session(opts)
         end, function(err)
           self._finish(err, nil, cb)
         end)
+        -- Absolute transmit deadline, checked immediately before the
+        -- irreversible request: session preparation (negotiate, upgrade,
+        -- login, inventory) consumes the same budget the queue granted.
+        if deadline ~= nil and self._now() >= deadline then
+          self._log_warn("command expired during session preparation; never transmitted")
+          self._finish("expired", nil, cb)
+          return
+        end
         self._log_warn("invoke RequestStateChange")
         if not self._invoke("RequestStateChange", { user, valve, command }) then
           self._finish("ws:send-failed", nil, cb)

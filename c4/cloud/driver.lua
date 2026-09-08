@@ -870,12 +870,11 @@ function SignalR.new_dispatcher(opts)
         if ok then
           handle_frame(frame)
         elseif self._on_error ~= nil then
-          -- Second arg carries a truncated, single-line copy for traced
-          -- sessions; the message string itself is unchanged for
-          -- existing matchers. Control bytes are blanked so a hostile
-          -- frame cannot inject fake log lines.
-          local snippet = raw:sub(1, 160):gsub("[%c]", " ")
-          self._on_error("undecodable SignalR frame", snippet)
+          -- Second arg carries the frame's byte LENGTH only, never its
+          -- bytes: no payload excerpt may reach the log, redacted or
+          -- otherwise. The message string itself is unchanged for
+          -- existing matchers.
+          self._on_error("undecodable SignalR frame", #raw)
         end
       end
     end
@@ -1222,14 +1221,12 @@ local function pct_encode(text)
   end)
 end
 
--- Scrub hub-supplied text for logs: single-line and bounded, so a
--- hostile frame cannot inject fake log lines or flood the log.
-local function scrub_log_text(value, max_len)
-  local text = tostring(value or ""):gsub("[%c]", " ")
-  if #text > max_len then
-    text = text:sub(1, max_len) .. "..."
-  end
-  return text
+-- Describe a hub frame for logs by shape only (the byte length the
+-- dispatcher reports), never by content: redacting control bytes stops
+-- log injection but a payload excerpt can still leak whatever the
+-- frame carried.
+local function describe_frame_bytes(byte_count)
+  return "frame-bytes=" .. tostring(tonumber(byte_count) or 0)
 end
 
 -- Split an https:// hub URL into host, port, and signalr base path.
@@ -1301,6 +1298,7 @@ function FloLogic.new_session(opts)
     _random_mask = opts.random_mask,
     _log = opts.log or function() end,
     _log_warn = opts.log_warn or function() end,
+    _now = opts.now or os.time,
     _tcp = nil,
     _dispatcher = nil,
     _ws_parser = nil,
@@ -1692,7 +1690,7 @@ function FloLogic.new_session(opts)
         -- frames; only transport-level failures abort the session.
         if msg == "undecodable SignalR frame" or msg == "bad-event" then
           if self._trace_events and detail ~= nil then
-            self._log_warn("undecodable hub frame: " .. scrub_log_text(detail, 160))
+            self._log_warn("undecodable hub frame (" .. describe_frame_bytes(detail) .. ")")
           else
             self._log_debug("ignoring " .. msg)
           end
@@ -1821,7 +1819,18 @@ function FloLogic.new_session(opts)
   -- So the event is only the fast path: inventory verification races it,
   -- and any post-invoke row showing the requested fields counts as
   -- success. Failure needs BOTH the event timeout AND no confirmation.
-  function self.send_command(hub_url, selected, fields, cb)
+  --
+  -- Optional opts (split cloud driver): { expected_uuid, deadline }.
+  -- expected_uuid pins the command to the immutable identity that
+  -- authorized it: the freshly fetched command-session row must carry it,
+  -- or the command fails WITHOUT transmitting — a replaced valve must
+  -- never receive another valve's queued write. deadline is an absolute
+  -- os.time() budget covering session preparation AND transmission: the
+  -- irreversible request is checked against it immediately before it is
+  -- sent, so preparation can never spend the companion's response window
+  -- and still transmit. Pre-transmit expiry fails "expired" (nothing
+  -- sent); post-transmit timeouts keep their uncertain-outcome errors.
+  function self.send_command(hub_url, selected, fields, cb, opts)
     local function fail(err)
       self._finish(err, nil, cb)
     end
@@ -1829,9 +1838,19 @@ function FloLogic.new_session(opts)
       fail("select-valve")
       return
     end
+    opts = opts or {}
+    local expected_uuid = opts.expected_uuid
+    if expected_uuid ~= nil then
+      expected_uuid = tostring(expected_uuid)
+    end
+    local deadline = tonumber(opts.deadline)
     self._trace_events = true
     self._connect(hub_url, function(user, devices)
       self._ensure_valve(user, devices, selected, function(valve)
+        if expected_uuid ~= nil and tostring(valve.uuid or "") ~= expected_uuid then
+          fail("identity-changed")
+          return
+        end
         local command = {
           active = true,
           created = os.date("!%Y-%m-%dT%H:%M:%SZ"),
@@ -1877,7 +1896,13 @@ function FloLogic.new_session(opts)
           end
           for _, row in ipairs(self._devices) do
             if type(row) == "table" then
-              if tostring(row.id) == tostring(valve.id) then
+              -- A pushed merge may replace this id's row mid-command: a
+              -- row carrying a DIFFERENT known uuid is a different
+              -- physical valve and must never confirm this command. Rows
+              -- without a uuid cannot disprove identity, so they still
+              -- match by id (partial pushes carry no uuid).
+              local uuid_ok = valve.uuid == nil or row.uuid == nil or tostring(row.uuid) == tostring(valve.uuid)
+              if tostring(row.id) == tostring(valve.id) and uuid_ok then
                 return row
               end
               if valve.uuid ~= nil and row.uuid == valve.uuid then
@@ -1931,6 +1956,14 @@ function FloLogic.new_session(opts)
         end, function(err)
           self._finish(err, nil, cb)
         end)
+        -- Absolute transmit deadline, checked immediately before the
+        -- irreversible request: session preparation (negotiate, upgrade,
+        -- login, inventory) consumes the same budget the queue granted.
+        if deadline ~= nil and self._now() >= deadline then
+          self._log_warn("command expired during session preparation; never transmitted")
+          self._finish("expired", nil, cb)
+          return
+        end
         self._log_warn("invoke RequestStateChange")
         if not self._invoke("RequestStateChange", { user, valve, command }) then
           self._finish("ws:send-failed", nil, cb)
@@ -2123,18 +2156,25 @@ end
 --- A cancellable install operation; callbacks never run after cancel/reload.
 --- Downloads the latest C4 asset (screened by exact byte size plus an
 --- archive-prefix check before any file is touched), stages it in the C4Z
---- file store via a validated separate candidate (never deleting the
---- installed package first), and triggers Composer to install it by name.
---- force skips the version compare, so it can reinstall the same build or
---- even an older one; that is the intended recovery semantic.
+--- file store via a validated separate candidate, replaces the installed
+--- package by move with a backup (a known-good package survives every
+--- step; any failure rolls back before reporting), and triggers Composer
+--- to install it by name. Without a file move the installed package
+--- cannot be preserved through replacement, so installs refuse before
+--- touching anything. force skips the version compare, so it can
+--- reinstall the same build or even an older one; that is the intended
+--- recovery semantic.
 --- opts.http_get(url, headers, cb) has cb(err, body, code, headers_or_nil)
 --- and returns a cancel function. opts.soap_send(packet, cb(err)) likewise.
 --- File callbacks: get_installed() -> bool, file_set_dir(alias) -> ok,
 --- file_exists(name) -> bool, file_delete(name), file_write(name, data),
---- file_size(name) -> bytes or nil, file_read(name, count) -> string or nil.
+--- file_size(name) -> bytes or nil, file_read(name, count) -> string or nil,
+--- file_move(from_name, to_name) -> bool (same store; REQUIRED).
 --- File callbacks must not throw; the Director adapter wraps every C4 file
---- call in pcall and converts denials to false/nil. opts.log_warn(msg)
---- traces download/stage/trigger milestones to the Lua log (default noop).
+--- call in pcall and converts denials to false/nil. Every replacement
+--- step is verified by filesystem state (existence + size), never by the
+--- move call's return alone. opts.log_warn(msg) traces
+--- download/stage/trigger milestones to the Lua log (default noop).
 --- on_result(err, outcome) has outcome
 --- { attempted = version|nil, latest = version|nil, skipped = reason|nil }.
 function FloUpdate.new_install(opts)
@@ -2302,6 +2342,19 @@ function FloUpdate.new_install(opts)
   end
   local function stage(filename, body, cb)
     arm(30000, "Install staging timed out")
+    -- Without a file move the installed package cannot be preserved
+    -- through replacement (delete + rewrite strands the controller when
+    -- the rewrite fails). Refuse BEFORE touching anything, with explicit
+    -- manual-update guidance: a self-update that can strand the
+    -- controller without a driver is worse than no self-update.
+    if opts.file_move == nil then
+      finish(
+        "This controller cannot replace the package safely (no file move); download "
+          .. filename
+          .. " from the GitHub release and update the driver in Composer"
+      )
+      return
+    end
     -- Switch stores BEFORE touching anything: on denial the installed
     -- file stays intact and no install is triggered.
     progress("Staging " .. filename .. " (" .. #body .. " bytes)")
@@ -2310,19 +2363,28 @@ function FloUpdate.new_install(opts)
       finish("File store " .. FloUpdate.C4Z_ROOT .. " denied; installed driver left intact")
       return
     end
-    -- Validate a SEPARATE candidate before replacing the installed
-    -- package: the installed file is deleted only after the candidate
-    -- verifies, so a failed write or invalid download can never strand
-    -- the controller without a known-good package. No rename API
-    -- exists, so the verified bytes are rewritten from memory — the
-    -- exact download, never a marshalling-mangled read-back. (The zip's
-    -- inner manifest cannot be checked on-Director: no unzip API, and
-    -- binary reads mangle bytes. Identity is established instead by the
-    -- exact asset URL + family match at selection, the exact byte size
-    -- at download, and the archive prefix + size round-trip here.)
     local candidate = filename .. ".new"
+    local backup = filename .. ".bak"
+    if not opts.file_exists(filename) and opts.file_exists(backup) then
+      -- A previous run died between backup and replacement: the store
+      -- holds a known-good backup but no installed file. Restore it
+      -- best-effort before doing anything else; the install proceeds
+      -- from the candidate either way.
+      log_warn("update stage: restoring interrupted backup " .. backup)
+      opts.file_move(backup, filename)
+    end
+    -- Validate a SEPARATE candidate before replacing the installed
+    -- package, so a failed write or invalid download can never strand
+    -- the controller without a known-good package. (The zip's inner
+    -- manifest cannot be checked on-Director: no unzip API, and binary
+    -- reads mangle bytes. Identity is established instead by the exact
+    -- asset URL + family match at selection, the exact byte size at
+    -- download, and the archive prefix + size round-trip here.)
     if opts.file_exists(candidate) then
       opts.file_delete(candidate)
+    end
+    if opts.file_exists(backup) then
+      opts.file_delete(backup)
     end
     opts.file_write(candidate, body)
     -- Never trust the write call: verify by on-disk SIZE (a number), not
@@ -2344,25 +2406,79 @@ function FloUpdate.new_install(opts)
       return
     end
     log_warn("update stage: candidate verified (" .. #body .. " bytes, zip magic ok)")
-    -- Candidate verified: replace the installed package. The only
-    -- remaining failure window is this rewrite itself failing after an
-    -- identical write succeeded seconds ago.
-    if opts.file_exists(filename) then
-      opts.file_delete(filename)
+    -- Candidate verified: replace by move with a backup, verifying each
+    -- step by filesystem state. A known-good package survives every
+    -- step: installed -> backup, candidate -> installed, verify, then
+    -- drop the backup. Any failure rolls back before reporting, and
+    -- every report states only what the filesystem proves.
+    local had_installed = opts.file_exists(filename)
+    local old_size = nil
+    local function installed_ok()
+      if not opts.file_exists(filename) then
+        return false
+      end
+      return old_size == nil or opts.file_size(filename) == old_size
     end
-    opts.file_write(filename, body)
-    if opts.file_size(filename) ~= #body then
-      finish("Installed package rewrite failed; stored package may be missing or incomplete; restore using Composer")
+    -- Roll a failed replacement back to the previous driver when one
+    -- existed; without one, remove any torn file so a later run (or
+    -- Composer) never mistakes it for a package. Reports only what the
+    -- filesystem proves.
+    local function roll_back(why)
+      if had_installed then
+        log_warn("update stage: replacement failed (" .. why .. "); rolling back " .. backup)
+        opts.file_move(backup, filename)
+        if installed_ok() then
+          finish("Installed package replacement failed (" .. why .. "); rolled back to the previous driver")
+        else
+          finish(
+            "Installed package replacement AND rollback failed; stored package may be missing or incomplete; restore using Composer"
+          )
+        end
+      else
+        opts.file_delete(filename)
+        finish(
+          "Installed package replacement failed (" .. why .. ") and no previous driver exists; restore using Composer"
+        )
+      end
+    end
+    if had_installed then
+      old_size = opts.file_size(filename)
+      local backup_made = opts.file_move(filename, backup)
+        and opts.file_exists(backup)
+        and (old_size == nil or opts.file_size(backup) == old_size)
+      if not backup_made then
+        opts.file_delete(candidate)
+        if installed_ok() then
+          -- Clean failure: the move preserved nothing but destroyed
+          -- nothing either; the installed file still verifies.
+          finish("Installed package backup failed; installed driver left intact")
+        else
+          -- The move destroyed without preserving: roll back whatever
+          -- the backup holds, then report only what verifies.
+          log_warn("update stage: backup failed; rolling back " .. backup)
+          opts.file_move(backup, filename)
+          if installed_ok() then
+            finish("Installed package backup failed; rolled back to the previous driver")
+          else
+            finish("Installed package backup failed and the stored package is unverifiable; restore using Composer")
+          end
+        end
+        return
+      end
+      log_warn("update stage: backup staged (" .. tostring(old_size) .. " bytes)")
+    end
+    if not opts.file_move(candidate, filename) or opts.file_size(filename) ~= #body then
+      -- The candidate is kept for forensics alongside the failure report.
+      roll_back("move failed")
       return
     end
     local installed_head = opts.file_read(filename, 4)
     if type(installed_head) ~= "string" or installed_head:sub(1, 2) ~= "PK" then
-      finish(
-        "Installed package rewrite failed verification; stored package may be missing or incomplete; restore using Composer"
-      )
+      roll_back("verification failed")
       return
     end
     opts.file_delete(candidate)
+    opts.file_delete(backup)
     log_warn("update stage: " .. filename .. " verified (" .. #body .. " bytes, zip magic ok)")
     cb()
   end
@@ -2445,6 +2561,22 @@ end
 --   FLOGIC_ERROR human-readable nack reason for FLOGIC_CMD_NACK, or the
 --                unavailability reason for FLOGIC_UNAVAILABLE (whose body
 --                is the raw valve id, like FLOGIC_IDENTITY)
+--   FLOGIC_SEQ   optional per-slot ordering sequence on FLOGIC_STATE and
+--                FLOGIC_UNAVAILABLE: duplicate and out-of-order deliveries
+--                must not renew freshness or revoke newer availability info
+--   FLOGIC_EPOCH optional cloud boot generation beside FLOGIC_SEQ, so a
+--                cloud restart (which restarts numbering) never compares
+--                against the previous boot's sequences
+--   FLOGIC_FRESH optional freshness budget in seconds on FLOGIC_STATE: how
+--                long the snapshot stays current, from the cloud's
+--                configured poll cadence (never inferred from traffic)
+--
+-- The SEQ/EPOCH/FRESH keys are plain top-level envelope keys, so older
+-- peers ignore them (like FLOGIC_FROM) and keep legacy semantics: no
+-- protocol version bump, mixed versions still link with graceful
+-- degradation. New state BODY fields would break old peers instead — the
+-- body validator rejects unknown fields — so ordering/freshness metadata
+-- lives on the envelope, never in the body.
 --
 -- Digest fallback: a full valve_state body always fits the budget in
 -- practice (see flologic_link.md for the measured worst case), but a
@@ -2493,6 +2625,9 @@ FloLogicLink.K_HASH = "FLOGIC_HASH"
 FloLogicLink.K_CMD = "FLOGIC_CMD"
 FloLogicLink.K_TRUNC = "FLOGIC_TRUNC"
 FloLogicLink.K_ERROR = "FLOGIC_ERROR"
+FloLogicLink.K_SEQ = "FLOGIC_SEQ"
+FloLogicLink.K_EPOCH = "FLOGIC_EPOCH"
+FloLogicLink.K_FRESH = "FLOGIC_FRESH"
 
 -- Budgets and field caps. MAX_BODY_BYTES is the BindMessage-safe budget a
 -- full valve_state body must fit; anything larger degrades to a digest.
@@ -2960,6 +3095,63 @@ local function check_valve_id(valve_id)
   return valve_id
 end
 
+-- Optional ordering/freshness metadata (see the wire-form note above).
+-- Values are non-negative integer strings; anything else is ignored on
+-- receipt (legacy semantics), never fatal: these keys advise ordering,
+-- they authorize nothing.
+local function is_seq_int(value)
+  return type(value) == "number" and is_finite_number(value) and value % 1 == 0 and value >= 0
+end
+
+local function parse_seq_key(raw)
+  if type(raw) == "number" then
+    if is_seq_int(raw) then
+      return raw
+    end
+    return nil
+  end
+  if type(raw) ~= "string" or raw:match("^%d+$") == nil then
+    return nil
+  end
+  -- A digit string can still overflow to inf: only finite values order.
+  local n = tonumber(raw)
+  if not is_seq_int(n) then
+    return nil
+  end
+  return n
+end
+
+-- Stamp a cloud->valve envelope with ordering/freshness metadata.
+-- extra = { seq = n, epoch = n, fresh_s = n }, all optional; malformed
+-- values fail the build loudly (caller bug) rather than emitting a lie.
+local function stamp_envelope(env, extra, allow_fresh)
+  if extra == nil then
+    return true
+  end
+  if type(extra) ~= "table" then
+    return nil, "bad-extra"
+  end
+  if extra.seq ~= nil then
+    if not is_seq_int(extra.seq) then
+      return nil, "bad-seq"
+    end
+    env[FloLogicLink.K_SEQ] = tostring(extra.seq)
+  end
+  if extra.epoch ~= nil then
+    if not is_seq_int(extra.epoch) then
+      return nil, "bad-epoch"
+    end
+    env[FloLogicLink.K_EPOCH] = tostring(extra.epoch)
+  end
+  if extra.fresh_s ~= nil then
+    if not allow_fresh or not is_seq_int(extra.fresh_s) or extra.fresh_s <= 0 then
+      return nil, "bad-fresh"
+    end
+    env[FloLogicLink.K_FRESH] = tostring(extra.fresh_s)
+  end
+  return true
+end
+
 -- Valve->cloud: handshake opener sent on every bind (D3). The persisted id
 -- is never trusted across binds, so hello carries no identity claim.
 function FloLogicLink.build_hello()
@@ -3027,13 +3219,19 @@ end
 -- Cloud->valve: per-valve snapshot slice plus access flags. Oversized
 -- bodies degrade to a digest-only envelope instead of failing: TRUNC is
 -- set, BODY is empty, and HASH identifies the unseen full body.
-function FloLogicLink.build_state(state)
+-- Optional extra = { seq, epoch, fresh_s } orders the snapshot against
+-- siblings and advertises its freshness budget (see above).
+function FloLogicLink.build_state(state, extra)
   local body, err = FloLogicLink.build_state_body(state)
   if body == nil then
     return nil, err
   end
   local env = base_envelope(FloLogicLink.MSG_STATE)
   env[FloLogicLink.K_HASH] = FloLogicLink.digest(body)
+  local ok, extra_err = stamp_envelope(env, extra, true)
+  if not ok then
+    return nil, extra_err
+  end
   if #body > FloLogicLink.MAX_BODY_BYTES then
     env[FloLogicLink.K_BODY] = ""
     env[FloLogicLink.K_TRUNC] = "1"
@@ -3057,7 +3255,9 @@ end
 -- Cloud->valve: the slot's valve left the account or failed identity
 -- verification. Carries the valve id plus a short reason; the companion
 -- stops claiming current knowledge until a new identity + slice arrive.
-function FloLogicLink.build_unavailable(valve_id, reason)
+-- Optional extra = { seq, epoch } orders the notice against snapshots so
+-- a delayed duplicate can never revoke newer availability information.
+function FloLogicLink.build_unavailable(valve_id, reason, extra)
   local id, err = check_valve_id(valve_id)
   if id == nil then
     return nil, err
@@ -3066,6 +3266,10 @@ function FloLogicLink.build_unavailable(valve_id, reason)
     return nil, "bad-reason"
   end
   local env = base_envelope(FloLogicLink.MSG_UNAVAILABLE)
+  local ok, extra_err = stamp_envelope(env, extra, false)
+  if not ok then
+    return nil, extra_err
+  end
   env[FloLogicLink.K_BODY] = id
   env[FloLogicLink.K_ERROR] = reason
   return env
@@ -3090,9 +3294,11 @@ end
 -- --- Envelope parser. ---
 -- Validates a received params table and returns a message table:
 --   { version, msg, cmd_id, body, hash, truncated, error_reason,
---     valve_id, fields }
+--     valve_id, fields, seq, epoch, fresh_s }
 -- absent slots stay nil. Digest-only state parses to truncated=true with
--- fields=nil. Returns nil plus one of: envelope-not-table,
+-- fields=nil. Malformed SEQ/EPOCH/FRESH keys parse to nil (legacy
+-- semantics), never to an error: they advise ordering, they authorize
+-- nothing. Returns nil plus one of: envelope-not-table,
 -- version-mismatch, unknown-message, body-not-string, oversize-body,
 -- bad-valve-id, bad-cmd-id, bad-reason, bad-action, bad-param-value:<key>,
 -- digest-missing, hash-mismatch, or any decode_fields / state-field error.
@@ -3128,7 +3334,13 @@ function FloLogicLink.parse(params)
     error_reason = nil,
     valve_id = nil,
     fields = nil,
+    seq = parse_seq_key(params[FloLogicLink.K_SEQ]),
+    epoch = parse_seq_key(params[FloLogicLink.K_EPOCH]),
+    fresh_s = parse_seq_key(params[FloLogicLink.K_FRESH]),
   }
+  if out.fresh_s == 0 then
+    out.fresh_s = nil
+  end
   if out.hash ~= nil and type(out.hash) ~= "string" then
     return nil, "bad-hash"
   end
@@ -3238,7 +3450,7 @@ end
 -- favor of the slot->valve identity map below. Lua 5.1 safe.
 -- ============================================================================
 
-FLOCLOUD_DRIVER_VERSION = "2026090810"
+FLOCLOUD_DRIVER_VERSION = "2026090811"
 print("[flologic-cloud] Lua loaded: " .. FLOCLOUD_DRIVER_VERSION)
 
 FLOCLOUD_DEFAULT_HUB = "https://hub-cloudapps-prod.azurewebsites.net"
@@ -3257,8 +3469,21 @@ FLOCLOUD_REFRESH_POLL_MIN_S = 30
 -- A queued command must start transmitting within this window or it is
 -- NACKed "expired" and never sent. The companion settles its own request
 -- at 120s, so the transmit deadline stays inside that window with margin
--- for execution and ack transit.
+-- for execution and ack transit. The deadline is absolute from enqueue:
+-- the command session enforces it immediately before the irreversible
+-- request, so preparation (negotiate, upgrade, login, inventory) can
+-- never spend the companion's window and still transmit.
 FLOCLOUD_COMMAND_DEADLINE_S = 90
+-- Freshness budget advertised on every snapshot: the configured poll
+-- cadence times the multiple, plus one worst-case session, clamped to
+-- the floor. The companion must not infer cadence from traffic (a
+-- duplicate reply or a recovery gap would teach it a lie), so the
+-- cloud — the only side that knows the poll interval — states the
+-- budget outright. SESSION_SLOP_S covers one slow poll session; the max
+-- poll interval (3600s) bounds the top end implicitly.
+FLOCLOUD_FRESH_MULTIPLE = 3
+FLOCLOUD_FRESH_SESSION_SLOP_S = 180
+FLOCLOUD_FRESH_FLOOR_S = 300
 
 -- Dynamic CONTROL provider slots (plan D2): one per valve, lowest free id
 -- reused, 16-valve cap. Never declared in driver.xml: Composer indexes
@@ -3293,6 +3518,7 @@ FLOCLOUD_EV_CONN_RESTORED = "Connection Restored"
 FLOCLOUD_PERSIST_SLOTS = "flocloud_slots"
 FLOCLOUD_PERSIST_RELOG = "flocloud_relog"
 FLOCLOUD_PERSIST_VERSION = "flocloud_last_version"
+FLOCLOUD_PERSIST_EPOCH = "flocloud_link_epoch"
 
 -- Test seams (globals so the suite can inject scripted peers). Production
 -- leaves both nil, which selects the real FloLogic transports below.
@@ -3375,6 +3601,8 @@ local function flocloud_fresh_state()
     valve_slots = {},
     identity = {},
     last_slices = {},
+    slice_seq = {}, -- [slot] last ordering sequence pushed (cache replays reuse it)
+    link_epoch = flocloud_state and flocloud_state.link_epoch or 0,
     last_devices = nil,
     refresh_poll_at = nil,
     poll_overdue = false,
@@ -3681,6 +3909,9 @@ end
 -- Adapted from c4/src/main.lua (attribution); the asset and lookup keys are
 -- the cloud package, not the monolith one.
 
+-- The store file_set_dir selected: file_move stays within it.
+local flocloud_file_store = "C4Z"
+
 local function flocloud_file_set_dir(alias)
   -- C4Z_ROOT follows the proflame pattern but is not in the published
   -- alias list; C4Z (the driver's own package directory) is. Try the
@@ -3694,11 +3925,27 @@ local function flocloud_file_set_dir(alias)
       C4:FileSetDir(candidate)
     end)
     if ok then
+      flocloud_file_store = candidate
       flocloud_log_warn("update file store: " .. candidate)
       return true
     end
   end
   return false
+end
+
+local function flocloud_file_move(from_name, to_name)
+  -- C4:FileMove(alias, from, alias, to) is documented from OS 3.3.0 with
+  -- C4Z among the allowed aliases; the cloud driver requires 3.3.0+.
+  -- Only the pcall status is reported — FileMove's own return
+  -- convention is undocumented, so the updater verifies every step by
+  -- filesystem state (existence + size) instead of trusting this bit.
+  if C4.FileMove == nil then
+    return false
+  end
+  local ok = pcall(function()
+    C4:FileMove(flocloud_file_store, from_name, flocloud_file_store, to_name)
+  end)
+  return ok
 end
 
 local function flocloud_file_exists(name)
@@ -3808,7 +4055,10 @@ local function flocloud_ensure_soap_binding()
   return id
 end
 
-local function flocloud_soap_send(packet, cb)
+-- Global so the lifecycle tests can drive the real adapter (bind +
+-- entry-point dispatch) instead of only the shared updater's injected
+-- soap_send fake.
+function flocloud_soap_send(packet, cb)
   local settled = false
   local owner = flocloud_state
   local binding, err = flocloud_ensure_soap_binding()
@@ -3831,26 +4081,43 @@ local function flocloud_soap_send(packet, cb)
   end
   -- Neither receipt of bytes nor connection closure confirms installation.
   -- The caller must report the result as unconfirmed; only the loaded driver
-  -- can establish its running version.
+  -- can establish its running version. Transmission itself IS tracked:
+  -- grace expiry (or a close, or stray bytes) before the packet was
+  -- handed to the transport reports a connection failure, never a sent
+  -- trigger.
   local opened = false
+  local sent = false
   local grace = flocloud_set_timer(3000, function()
-    finish(nil)
+    if sent then
+      finish(nil)
+    else
+      finish("cannot reach Composer endpoint")
+    end
   end, false)
   owner.soap_callbacks = {
     on_data = function()
-      finish(nil)
+      if sent then
+        finish(nil)
+      else
+        finish("cannot reach Composer endpoint")
+      end
     end,
     on_open = function()
       opened = true
-      local sent = pcall(function()
+      -- Handover starts at the call (the transport queues/copies the
+      -- packet then), so mark sent BEFORE it: a transport that answers
+      -- synchronously must still observe a transmitted trigger.
+      sent = true
+      local ok = pcall(function()
         C4:SendToNetwork(binding, FloUpdate.SOAP_PORT, packet)
       end)
-      if not sent then
+      if not ok then
+        sent = false
         finish("cannot reach Composer endpoint")
       end
     end,
     on_close = function()
-      if opened then
+      if opened and sent then
         finish(nil)
       else
         finish("cannot reach Composer endpoint")
@@ -3910,6 +4177,7 @@ local function flocloud_install_update(force)
     file_write = flocloud_file_write,
     file_size = flocloud_file_size,
     file_read = flocloud_file_read,
+    file_move = flocloud_file_move,
     log_warn = flocloud_log_warn,
     soap_send = flocloud_soap_send,
     force = force,
@@ -4073,6 +4341,31 @@ local function flocloud_hub_url()
   return url
 end
 
+local function flocloud_poll_interval_s()
+  local seconds = tonumber(flocloud_prop(FLOCLOUD_PROP_POLL)) or 60
+  if seconds ~= seconds then
+    seconds = 60
+  end
+  if seconds < FLOCLOUD_MIN_POLL_SECONDS then
+    seconds = FLOCLOUD_MIN_POLL_SECONDS
+  elseif seconds > FLOCLOUD_MAX_POLL_SECONDS then
+    seconds = FLOCLOUD_MAX_POLL_SECONDS
+  end
+  return seconds
+end
+
+-- Freshness budget advertised on every snapshot: three configured poll
+-- intervals plus one worst-case session, never below the floor. The
+-- companion's watchdog runs on this — never on spacing it infers from
+-- traffic, which duplicates and recovery gaps would corrupt.
+local function flocloud_fresh_budget()
+  local budget = flocloud_poll_interval_s() * FLOCLOUD_FRESH_MULTIPLE + FLOCLOUD_FRESH_SESSION_SLOP_S
+  if budget < FLOCLOUD_FRESH_FLOOR_S then
+    budget = FLOCLOUD_FRESH_FLOOR_S
+  end
+  return budget
+end
+
 -- --- Per-valve identity and slot map ---------------------------------------
 -- Each slot binds to one valve id (the "index"). The location hash
 -- binds that slot to the valve's stable cloud identity (id + uuid) so a
@@ -4100,6 +4393,15 @@ end
 
 function flocloud_identity_hash(valve_id, uuid)
   return FloLogicLink.digest(tostring(valve_id) .. "|" .. tostring(uuid or ""))
+end
+
+-- Account/endpoint scope of the current configuration. Identity records
+-- carry the scope they were verified under; two ID-only records (no
+-- uuid on either side) from DIFFERENT scopes are never equated — a
+-- numeric id is only stable within one account on one endpoint. The
+-- digest is persisted, never the credentials.
+function flocloud_config_scope()
+  return FloLogicLink.digest(flocloud_prop(FLOCLOUD_PROP_EMAIL) .. "|" .. flocloud_hub_url())
 end
 
 local function flocloud_sorted_slots()
@@ -4135,17 +4437,19 @@ function flocloud_find_free_slot()
   return flocloud_find_free_slot_except(nil)
 end
 
-local function flocloud_remember_slot(slot, valve_id, name, uuid, available)
+local function flocloud_remember_slot(slot, valve_id, name, uuid, available, scope)
   local st = flocloud_state
   local previous = st.slots[slot]
-  if previous ~= nil and previous.valve_id ~= valve_id then
-    -- Slot reuse: drop the previous valve's reverse mapping and cached
-    -- slice so neither fallback attribution nor stale pushes can leak
-    -- across valves.
+  if previous ~= nil and (previous.valve_id ~= valve_id or previous.uuid ~= uuid) then
+    -- Slot reuse (or same-id replacement): drop the previous valve's
+    -- reverse mapping, cached slice, and ordering sequence so neither
+    -- fallback attribution nor stale pushes can leak across physical
+    -- valves. A stale cached slice must never replay for the new valve.
     if st.valve_slots[previous.valve_id] == slot then
       st.valve_slots[previous.valve_id] = nil
     end
     st.last_slices[slot] = nil
+    st.slice_seq[slot] = nil
   end
   st.slots[slot] = {
     valve_id = valve_id,
@@ -4155,19 +4459,22 @@ local function flocloud_remember_slot(slot, valve_id, name, uuid, available)
     bound = st.slots[slot] and st.slots[slot].bound,
   }
   st.valve_slots[valve_id] = slot
-  st.identity[slot] = { valve_id = valve_id, key_hash = flocloud_identity_hash(valve_id, uuid) }
+  st.identity[slot] =
+    { valve_id = valve_id, key_hash = flocloud_identity_hash(valve_id, uuid), scope = scope or flocloud_config_scope() }
 end
 
 function flocloud_encode_slots()
   local list = {}
   for _, slot in ipairs(flocloud_sorted_slots()) do
     local entry = flocloud_state.slots[slot]
+    local ident = flocloud_state.identity[slot]
     list[#list + 1] = {
       slot = slot,
       valve_id = entry.valve_id,
       name = entry.name,
       uuid = entry.uuid,
       available = entry.available and true or false,
+      scope = ident ~= nil and ident.scope or nil,
     }
   end
   return JSON.encode(list)
@@ -4198,6 +4505,7 @@ function flocloud_decode_slots(text)
         name = tostring(row.name or valve_id),
         uuid = type(row.uuid) == "string" and row.uuid or nil,
         available = row.available ~= false,
+        scope = type(row.scope) == "string" and row.scope or nil,
       }
     end
   end
@@ -4237,16 +4545,20 @@ local function flocloud_restore_slots()
     if not ok then
       flocloud_log_warn("slot restore re-add failed for " .. tostring(row.slot) .. ": " .. tostring(add_err))
     end
-    flocloud_remember_slot(row.slot, row.valve_id, row.name, row.uuid, row.available)
+    flocloud_remember_slot(row.slot, row.valve_id, row.name, row.uuid, row.available, row.scope)
   end
   flocloud_persist_slots()
 end
 
--- Bound-consumer discovery for one slot. Returns an array of device ids, or
--- nil when Director cannot answer (the caller keeps the previous flag rather
--- than flapping on a transient error). Director answers a map of device-ID
--- keys to device-NAME values, so decode by key: ordinary names must never
--- be mistaken for ids, and a numeric name must never become an id.
+-- Bound-consumer discovery for one slot. Returns an array of device ids:
+-- EMPTY when the slot is observed unbound, or nil when Director cannot
+-- answer (the caller keeps the previous flag rather than flapping on a
+-- transient error). Director documents null as the SUCCESSFUL no-bindings
+-- result ("null if no bindings or a table of device id/device name
+-- pairs"), so a nil answer is observed-unbound — only a missing API or
+-- a raised error is indeterminate. Decode the map by key: ordinary names
+-- must never be mistaken for ids, and a numeric name must never become
+-- an id.
 local function flocloud_bound_consumers(slot)
   if C4.GetBoundConsumerDevices == nil then
     return nil
@@ -4254,8 +4566,11 @@ local function flocloud_bound_consumers(slot)
   local ok, found = pcall(function()
     return C4:GetBoundConsumerDevices(0, slot)
   end)
-  if not ok or found == nil then
+  if not ok then
     return nil
+  end
+  if found == nil then
+    return {}
   end
   local ids = {}
   if type(found) == "table" then
@@ -4289,10 +4604,11 @@ end
 
 -- A slot authorizes physical writes only after fresh inventory confirms
 -- its exact valve identity: the numeric id must be present AND its
--- immutable uuid must hash to the slot's authorized identity. Before the
--- first poll the restored map is unverified, so this returns false —
--- linking may still proceed (on_hello answers optimistically), but no
--- command executes from an unverified map.
+-- immutable uuid must hash to the slot's authorized identity, verified
+-- under the CURRENT account/endpoint scope. Before the first poll the
+-- restored map is unverified, so this returns false — linking may still
+-- proceed (on_hello answers optimistically), but no command executes
+-- from an unverified map.
 function flocloud_verify_slot(slot)
   local st = flocloud_state
   local entry = st.slots[slot]
@@ -4304,6 +4620,9 @@ function flocloud_verify_slot(slot)
   end
   local ident = st.identity[slot]
   if ident == nil or ident.valve_id ~= entry.valve_id then
+    return false
+  end
+  if ident.scope ~= flocloud_config_scope() then
     return false
   end
   local valves = FloModel.controllable_valves(st.last_devices)
@@ -4338,8 +4657,29 @@ function flocloud_send_to_slot(slot, envelope)
   return "device"
 end
 
-local function flocloud_push_slice(slot, slice)
-  local envelope, err = FloLogicLink.build_state(slice)
+-- Per-slot ordering: every NEW observation (poll fan-out) and every
+-- availability notice consumes the next sequence, so the companion can
+-- order snapshots against notices. Cache replays (hello/get_state)
+-- reuse the cached slice's sequence BY DESIGN — the companion drops a
+-- replay it already applied instead of letting it renew freshness or
+-- revoke a newer unavailable marking.
+local function flocloud_next_seq(slot)
+  local st = flocloud_state
+  st.slice_seq[slot] = (st.slice_seq[slot] or 0) + 1
+  return st.slice_seq[slot]
+end
+
+local function flocloud_push_slice(slot, slice, fresh)
+  local st = flocloud_state
+  local seq = st.slice_seq[slot]
+  if fresh then
+    seq = flocloud_next_seq(slot)
+  end
+  local extra = nil
+  if seq ~= nil then
+    extra = { seq = seq, epoch = st.link_epoch, fresh_s = flocloud_fresh_budget() }
+  end
+  local envelope, err = FloLogicLink.build_state(slice, extra)
   if envelope == nil then
     flocloud_log_warn("slot " .. tostring(slot) .. " slice rejected: " .. tostring(err))
     return false
@@ -4353,14 +4693,16 @@ end
 -- listener and are skipped; force bypasses that for a peer that just
 -- spoke (hello on a stale slot).
 local function flocloud_push_unavailable(slot, valve_id, reason, force)
-  local entry = flocloud_state.slots[slot]
+  local st = flocloud_state
+  local entry = st.slots[slot]
   if entry == nil then
     return false
   end
   if not force and entry.bound == false then
     return false
   end
-  local envelope, err = FloLogicLink.build_unavailable(valve_id, reason)
+  local envelope, err =
+    FloLogicLink.build_unavailable(valve_id, reason, { seq = flocloud_next_seq(slot), epoch = st.link_epoch })
   if envelope == nil then
     flocloud_log_warn("slot " .. tostring(slot) .. " unavailable build failed: " .. tostring(err))
     return false
@@ -4378,11 +4720,17 @@ local function flocloud_display_name(valve)
   return FloModel.valve_name(valve):gsub("[,\r\n]", " ")
 end
 
+-- Forward: quarantine (below) purges a slot's unsent work, but the nack
+-- primitive lives in the link-receive section further down.
+local flocloud_purge_slot_jobs
+
 -- Place one new valve on the first slot that can take it without
 -- endangering another valve's identity. Never-used slots take an add;
--- reuse candidates additionally require a live zero-consumer observation
--- plus a successful remove + re-add as one atomic step. A live consumer
--- or an indeterminate lookup vetoes that slot — the old identity is
+-- every OTHER candidate — a different valve's departed slot AND a
+-- quarantined same-id slot (whose binding still exists under the old
+-- identity) — requires a live zero-consumer observation plus a
+-- successful remove + re-add as one atomic step. A live consumer or an
+-- indeterminate lookup vetoes that slot — the old identity is
 -- preserved, the stale bound flag is refreshed, and the search continues
 -- on the next candidate instead of retargeting a live Composer link.
 local function flocloud_place_valve(id, valve)
@@ -4396,7 +4744,7 @@ local function flocloud_place_valve(id, valve)
       return false
     end
     local previous = st.slots[slot]
-    if previous == nil or previous.valve_id == id then
+    if previous == nil then
       local ok, add_err = pcall(flocloud_add_binding, slot, name)
       if ok then
         flocloud_remember_slot(slot, id, name, uuid, true)
@@ -4481,18 +4829,31 @@ function flocloud_reconcile_inventory(devices)
         entry.available = false
         missing = missing + 1
         flocloud_log_warn("valve " .. tostring(entry.valve_id) .. " left the account; slot " .. slot .. " unavailable")
+        flocloud_purge_slot_jobs(slot, "valve-unavailable")
         flocloud_push_unavailable(slot, entry.valve_id, "left-account")
       end
     else
       local uuid = type(valve.uuid) == "string" and valve.uuid or nil
       local ident = st.identity[slot]
       local want = flocloud_identity_hash(entry.valve_id, uuid)
-      if ident ~= nil and (ident.valve_id ~= entry.valve_id or ident.key_hash ~= want) then
+      local scope = flocloud_config_scope()
+      -- A numeric id is only stable within one account on one endpoint:
+      -- across a scope change, adoption requires the immutable uuid on
+      -- BOTH sides and equal. ID-only records across namespaces
+      -- quarantine — they cannot prove they are the same valve.
+      local scope_moved = ident ~= nil and ident.scope ~= scope
+      local uuid_proven = entry.uuid ~= nil and entry.uuid ~= "" and uuid ~= nil and uuid ~= "" and entry.uuid == uuid
+      if
+        (ident ~= nil and (ident.valve_id ~= entry.valve_id or ident.key_hash ~= want))
+        or (scope_moved and not uuid_proven)
+      then
         -- Same numeric id, different immutable identity: a different
         -- physical valve (replacement, account or endpoint change). Never
         -- silently adopt it — quarantine the slot and let the valve
         -- re-place as a newcomer, which forces explicit reassociation at
         -- the Composer layer. Warn once per conflict, not once per poll.
+        -- Already-admitted work for the old authorization is purged:
+        -- admission-time identity must never outlive a quarantine.
         if not entry.conflict then
           entry.conflict = true
           flocloud_log_warn(
@@ -4502,6 +4863,7 @@ function flocloud_reconcile_inventory(devices)
               .. tostring(entry.valve_id)
               .. ": uuid changed; slot quarantined, re-link the valve on its new slot"
           )
+          flocloud_purge_slot_jobs(slot, "identity-changed")
           flocloud_push_unavailable(slot, entry.valve_id, "identity-conflict")
         end
         entry.available = false
@@ -4515,7 +4877,7 @@ function flocloud_reconcile_inventory(devices)
         entry.available = true
         entry.name = flocloud_display_name(valve)
         entry.uuid = uuid
-        st.identity[slot] = { valve_id = entry.valve_id, key_hash = want }
+        st.identity[slot] = { valve_id = entry.valve_id, key_hash = want, scope = scope }
         kept = kept + 1
       end
     end
@@ -4631,7 +4993,7 @@ function flocloud_fanout(slices)
     local slice = slices[slot]
     if entry ~= nil and slice ~= nil and entry.available and entry.bound ~= false then
       st.last_slices[slot] = slice
-      flocloud_push_slice(slot, slice)
+      flocloud_push_slice(slot, slice, true)
     end
   end
 end
@@ -4704,6 +5066,32 @@ local function flocloud_nack(slot, cmd_id, reason)
     flocloud_send_to_slot(slot, envelope)
   else
     flocloud_log_warn("nack build failed for slot " .. tostring(slot) .. ": " .. tostring(reason))
+  end
+end
+
+-- Drop every unsent job for a slot whose authorization just died
+-- (valve left, identity conflicted): each valve still awaits its
+-- reply, so every dropped job is nacked — never silently discarded.
+-- Queued jobs are the only possible occupants (polls and commands run
+-- serially, so nothing executes while a poll quarantines), but the
+-- pending entries clear unconditionally so a late completion can never
+-- ack for a dead authorization.
+flocloud_purge_slot_jobs = function(slot, reason)
+  local st = flocloud_state
+  local queue = {}
+  local dropped = nil
+  for _, job in ipairs(st.command_queue) do
+    if job.slot == slot then
+      dropped = job.name
+      flocloud_nack(slot, job.cmd_id, reason)
+    else
+      queue[#queue + 1] = job
+    end
+  end
+  st.command_queue = queue
+  st.pending_commands[slot] = nil
+  if dropped ~= nil then
+    flocloud_set_prop("Last Command", dropped .. ": dropped (" .. reason .. ")")
   end
 end
 
@@ -4799,13 +5187,23 @@ local function flocloud_on_command(slot, env)
     flocloud_nack(slot, env.cmd_id, "queue-full")
     return false
   end
+  -- The job carries the authorization it was admitted under: the exact
+  -- immutable identity, the account/endpoint scope, and the absolute
+  -- transmit deadline. Admission alone never authorizes the write —
+  -- dequeue revalidates the slot, quarantine purges the queue, and the
+  -- command session compares its own freshly fetched row before the
+  -- irreversible request.
+  local now = os.time()
   st.command_queue[#st.command_queue + 1] = {
     cmd_id = env.cmd_id,
     slot = slot,
     valve_id = entry.valve_id,
+    expected_uuid = entry.uuid,
+    scope = flocloud_config_scope(),
     name = env.fields.action,
     fields = fields,
-    enqueued_at = os.time(),
+    enqueued_at = now,
+    deadline_at = now + FLOCLOUD_COMMAND_DEADLINE_S,
   }
   -- Pending liveness is namespaced per slot: valve cmd_ids are only
   -- unique per valve ("v<seq>-<time>"), so two valves commanding in the
@@ -4984,6 +5382,7 @@ local function flocloud_is_logical_error(err)
     or err == "select-valve"
     or err == "command-rejected"
     or err == "reserved-command-field"
+    or err == "identity-changed"
 end
 
 function flocloud_breaker_open(now)
@@ -5098,6 +5497,11 @@ local function flocloud_real_send(job, cb)
   local st = flocloud_state
   local session = flocloud_new_session()
   st.session = session
+  -- The session fetches its own inventory and selects by numeric id, so
+  -- it re-checks the job's expected identity against that fresh row and
+  -- enforces the absolute transmit deadline immediately before the
+  -- irreversible request. A replaced valve can therefore never receive
+  -- another valve's queued write, however stale the poll inventory is.
   session.send_command(flocloud_hub_url(), job.valve_id, job.fields, function(err)
     if st.session ~= session then
       return
@@ -5107,7 +5511,36 @@ local function flocloud_real_send(job, cb)
     st.busy = false
     session.cancel()
     cb(err)
-  end)
+  end, { expected_uuid = job.expected_uuid, deadline = job.deadline_at })
+end
+
+-- A queued job is live only while its slot still maps the same valve
+-- under the same scope AND fresh inventory still verifies it. Quarantine
+-- purges eagerly, but this dequeue check closes every path that admits
+-- first and changes second (including the overdue-poll path, which runs
+-- between two commands). Returns true, or false plus the nack reason.
+local function flocloud_job_live(job)
+  local entry = flocloud_state.slots[job.slot]
+  if entry == nil or not entry.available or entry.valve_id ~= job.valve_id then
+    return false, "valve-unavailable"
+  end
+  if job.scope ~= nil and job.scope ~= flocloud_config_scope() then
+    return false, "identity-changed"
+  end
+  if not flocloud_verify_slot(job.slot) then
+    return false, "identity-changed"
+  end
+  return true
+end
+
+local function flocloud_drop_job(job, reason, detail)
+  local st = flocloud_state
+  local slot_pending = st.pending_commands[job.slot]
+  if slot_pending ~= nil then
+    slot_pending[job.cmd_id] = nil
+  end
+  flocloud_set_prop("Last Command", job.name .. ": " .. detail)
+  flocloud_nack(job.slot, job.cmd_id, reason)
 end
 
 -- Accepted/queued/sent/outcome: a job is accepted at ingress, queued with
@@ -5115,8 +5548,10 @@ end
 -- settled with exactly one ack/nack. Jobs older than the transmit
 -- deadline are NACKed "expired" instead of executing: an old Open
 -- running minutes later is a different command than the valve asked
--- for. Polls that came due while a session ran go first, so command
--- batches can never starve reconciliation.
+-- for. Dequeue revalidates the slot authorization (a poll may have
+-- quarantined it while the job waited), and polls that came due while
+-- a session ran go first, so command batches can never starve
+-- reconciliation.
 function flocloud_run_next()
   local st = flocloud_state
   if st.busy or not st.initialized then
@@ -5150,20 +5585,26 @@ function flocloud_run_next()
     return
   end
   local job = table.remove(st.command_queue, 1)
-  while job ~= nil and os.time() - (job.enqueued_at or 0) >= FLOCLOUD_COMMAND_DEADLINE_S do
-    flocloud_log_warn(
-      "command "
-        .. tostring(job.name)
-        .. " expired after "
-        .. tostring(os.time() - (job.enqueued_at or 0))
-        .. "s queued; nacked, never transmitted"
-    )
-    local slot_pending = st.pending_commands[job.slot]
-    if slot_pending ~= nil then
-      slot_pending[job.cmd_id] = nil
+  while job ~= nil do
+    if os.time() - (job.enqueued_at or 0) >= FLOCLOUD_COMMAND_DEADLINE_S then
+      flocloud_log_warn(
+        "command "
+          .. tostring(job.name)
+          .. " expired after "
+          .. tostring(os.time() - (job.enqueued_at or 0))
+          .. "s queued; nacked, never transmitted"
+      )
+      flocloud_drop_job(job, "expired", "expired before transmit")
+    else
+      local live, dead_reason = flocloud_job_live(job)
+      if live then
+        break
+      end
+      flocloud_log_warn(
+        "command " .. tostring(job.name) .. " dropped at dequeue: slot authorization dead (" .. dead_reason .. ")"
+      )
+      flocloud_drop_job(job, dead_reason, "dropped (" .. dead_reason .. ")")
     end
-    flocloud_set_prop("Last Command", job.name .. ": expired before transmit")
-    flocloud_nack(job.slot, job.cmd_id, "expired")
     job = table.remove(st.command_queue, 1)
   end
   if job == nil then
@@ -5279,16 +5720,7 @@ function flocloud_poll_now()
 end
 
 local function flocloud_poll_interval_ms()
-  local seconds = tonumber(flocloud_prop(FLOCLOUD_PROP_POLL)) or 60
-  if seconds ~= seconds then
-    seconds = 60
-  end
-  if seconds < FLOCLOUD_MIN_POLL_SECONDS then
-    seconds = FLOCLOUD_MIN_POLL_SECONDS
-  elseif seconds > FLOCLOUD_MAX_POLL_SECONDS then
-    seconds = FLOCLOUD_MAX_POLL_SECONDS
-  end
-  return seconds * 1000
+  return flocloud_poll_interval_s() * 1000
 end
 
 local function flocloud_restart_poll_timer()
@@ -5311,6 +5743,32 @@ local function flocloud_restart_reconcile_timer()
   st.reconcile_timer = flocloud_set_timer(FLOCLOUD_RECONCILE_MS, function()
     flocloud_reconcile_bindings()
   end, true)
+end
+
+-- Attribute a hintless fallback message by elimination over the live
+-- bound-consumer relationship: when exactly one mapped slot has exactly
+-- one bound consumer — verified live on every mapped slot, with any
+-- indeterminate lookup disqualifying — the sender can only be that
+-- consumer. This bootstraps single-valve installations whose proxy leg
+-- is broken; anything ambiguous still drops (multi-valve fallback
+-- needs one successful proxy handshake first, after which hints flow).
+function flocloud_attribute_hintless()
+  local found = nil
+  local count = 0
+  for _, slot in ipairs(flocloud_sorted_slots()) do
+    local consumers = flocloud_bound_consumers(slot)
+    if consumers == nil then
+      return nil
+    end
+    if #consumers > 0 then
+      count = count + #consumers
+      found = slot
+    end
+  end
+  if count == 1 then
+    return found
+  end
+  return nil
 end
 
 -- --- Commands (Director programming + SendToDevice fallback) -----------------
@@ -5342,14 +5800,16 @@ function ExecuteCommand(strCommand, tParams)
   end
   -- SendToDevice fallback arrival (plan D1): ExecuteCommand names no sender,
   -- so the valve attaches the valve id from its LIVE handshake as an
-  -- additive FLOGIC_FROM hint (ignored by FloLogicLink.parse). A hintless
-  -- message is unanswerable — no sender API exists to attribute it — so it
-  -- is dropped: the valve bootstraps over the proxy hello burst instead,
-  -- and never attaches a stale (pre-rebind) id that would misroute to the
-  -- old slot.
+  -- additive FLOGIC_FROM hint (ignored by FloLogicLink.parse). The valve
+  -- never attaches a stale (pre-rebind) id that would misroute to the
+  -- old slot — so a first fallback hello arrives hintless, and the
+  -- proxy hello burst is the bootstrap when attribution below fails.
   if type(tParams) == "table" and type(tParams[FloLogicLink.K_MSG]) == "string" then
     local from = flocloud_normalize_id(tParams[FLOCLOUD_K_FROM])
     local slot = from ~= nil and flocloud_state.valve_slots[from] or nil
+    if slot == nil then
+      slot = flocloud_attribute_hintless()
+    end
     if slot ~= nil then
       flocloud_handle_link(slot, strCommand, tParams)
     else
@@ -5393,6 +5853,12 @@ function OnDriverLateInit(driver_init_type)
   print("[flologic-cloud] OnDriverLateInit: " .. FLOCLOUD_DRIVER_VERSION .. " (" .. tostring(driver_init_type) .. ")")
   flocloud_retire_runtime()
   flocloud_state = flocloud_fresh_state()
+  -- Link epoch: strictly increasing across restarts (persisted), so a
+  -- companion never compares a new boot's per-slot sequences against
+  -- the previous boot's numbering.
+  local saved_epoch = tonumber(C4:PersistGetValue(FLOCLOUD_PERSIST_EPOCH)) or 0
+  flocloud_state.link_epoch = saved_epoch + 1
+  C4:PersistSetValue(FLOCLOUD_PERSIST_EPOCH, tostring(saved_epoch + 1))
   flocloud_restore_relog()
   C4:UpdateProperty("Driver Version", FLOCLOUD_DRIVER_VERSION)
   pcall(flocloud_log_version_transition)

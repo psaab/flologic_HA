@@ -323,6 +323,9 @@ end
 
 -- --- Self-update install transports (file store + local Composer SOAP) -----
 
+-- The store file_set_dir selected: file_move stays within it.
+local flogic_file_store = "C4Z"
+
 local function flogic_file_set_dir(alias)
   -- C4Z_ROOT follows the proflame pattern but is not in the published
   -- alias list; C4Z (the driver's own package directory) is. Try the
@@ -336,11 +339,27 @@ local function flogic_file_set_dir(alias)
       C4:FileSetDir(candidate)
     end)
     if ok then
+      flogic_file_store = candidate
       flogic_log_warn("update file store: " .. candidate)
       return true
     end
   end
   return false
+end
+
+local function flogic_file_move(from_name, to_name)
+  -- C4:FileMove(alias, from, alias, to) is documented from OS 3.3.0 with
+  -- C4Z among the allowed aliases. Only the pcall status is reported —
+  -- FileMove's own return convention is undocumented, so the updater
+  -- verifies every step by filesystem state (existence + size) instead
+  -- of trusting this bit.
+  if C4.FileMove == nil then
+    return false
+  end
+  local ok = pcall(function()
+    C4:FileMove(flogic_file_store, from_name, flogic_file_store, to_name)
+  end)
+  return ok
 end
 
 local function flogic_file_exists(name)
@@ -473,26 +492,43 @@ local function flogic_soap_send(packet, cb)
   end
   -- Neither receipt of bytes nor connection closure confirms installation.
   -- The caller must report the result as unconfirmed; only the loaded driver
-  -- can establish its running version.
+  -- can establish its running version. Transmission itself IS tracked:
+  -- grace expiry (or a close, or stray bytes) before the packet was
+  -- handed to the transport reports a connection failure, never a sent
+  -- trigger.
   local opened = false
+  local sent = false
   local grace = flogic_set_timer(3000, function()
-    finish(nil)
+    if sent then
+      finish(nil)
+    else
+      finish("cannot reach Composer endpoint")
+    end
   end, false)
   owner.soap_callbacks = {
     on_data = function()
-      finish(nil)
+      if sent then
+        finish(nil)
+      else
+        finish("cannot reach Composer endpoint")
+      end
     end,
     on_open = function()
       opened = true
-      local sent = pcall(function()
+      -- Handover starts at the call (the transport queues/copies the
+      -- packet then), so mark sent BEFORE it: a transport that answers
+      -- synchronously must still observe a transmitted trigger.
+      sent = true
+      local ok = pcall(function()
         C4:SendToNetwork(binding, FloUpdate.SOAP_PORT, packet)
       end)
-      if not sent then
+      if not ok then
+        sent = false
         finish("cannot reach Composer endpoint")
       end
     end,
     on_close = function()
-      if opened then
+      if opened and sent then
         finish(nil)
       else
         finish("cannot reach Composer endpoint")
@@ -553,6 +589,7 @@ local function flogic_install_update(force)
     file_write = flogic_file_write,
     file_size = flogic_file_size,
     file_read = flogic_file_read,
+    file_move = flogic_file_move,
     log_warn = flogic_log_warn,
     soap_send = flogic_soap_send,
     force = force,

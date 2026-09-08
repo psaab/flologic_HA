@@ -390,3 +390,57 @@ L.test("link: scripted cloud/valve exchange", function()
   local ack = Link.parse(Link.build_ack(command.cmd_id))
   L.check_equal(ack.cmd_id, "job-3", "ack correlates to the issued command")
 end)
+
+L.test("link: state and unavailable carry optional ordering metadata", function()
+  local env = Link.build_state(full_state(), { seq = 7, epoch = 3, fresh_s = 360 })
+  L.check(env ~= nil, "stamped state builds")
+  L.check_equal(env[Link.K_SEQ], "7", "seq stamped")
+  L.check_equal(env[Link.K_EPOCH], "3", "epoch stamped")
+  L.check_equal(env[Link.K_FRESH], "360", "budget stamped")
+  local parsed = Link.parse(env)
+  L.check(parsed ~= nil, "stamped state parses")
+  L.check_equal(parsed.seq, 7, "seq parsed")
+  L.check_equal(parsed.epoch, 3, "epoch parsed")
+  L.check_equal(parsed.fresh_s, 360, "budget parsed")
+  local unav = Link.parse(Link.build_unavailable("11", "left-account", { seq = 8, epoch = 3 }))
+  L.check(unav ~= nil and unav.seq == 8 and unav.epoch == 3, "unavailable carries ordering")
+  L.check(unav.fresh_s == nil, "unavailable carries no budget")
+  -- Unstamped envelopes keep legacy semantics: ordering slots stay nil.
+  local plain = Link.parse(Link.build_state(full_state()))
+  L.check(plain ~= nil and plain.seq == nil and plain.epoch == nil and plain.fresh_s == nil, "absent keys parse nil")
+  local plain_unav = Link.parse(Link.build_unavailable("11", "left-account"))
+  L.check(plain_unav ~= nil and plain_unav.seq == nil, "unstamped unavailable parses")
+end)
+
+L.test("link: malformed ordering keys parse as absent, never fatal", function()
+  local env = Link.build_state(full_state(), { seq = 7, epoch = 3, fresh_s = 360 })
+  env[Link.K_SEQ] = "not-a-number"
+  env[Link.K_EPOCH] = "-1"
+  env[Link.K_FRESH] = "0"
+  local parsed = Link.parse(env)
+  L.check(parsed ~= nil, "message survives malformed keys")
+  L.check(parsed.seq == nil and parsed.epoch == nil and parsed.fresh_s == nil, "malformed keys parse nil")
+  L.check_equal(parsed.fields.mode, 33, "body still parses")
+  -- Unknown top-level keys are ignored outright (old-peer tolerance).
+  env[Link.K_SEQ] = "9"
+  env["FLOGIC_FUTURE"] = "whatever"
+  parsed = Link.parse(env)
+  L.check(parsed ~= nil and parsed.seq == 9, "future keys ignored")
+  -- A digit string that overflows to inf orders nothing, never wedges.
+  env[Link.K_SEQ] = string.rep("9", 400)
+  parsed = Link.parse(env)
+  L.check(parsed ~= nil and parsed.seq == nil, "overflowing seq parses nil")
+end)
+
+L.test("link: builders reject malformed extra metadata", function()
+  local env, err = Link.build_state(full_state(), { seq = -1 })
+  L.check(env == nil and err == "bad-seq", "negative seq rejected, got " .. tostring(err))
+  env, err = Link.build_state(full_state(), { epoch = 1.5 })
+  L.check(env == nil and err == "bad-epoch", "fractional epoch rejected")
+  env, err = Link.build_state(full_state(), { fresh_s = 0 })
+  L.check(env == nil and err == "bad-fresh", "zero budget rejected")
+  env, err = Link.build_unavailable("11", "left-account", { fresh_s = 360 })
+  L.check(env == nil and err == "bad-fresh", "budget on unavailable rejected")
+  env, err = Link.build_state(full_state(), "nope")
+  L.check(env == nil and err == "bad-extra", "non-table extra rejected")
+end)

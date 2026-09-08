@@ -182,8 +182,35 @@ local function handshake(env, id)
   from_cloud(env, Link.build_identity(id))
 end
 
-local function push_state(env, state)
-  from_cloud(env, Link.build_state(state))
+local function push_state(env, state, extra)
+  local built = Link.build_state(state, extra)
+  T.check(built ~= nil, "state builds")
+  from_cloud(env, built)
+  return built
+end
+
+local function push_unavailable(env, valve_id, reason, extra)
+  from_cloud(env, Link.build_unavailable(valve_id, reason, extra))
+end
+
+local function get_state_count(env)
+  local count = 0
+  for _, send in ipairs(link_sends(env)) do
+    if send.params[Link.K_MSG] == Link.MSG_GET_STATE then
+      count = count + 1
+    end
+  end
+  return count
+end
+
+local function push_digest(env)
+  from_cloud(env, {
+    [Link.K_VERSION] = tostring(Link.VERSION),
+    [Link.K_MSG] = Link.MSG_STATE,
+    [Link.K_BODY] = "",
+    [Link.K_TRUNC] = "1",
+    [Link.K_HASH] = "abc123",
+  })
 end
 
 local function check_list_equal(actual, expected, message)
@@ -205,7 +232,7 @@ end
 
 T.test("valve: version, link pin, updater asset, no selector (VALVE-U4)", function()
   valve_env()
-  T.check_equal(FLOVALVE_DRIVER_VERSION, "2026090810", "valve version lockstep with cloud")
+  T.check_equal(FLOVALVE_DRIVER_VERSION, "2026090811", "valve version lockstep with cloud")
   T.check_equal(FLOGIC_LINK_VERSION, 1, "protocol version is 1")
   T.check_equal(FloUpdate.ASSET, "flologic_water_valve.c4z", "updater tracks the valve package")
   T.check_equal(FloUpdate.FAMILY_ASSETS[1], "flologic_cloud.c4z", "updater requires the cloud sibling")
@@ -775,6 +802,9 @@ T.test("valve: display shows observation time and drops out-of-order snapshots",
 end)
 
 T.test("valve: watchdog marks stale silence and recovers on the next slice", function()
+  -- Unstamped snapshots (older clouds) keep legacy semantics: every
+  -- receipt is novel and recovers. The stamped duplicate path is
+  -- covered by the R3 test below.
   local env = boot(valve_env())
   handshake(env, "11")
   push_state(env, base_state())
@@ -783,7 +813,6 @@ T.test("valve: watchdog marks stale silence and recovers on the next slice", fun
   T.check_equal(Properties["Connection"], "Online", "fresh data stays online")
   -- Simulate a cloud outage: the last snapshot ages past the limit.
   flovalve_state.last_slice_at = os.time() - FLOVALVE_STALE_MIN_S - 1
-  flovalve_state.prev_slice_at = os.time() - FLOVALVE_STALE_MIN_S - 61
   flovalve_check_freshness()
   T.check(Properties["Connection"]:find("Stale", 1, true) ~= nil, "silence marked stale")
   local saw_lost = false
@@ -822,16 +851,32 @@ T.test("valve: unanswered commands settle on a real deadline and reconcile the t
   T.check_equal(body.fields.action, "mode_shutoff", "toggle closes from reconciled on")
 end)
 
-T.test("valve: ack cancels the command deadline timer", function()
+T.test("valve: ack holds the tile only until the observation deadline", function()
   local env = boot(valve_env())
   handshake(env, "11")
   push_state(env, base_state())
   ReceivedFromProxy(LIGHT, "DYNAMIC_OFF", {})
   local first = Link.parse(commands_sent(env)[#commands_sent(env)].params)
   from_cloud(env, Link.build_ack(first.cmd_id))
-  env.timers.advance(FLOVALVE_ACK_TIMEOUT_S * 1000 + 5000)
-  check_list_equal(light_levels(env), { 100, 0 }, "acked command never reconciles away")
-  T.check(Properties["Last Command"]:find("acknowledged", 1, true) ~= nil, "ack display survives the deadline")
+  -- The ack timer is gone (no "no response" settle), but the entry now
+  -- awaits observation: a confirming snapshot settles it as confirmed.
+  env.timers.advance(60000)
+  T.check(Properties["Last Command"]:find("acknowledged; awaiting refresh", 1, true) ~= nil, "ack display holds")
+  push_state(env, base_state({ updated = os.time(), mode = 8 }))
+  T.check(Properties["Last Command"]:find("confirmed", 1, true) ~= nil, "snapshot confirms the request")
+  check_list_equal(light_levels(env), { 100, 0, 0 }, "confirmed tile shows the observed level")
+  -- An ack WITHOUT any following snapshot reconciles past the
+  -- observation deadline instead of displaying the request forever.
+  ReceivedFromProxy(LIGHT, "DYNAMIC_ON", {})
+  local second = Link.parse(commands_sent(env)[#commands_sent(env)].params)
+  from_cloud(env, Link.build_ack(second.cmd_id))
+  env.timers.advance(FLOVALVE_OBSERVATION_TIMEOUT_S * 1000 + 5000)
+  T.check(
+    Properties["Last Command"]:find("acknowledged but unconfirmed", 1, true) ~= nil,
+    "silence past the deadline is displayed"
+  )
+  check_list_equal(light_levels(env), { 100, 0, 0, 100, 0 }, "tile reconciled to last observed")
+  T.check(next(flovalve_state.pending_commands) == nil, "observation entry settled by the timer")
 end)
 
 T.test("valve: update socket dispatches through lifecycle entry points", function()
@@ -905,9 +950,294 @@ T.test("valve: fallback hint follows the live handshake, never a stale binding",
   hellos = fallback_hellos()
   T.check(hellos[#hellos].params["FLOGIC_FROM"] == nil, "rebind hello carries no stale hint")
   handshake(env, "22")
+  push_state(env, base_state({ id = "22" }))
   ReceivedFromProxy(LIGHT, "DYNAMIC_ON", {})
   fallback = device_commands(env)
   T.check_equal(fallback[#fallback].params["FLOGIC_FROM"], "22", "new handshake re-authorizes the hint")
+end)
+
+T.test("valve: duplicate snapshots never renew freshness or clear markings (R3)", function()
+  local env = boot(valve_env())
+  handshake(env, "11")
+  local first = push_state(env, base_state({ uuid = "uuid-1" }), { seq = 1, epoch = 1, fresh_s = 360 })
+  T.check(first ~= nil, "stamped state builds")
+  local receipt = flovalve_state.last_slice_at
+  -- Age past the watchdog and mark stale; the replay must not recover.
+  flovalve_state.last_slice_at = os.time() - 370
+  flovalve_check_freshness()
+  T.check(flovalve_state.stale, "silence marks stale")
+  from_cloud(env, first) -- exact redelivery of the applied snapshot
+  T.check(flovalve_state.stale, "duplicate never clears stale")
+  T.check(flovalve_state.last_slice_at < receipt, "duplicate never renews the watchdog")
+  -- An unavailable notice orders after the snapshot; the stale
+  -- snapshot redelivered after it must not revoke the marking.
+  push_unavailable(env, "11", "left-account", { seq = 2, epoch = 1 })
+  T.check_equal(flovalve_state.unavailable, "left-account", "notice marks")
+  from_cloud(env, first)
+  T.check_equal(flovalve_state.unavailable, "left-account", "older duplicate never revokes unavailability")
+  -- A NOVEL snapshot recovers everything.
+  push_state(env, base_state({ uuid = "uuid-1", updated = os.time() }), { seq = 3, epoch = 1, fresh_s = 360 })
+  T.check(flovalve_state.unavailable == nil, "novel snapshot clears unavailability")
+  T.check(not flovalve_state.stale, "novel snapshot clears stale")
+  T.check(flovalve_state.last_slice_at >= receipt, "novel snapshot renews the watchdog")
+end)
+
+T.test("valve: cloud restart re-baselines ordering (R3)", function()
+  local env = boot(valve_env())
+  handshake(env, "11")
+  push_state(env, base_state({ uuid = "uuid-1" }), { seq = 5, epoch = 1 })
+  T.check_equal(flovalve_state.link_seq, 5, "baseline established")
+  -- New boot, restarted numbering: newer epoch always applies.
+  push_state(env, base_state({ uuid = "uuid-1", updated = os.time() }), { seq = 1, epoch = 2 })
+  T.check_equal(flovalve_state.link_epoch, 2, "new epoch re-baselines")
+  T.check_equal(flovalve_state.link_seq, 1, "restarted numbering accepted")
+  -- Delayed pre-restart traffic drops even with a higher sequence.
+  local receipt = flovalve_state.last_slice_at
+  push_state(env, base_state({ uuid = "uuid-1", updated = os.time() }), { seq = 9, epoch = 1 })
+  T.check_equal(flovalve_state.link_seq, 1, "old epoch never advances the baseline")
+  T.check(flovalve_state.last_slice_at == receipt, "old epoch never renews freshness")
+end)
+
+T.test("valve: same-id replacement resets history before applying (R4)", function()
+  local env = boot(valve_env())
+  handshake(env, "11")
+  push_state(env, base_state({ uuid = "uuid-1", mode = 1 }))
+  T.check_equal(#env.events, 0, "first push syncs quietly")
+  -- Same numeric id, different immutable identity: a replacement valve.
+  -- Without the reset this push would fire a Mode Changed transition
+  -- (home -> shutoff) against the old valve's baseline.
+  push_state(env, base_state({ uuid = "uuid-2", mode = 8, updated = os.time() }))
+  T.check_equal(flovalve_state.restore_action, "mode_home", "restore target reset, not inherited")
+  T.check_equal(#env.events, 0, "replacement re-baselines quietly, no spurious transition")
+  T.check_equal(env.saved["flovalve_valve_uuid"], "uuid-2", "new identity persisted")
+  -- The pre-replacement restore target is gone for good: Open offers
+  -- the default, never the old valve's mode.
+  ExecuteCommand("Open Valve", {})
+  T.check(
+    Properties["Last Command"] ~= nil and Properties["Last Command"]:sub(1, 10) == "Open Valve",
+    "open still offered after replacement"
+  )
+end)
+
+T.test("valve: restart before the first new snapshot restores no stale state (R4)", function()
+  local env = valve_env()
+  -- Persisted association belongs to valve 22; the stored body belongs
+  -- to valve 11 (identity changed, restart before any new snapshot).
+  env.saved["flovalve_valve_id"] = "22"
+  env.saved["flovalve_valve_uuid"] = "uuid-22"
+  env.saved["flovalve_last_state"] = Link.build_state_body(base_state({ id = "11", uuid = "uuid-11", mode = 2 }))
+  boot(env)
+  T.check_equal(flovalve_state.restore_action, "mode_home", "foreign body never relearned as restore")
+  T.check(Properties["Mode"] ~= "away", "foreign body never prefilled")
+  -- The matched association still restores (positive control).
+  local env2 = valve_env()
+  env2.saved["flovalve_valve_id"] = "11"
+  env2.saved["flovalve_valve_uuid"] = "uuid-11"
+  env2.saved["flovalve_last_state"] = Link.build_state_body(base_state({ id = "11", uuid = "uuid-11", mode = 2 }))
+  boot(env2)
+  T.check_equal(flovalve_state.restore_action, "mode_away", "matched body restores the target")
+  T.check_equal(Properties["Mode"], "away", "matched body prefills the display")
+end)
+
+T.test("valve: identity change clears the persisted association at once (R4)", function()
+  local env = boot(valve_env())
+  handshake(env, "11")
+  push_state(env, base_state({ uuid = "uuid-1", mode = 1 }))
+  T.check(env.saved["flovalve_last_state"] ~= nil and env.saved["flovalve_last_state"] ~= "", "state persisted")
+  OnBindingChanged(LINK, "FLOGIC_VALVE", false)
+  OnBindingChanged(LINK, "FLOGIC_VALVE", true)
+  handshake(env, "22")
+  T.check_equal(env.saved["flovalve_last_state"], "", "old body cleared on identity change")
+  T.check_equal(env.saved["flovalve_valve_uuid"], "", "old uuid cleared on identity change")
+  T.check_equal(env.saved["flovalve_valve_id"], "22", "new id persisted")
+end)
+
+T.test("valve: unbind settles the optimistic tile and cancels deadlines (R5)", function()
+  local env = boot(valve_env())
+  handshake(env, "11")
+  push_state(env, base_state())
+  ReceivedFromProxy(LIGHT, "DYNAMIC_OFF", {})
+  local cmd_id = next(flovalve_state.pending_commands)
+  local timer = flovalve_state.pending_commands[cmd_id].timer
+  OnBindingChanged(LINK, "FLOGIC_VALVE", false)
+  check_list_equal(light_levels(env), { 100, 0, 100 }, "unbind reconciles the tile at once")
+  T.check(Properties["Last Command"]:find("Link lost", 1, true) ~= nil, "unbind says the command dropped")
+  T.check(timer.cancelled, "pending deadline cancelled explicitly")
+  env.timers.advance((FLOVALVE_ACK_TIMEOUT_S + 5) * 1000)
+  check_list_equal(light_levels(env), { 100, 0, 100 }, "no late settle after deadlines pass")
+end)
+
+T.test("valve: unavailable notice settles in-flight requests (R5)", function()
+  local env = boot(valve_env())
+  handshake(env, "11")
+  push_state(env, base_state())
+  ReceivedFromProxy(LIGHT, "DYNAMIC_OFF", {})
+  push_unavailable(env, "11", "left-account")
+  check_list_equal(light_levels(env), { 100, 0, 100 }, "unavailable reconciles the tile at once")
+  T.check(Properties["Last Command"]:find("command(s) dropped", 1, true) ~= nil, "unavailable says commands dropped")
+  T.check(next(flovalve_state.pending_commands) == nil, "in-flight entries settled")
+  env.timers.advance((FLOVALVE_ACK_TIMEOUT_S + 5) * 1000)
+  check_list_equal(light_levels(env), { 100, 0, 100 }, "no late settle after deadlines pass")
+end)
+
+T.test("valve: commands block before the first observation (R5)", function()
+  local env = boot(valve_env())
+  handshake(env, "11")
+  ReceivedFromProxy(LIGHT, "DYNAMIC_OFF", {})
+  T.check_equal(#commands_sent(env), 0, "blind write refused")
+  T.check_equal(Properties["Last Command"], "Close Valve: no state yet", "unknown state displayed")
+  check_list_equal(light_levels(env), {}, "tile never claims optimistically")
+  -- The first observation unblocks normally.
+  push_state(env, base_state())
+  ReceivedFromProxy(LIGHT, "DYNAMIC_OFF", {})
+  T.check_equal(#commands_sent(env), 1, "observed valve accepts commands")
+end)
+
+T.test("valve: watchdog honors the advertised budget (R8)", function()
+  local env = boot(valve_env())
+  handshake(env, "11")
+  push_state(env, base_state({ uuid = "uuid-1" }), { seq = 1, epoch = 1, fresh_s = 3600 })
+  T.check_equal(flovalve_state.fresh_budget, 3600, "budget adopted")
+  -- Silence past the old floor but inside the budget: still current.
+  flovalve_state.last_slice_at = os.time() - 600
+  flovalve_check_freshness()
+  T.check(not flovalve_state.stale, "budgeted silence stays current")
+  -- Silence past the budget: stale.
+  flovalve_state.last_slice_at = os.time() - 3700
+  flovalve_check_freshness()
+  T.check(flovalve_state.stale, "over-budget silence marks stale")
+  -- An absurd budget is ignored in favor of the floor.
+  flovalve_state.stale = false
+  push_state(env, base_state({ uuid = "uuid-1", updated = os.time() }), { seq = 2, epoch = 1, fresh_s = 10 })
+  T.check_equal(flovalve_state.fresh_budget, 3600, "absurd budget ignored")
+  flovalve_state.last_slice_at = os.time() - 400
+  flovalve_check_freshness()
+  T.check(not flovalve_state.stale, "previous sane budget still rules")
+end)
+
+T.test("valve: identity without state fails explicitly, then recovers slowly (R10)", function()
+  local env = boot(valve_env())
+  T.check_equal(get_state_count(env), 0, "nothing requested before the handshake")
+  handshake(env, "11")
+  T.check_equal(get_state_count(env), 1, "handshake requests state")
+  -- Two bounded re-requests, then an explicit failure — never "Linking"
+  -- forever.
+  env.timers.advance(FLOVALVE_FIRST_STATE_TIMEOUT_S * 1000)
+  T.check_equal(get_state_count(env), 2, "first wait expiry re-requests")
+  T.check(not flovalve_state.state_failed, "still waiting")
+  env.timers.advance(FLOVALVE_FIRST_STATE_TIMEOUT_S * 1000)
+  T.check_equal(get_state_count(env), 3, "second wait expiry re-requests")
+  env.timers.advance(FLOVALVE_FIRST_STATE_TIMEOUT_S * 1000)
+  T.check(flovalve_state.state_failed, "bounded wait fails explicitly")
+  T.check_equal(Properties["Connection"], "Link failed: no state from cloud", "failure displayed")
+  T.check_equal(get_state_count(env), 3, "no more requests after failure")
+  T.check(flovalve_state.hint_valve_id == nil, "suspect hint dropped at failure")
+  -- The slow freshness tick restarts a failed wait with a re-handshake
+  -- (the failed identity may itself be wrong).
+  local function hello_count()
+    local count = 0
+    for _, send in ipairs(link_sends(env)) do
+      if send.params[Link.K_MSG] == Link.MSG_HELLO then
+        count = count + 1
+      end
+    end
+    return count
+  end
+  local hellos = hello_count()
+  env.timers.advance(FLOVALVE_STALE_CHECK_S * 1000)
+  T.check_equal(hello_count(), hellos + 1, "slow tick re-handshakes")
+  T.check(not flovalve_state.state_failed, "failure clears on restart")
+  -- A corrected identity re-links from the failed wait.
+  handshake(env, "22")
+  push_state(env, base_state({ id = "22" }))
+  T.check(flovalve_state.state_wait_timer == nil, "wait disarmed by state")
+  T.check_equal(Properties["Connection"], "Online", "link online")
+end)
+
+T.test("valve: digests extend the first-state wait without consuming attempts (R10)", function()
+  local env = boot(valve_env())
+  handshake(env, "11")
+  env.timers.advance((FLOVALVE_FIRST_STATE_TIMEOUT_S - 10) * 1000)
+  push_digest(env)
+  T.check_equal(flovalve_state.state_wait_attempts, 1, "digest consumes no attempt")
+  T.check_equal(get_state_count(env), 2, "digest sends only its own retry")
+  -- Past the original deadline: the extended wait still runs.
+  env.timers.advance(20000)
+  T.check(not flovalve_state.state_failed, "extended wait survives the original deadline")
+  T.check_equal(get_state_count(env), 2, "no wait re-request while extended")
+  -- The extended wait still expires and re-requests eventually.
+  env.timers.advance((FLOVALVE_FIRST_STATE_TIMEOUT_S - 10) * 1000)
+  T.check_equal(get_state_count(env), 3, "extended wait expires into a re-request")
+end)
+
+T.test("valve: nil provider lookup is observed-unbound, not failure (R7)", function()
+  -- Plural API answers nil (documented no-bindings): startup stays
+  -- silent instead of bursting hellos into the void.
+  local env = valve_env()
+  env.providers = nil
+  boot(env)
+  T.check_equal(Properties["Connection"], "Not linked", "unbound startup stays silent")
+  T.check_equal(#link_sends(env), 0, "no hello burst on an unbound link")
+  -- Recovery still works when the link binds.
+  env.providers = { [77] = "FloLogic Cloud" }
+  OnBindingChanged(LINK, "FLOGIC_VALVE", true)
+  T.check(#link_sends(env) >= 1, "bind still handshakes")
+  -- Singular API: nil and 0 both mean unbound.
+  local function boot_singular(answer)
+    local e = valve_env()
+    C4.GetBoundProviderDevices = nil
+    function C4:GetBoundProviderDevice()
+      if answer == "raise" then
+        error("no discovery")
+      end
+      return answer
+    end
+    boot(e)
+    return e
+  end
+  local s1 = boot_singular(nil)
+  T.check_equal(Properties["Connection"], "Not linked", "singular nil is unbound")
+  T.check_equal(#link_sends(s1), 0, "singular nil stays silent")
+  local s2 = boot_singular(0)
+  T.check_equal(Properties["Connection"], "Not linked", "singular 0 is unbound")
+  T.check_equal(#link_sends(s2), 0, "singular 0 stays silent")
+  local s3 = boot_singular(77)
+  T.check(#link_sends(s3) >= 1, "singular id handshakes")
+  local s4 = boot_singular("not-an-id")
+  T.check(#link_sends(s4) >= 1, "garbage stays indeterminate (assume bound)")
+  local s5 = boot_singular("raise")
+  T.check(#link_sends(s5) >= 1, "error stays indeterminate (assume bound)")
+end)
+
+T.test("valve: install grace without transmission reports a failure (R12)", function()
+  local env = boot(valve_env())
+  local err_seen, calls = "unset", 0
+  flovalve_soap_send("packet", function(err)
+    calls = calls + 1
+    err_seen = err
+  end)
+  T.check(flovalve_state.soap_binding ~= nil, "soap binding allocated")
+  -- No callback before grace expiry: the trigger never transmitted, so
+  -- expiry reports a connection failure — never a sent trigger.
+  env.timers.advance(3000)
+  T.check_equal(calls, 1, "expiry settles the send")
+  T.check_equal(err_seen, "cannot reach Composer endpoint", "untransmitted trigger is a failure")
+  T.check_equal(#env.net_sends, 0, "nothing transmitted without a connection")
+end)
+
+T.test("valve: history reset cancels pending deadlines explicitly", function()
+  local env = boot(valve_env())
+  handshake(env, "11")
+  push_state(env, base_state())
+  ReceivedFromProxy(LIGHT, "DYNAMIC_OFF", {})
+  local cmd_id = next(flovalve_state.pending_commands)
+  local timer = flovalve_state.pending_commands[cmd_id].timer
+  -- The cloud re-identifies the same binding (slot change, no Composer
+  -- unbind): the reset path owns the in-flight entry.
+  handshake(env, "22")
+  T.check(timer.cancelled, "reset cancels the pending deadline")
+  T.check(next(flovalve_state.pending_commands) == nil, "reset drops the entry")
+  T.check_equal(Properties["Last Command"], "Link changed: 1 command(s) dropped", "reset says the command dropped")
 end)
 
 T.test("valve: handshake retries are bounded, explicit, and recover slowly", function()
