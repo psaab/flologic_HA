@@ -16,6 +16,7 @@ local function director()
     file_dirs = {},
     file_moves = {},
     dir_attempts = {},
+    dir_unlocked = false,
     files_denied = false,
     installed = {},
     soap_packets = {},
@@ -123,6 +124,17 @@ local function director()
   end
   function C4:FileSetDir(alias)
     env.dir_attempts[#env.dir_attempts + 1] = alias
+    if alias == FloUpdate.C4Z_ROOT_UNLOCK_KEY then
+      -- The unlock key itself arms the alias; denial here models an OS
+      -- that rejects the key, leaving C4Z_ROOT locked.
+      if not (env.files_denied or (env.denied_dirs ~= nil and env.denied_dirs[alias])) then
+        env.dir_unlocked = true
+      end
+      return
+    end
+    if alias == FloUpdate.C4Z_ROOT and not env.dir_unlocked then
+      error("Restricted path specified")
+    end
     if env.files_denied or (env.denied_dirs ~= nil and env.denied_dirs[alias]) then
       error("Restricted path specified")
     end
@@ -610,17 +622,59 @@ D.test("director: denied file store fails loudly and keeps the old driver", func
   OnDriverDestroyed()
 end)
 
-D.test("director: staging falls back to the documented C4Z alias", function()
+D.test("director: staging unlocks C4Z_ROOT before selecting it", function()
   local env = director()
   env.installed["flologic_valve.c4i"] = { [1] = true }
+  env.files["flologic_valve.c4z"] = "OLD-DRIVER-BYTES"
+  ExecuteCommand("Install Latest Release", {})
+  env.transfers[1].done(nil, { { code = 200, body = director_release("2026090808") } }, 0)
+  env.transfers[2].done(nil, { { code = 200, body = "PK\003\004NEW-C4Z-BYTES" } }, 0)
+  D.check_equal(env.dir_attempts[1], FloUpdate.C4Z_ROOT_UNLOCK_KEY, "unlock key passes first")
+  D.check_equal(env.dir_attempts[2], "C4Z_ROOT", "locked alias selected after the key")
+  D.check_equal(#env.dir_attempts, 2, "no fallback store attempted")
+  D.check_equal(env.files["flologic_valve.c4z"], "PK\003\004NEW-C4Z-BYTES", "download staged to C4Z_ROOT")
+  D.check_equal(#env.soap_packets, 1, "install triggers after C4Z_ROOT staging")
+  OnDriverDestroyed()
+end)
+
+D.test("director: rejected unlock key refuses the install without staging elsewhere", function()
+  local env = director()
+  env.installed["flologic_valve.c4i"] = { [1] = true }
+  env.files["flologic_valve.c4z"] = "OLD-DRIVER-BYTES"
+  env.denied_dirs = {}
+  env.denied_dirs[FloUpdate.C4Z_ROOT_UNLOCK_KEY] = true
+  ExecuteCommand("Install Latest Release", {})
+  env.transfers[1].done(nil, { { code = 200, body = director_release("2026090808") } }, 0)
+  env.transfers[2].done(nil, { { code = 200, body = "PK\003\004NEW-C4Z-BYTES" } }, 0)
+  D.check_equal(env.dir_attempts[1], FloUpdate.C4Z_ROOT_UNLOCK_KEY, "unlock key attempted")
+  D.check_equal(env.dir_attempts[2], "C4Z_ROOT", "locked alias still attempted once")
+  D.check_equal(#env.dir_attempts, 2, "no fallback store attempted")
+  D.check_equal(env.files["flologic_valve.c4z"], "OLD-DRIVER-BYTES", "locked store keeps the old build")
+  D.check_equal(#env.soap_packets, 0, "locked store triggers no install")
+  D.check(
+    Properties["Update Status"]:find("Install failed", 1, true) ~= nil
+      and Properties["Update Status"]:find("Composer", 1, true) ~= nil,
+    "locked store points at the manual path, got " .. tostring(Properties["Update Status"])
+  )
+  OnDriverDestroyed()
+end)
+
+D.test("director: denied C4Z_ROOT refuses the install even after unlocking", function()
+  local env = director()
+  env.installed["flologic_valve.c4i"] = { [1] = true }
+  env.files["flologic_valve.c4z"] = "OLD-DRIVER-BYTES"
   env.denied_dirs = { C4Z_ROOT = true }
   ExecuteCommand("Install Latest Release", {})
   env.transfers[1].done(nil, { { code = 200, body = director_release("2026090808") } }, 0)
   env.transfers[2].done(nil, { { code = 200, body = "PK\003\004NEW-C4Z-BYTES" } }, 0)
-  D.check_equal(env.dir_attempts[1], "C4Z_ROOT", "proflame alias tried first")
-  D.check_equal(env.dir_attempts[2], "C4Z", "documented alias tried on denial")
-  D.check_equal(env.files["flologic_valve.c4z"], "PK\003\004NEW-C4Z-BYTES", "staging completes via fallback")
-  D.check_equal(#env.soap_packets, 1, "install triggers after fallback staging")
+  D.check(env.dir_unlocked, "key accepted before the denial")
+  D.check_equal(env.files["flologic_valve.c4z"], "OLD-DRIVER-BYTES", "denial keeps the old build")
+  D.check_equal(#env.soap_packets, 0, "denial triggers no install")
+  D.check(
+    Properties["Update Status"]:find("Install failed", 1, true) ~= nil
+      and Properties["Update Status"]:find("Composer", 1, true) ~= nil,
+    "denial points at the manual path, got " .. tostring(Properties["Update Status"])
+  )
   OnDriverDestroyed()
 end)
 

@@ -170,3 +170,33 @@ def test_file_read_seeks_before_reading_in_all_adapters() -> None:
         seek = body.index("C4:FileSetPos(handle, 0)")
         read = body.index("C4:FileRead(handle, count)")
         assert seek < read, f"{driver} {fn} must seek before reading"
+
+
+def test_file_set_dir_unlocks_c4z_root_without_fallback_in_all_adapters() -> None:
+    """Every file_set_dir adapter must unlock C4Z_ROOT first and try no fallback.
+
+    Director rejects the C4Z_ROOT alias until the unlock key passes, and
+    UpdateProjectC4i hot-reload resolves staged packages in C4Z_ROOT
+    only: staging into the running driver's own directory verifies and
+    triggers yet reloads the previously installed build (field no-op on
+    2026090815). The three adapters are copy-pasted per driver by bundle
+    design; this pins the invariant in all of them.
+    """
+    sources = {
+        "cloud": (CLOUD_DIR / "cloud.lua").read_text(encoding="utf-8"),
+        "valve": (VALVE_DIR / "valve.lua").read_text(encoding="utf-8"),
+        "monolith": (C4_DIR / "src" / "main.lua").read_text(encoding="utf-8"),
+    }
+    fns = {
+        "cloud": "flocloud_file_set_dir",
+        "valve": "flovalve_file_set_dir",
+        "monolith": "flogic_file_set_dir",
+    }
+    for driver, text in sources.items():
+        fn = fns[driver]
+        start = text.index(f"local function {fn}(")
+        body = text[start : text.index("\nend", start)]
+        unlock = body.index("C4:FileSetDir(FloUpdate.C4Z_ROOT_UNLOCK_KEY)")
+        select = body.index("C4:FileSetDir(alias)")
+        assert unlock < select, f"{driver} {fn} must pass the unlock key first"
+        assert "candidates" not in body, f"{driver} {fn} must not try a fallback store"

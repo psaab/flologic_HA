@@ -327,22 +327,22 @@ end
 local flogic_file_store = "C4Z"
 
 local function flogic_file_set_dir(alias)
-  -- C4Z_ROOT follows the proflame pattern but is not in the published
-  -- alias list; C4Z (the driver's own package directory) is. Try the
-  -- requested alias first, then fall back to the documented one.
-  local candidates = { alias }
-  if alias ~= "C4Z" then
-    candidates[#candidates + 1] = "C4Z"
-  end
-  for _, candidate in ipairs(candidates) do
-    local ok = pcall(function()
-      C4:FileSetDir(candidate)
-    end)
-    if ok then
-      flogic_file_store = candidate
-      flogic_log_warn("update file store: " .. candidate)
-      return true
-    end
+  -- Pass the C4Z_ROOT unlock key first (undocumented; pcall'd since not
+  -- every OS accepts it), then select exactly the requested alias. There
+  -- is no fallback store: Director's UpdateProjectC4i hot-reload
+  -- resolves the staged package in C4Z_ROOT only, so staging into the
+  -- running driver's own directory verifies and triggers yet reloads
+  -- the previously installed build. Denial refuses the install.
+  pcall(function()
+    C4:FileSetDir(FloUpdate.C4Z_ROOT_UNLOCK_KEY)
+  end)
+  local ok = pcall(function()
+    C4:FileSetDir(alias)
+  end)
+  if ok then
+    flogic_file_store = alias
+    flogic_log_warn("update file store: " .. alias)
+    return true
   end
   return false
 end

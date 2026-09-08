@@ -128,6 +128,13 @@ function FloUpdate.new_check(opts)
 end
 
 FloUpdate.C4Z_ROOT = "C4Z_ROOT"
+-- Undocumented C4Z_ROOT unlock key (finitelabs/control4-mqtt
+-- github-updater pattern, validated on live OS 3.4.3): FileSetDir
+-- rejects the C4Z_ROOT alias until this key is passed, and
+-- Director's UpdateProjectC4i hot-reload resolves staged packages in
+-- C4Z_ROOT only — staging anywhere else verifies and triggers yet
+-- reloads the previously installed build (0815 field no-op).
+FloUpdate.C4Z_ROOT_UNLOCK_KEY = "c29tZXNwZWNpYWxrZXk=++11"
 FloUpdate.SOAP_HOST = "127.0.0.1"
 FloUpdate.SOAP_PORT = 5020
 FloUpdate.MAX_REDIRECTS = 5

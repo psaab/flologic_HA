@@ -862,6 +862,13 @@ function FloUpdate.new_check(opts)
 end
 
 FloUpdate.C4Z_ROOT = "C4Z_ROOT"
+-- Undocumented C4Z_ROOT unlock key (finitelabs/control4-mqtt
+-- github-updater pattern, validated on live OS 3.4.3): FileSetDir
+-- rejects the C4Z_ROOT alias until this key is passed, and
+-- Director's UpdateProjectC4i hot-reload resolves staged packages in
+-- C4Z_ROOT only — staging anywhere else verifies and triggers yet
+-- reloads the previously installed build (0815 field no-op).
+FloUpdate.C4Z_ROOT_UNLOCK_KEY = "c29tZXNwZWNpYWxrZXk=++11"
 FloUpdate.SOAP_HOST = "127.0.0.1"
 FloUpdate.SOAP_PORT = 5020
 FloUpdate.MAX_REDIRECTS = 5
@@ -2226,7 +2233,7 @@ end
 -- C4 calls (safe to load in tests with a stub C4). Lua 5.1 safe.
 -- ============================================================================
 
-FLOVALVE_DRIVER_VERSION = "2026090815"
+FLOVALVE_DRIVER_VERSION = "2026090816"
 print("[flologic-valve] Lua loaded: " .. FLOVALVE_DRIVER_VERSION)
 
 -- Static link consumer (binds to one cloud-driver FLOGIC_VALVE slot) and
@@ -3752,19 +3759,22 @@ end
 local flovalve_file_store = "C4Z"
 
 local function flovalve_file_set_dir(alias)
-  local candidates = { alias }
-  if alias ~= "C4Z" then
-    candidates[#candidates + 1] = "C4Z"
-  end
-  for _, candidate in ipairs(candidates) do
-    local ok = pcall(function()
-      C4:FileSetDir(candidate)
-    end)
-    if ok then
-      flovalve_file_store = candidate
-      flovalve_log_warn("update file store: " .. candidate)
-      return true
-    end
+  -- Pass the C4Z_ROOT unlock key first (undocumented; pcall'd since not
+  -- every OS accepts it), then select exactly the requested alias. There
+  -- is no fallback store: Director's UpdateProjectC4i hot-reload
+  -- resolves the staged package in C4Z_ROOT only, so staging into the
+  -- running driver's own directory verifies and triggers yet reloads
+  -- the previously installed build. Denial refuses the install.
+  pcall(function()
+    C4:FileSetDir(FloUpdate.C4Z_ROOT_UNLOCK_KEY)
+  end)
+  local ok = pcall(function()
+    C4:FileSetDir(alias)
+  end)
+  if ok then
+    flovalve_file_store = alias
+    flovalve_log_warn("update file store: " .. alias)
+    return true
   end
   return false
 end

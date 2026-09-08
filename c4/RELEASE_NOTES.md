@@ -1,5 +1,24 @@
 Control4 DriverWorks package for FloLogic Connect valves (OS 3.3.0+).
 
+Version **2026090816** fixes the self-update no-op the 0815 field
+test caught: the updater staged the new package into the running
+driver's own directory, verified it, and triggered — yet Director
+reloaded the previously installed build. Root cause: Director's
+`UpdateProjectC4i` hot-reload resolves staged packages in C4Z_ROOT
+(the controller's driver directory) only, and `FileSetDir` rejects
+the C4Z_ROOT alias until an undocumented unlock key passes
+(finitelabs/control4-mqtt github-updater pattern, validated on live
+OS 3.4.3). Without the key the alias silently fell back to the
+package directory. All three file adapters now pass the unlock key
+and select C4Z_ROOT with no fallback store — denial refuses the
+install with a pointer at the manual path instead of fake-succeeding.
+The Director mock models the locked alias, the suite pins
+unlock-before-select plus both refusal shapes, and a packaging test
+pins the invariant in all three adapter copies. Install this build
+manually in Composer (the 0815 updater stages to the wrong store, so
+self-update cannot reach it), then self-update onward to prove the
+trigger delivers.
+
 Version **2026090815** is a version bump only (no functional change
 from 0814) to exercise the self-update path in the field: install
 0814 manually, then run Check for Update / Install Latest Release
