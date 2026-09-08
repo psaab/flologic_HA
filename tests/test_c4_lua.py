@@ -87,6 +87,7 @@ def test_file_handles_close_on_errors() -> None:
         local install = upvalue(ExecuteCommand, "flogic_install_update")
         local write = upvalue(install, "flogic_file_write")
         local size = upvalue(install, "flogic_file_size")
+        local read = upvalue(install, "flogic_file_read")
         local handle = {}
         local closed = 0
         C4 = {
@@ -107,6 +108,10 @@ def test_file_handles_close_on_errors() -> None:
         write("test-package", "test-data")
         assert(size("test-package") == nil)
         assert(closed == 2, "invalid handle must not be closed")
+        C4.FileOpen = function() return handle end
+        C4.FileRead = function() error("simulated read failure") end
+        assert(read("test-package", 4) == nil)
+        assert(closed == 3, "read failure leaked handle")
         """
     )
 

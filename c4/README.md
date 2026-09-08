@@ -2,7 +2,7 @@
 
 > New installs use the split drivers — one `FloLogic Cloud` coordinator
 > plus one `FloLogic Water Valve` per valve — documented in
-> [SPLIT_README.md](SPLIT_README.md) (version 2026090806). Below
+> [SPLIT_README.md](SPLIT_README.md) (version 2026090807). Below
 > documents the legacy single-driver monolith (`FloLogic Valve`,
 > version **2026090709**), which still works but is no longer packaged
 > or published; see the split guide for manual migration. Do NOT install

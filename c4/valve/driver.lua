@@ -887,19 +887,23 @@ end
 
 --- A cancellable install operation; callbacks never run after cancel/reload.
 --- Downloads the latest C4 asset, stages it in the C4Z file store (verified
---- by on-disk size), and triggers Composer to install it by name. force
---- skips the version compare, so it can reinstall the same build or even an
---- older one; that is the intended recovery semantic.
+--- by on-disk size plus a zip-magic read-back), and triggers Composer to
+--- install it by name. force skips the version compare, so it can reinstall
+--- the same build or even an older one; that is the intended recovery
+--- semantic.
 --- opts.http_get(url, headers, cb) has cb(err, body, code, headers_or_nil)
 --- and returns a cancel function. opts.soap_send(packet, cb(err)) likewise.
 --- File callbacks: get_installed() -> bool, file_set_dir(alias) -> ok,
 --- file_exists(name) -> bool, file_delete(name), file_write(name, data),
---- file_size(name) -> bytes or nil. File callbacks must not throw; the
---- Director adapter wraps every C4 file call in pcall and converts denials
---- to false/nil. on_result(err, outcome) has outcome
+--- file_size(name) -> bytes or nil, file_read(name, count) -> string or nil.
+--- File callbacks must not throw; the Director adapter wraps every C4 file
+--- call in pcall and converts denials to false/nil. opts.log_warn(msg)
+--- traces download/stage/trigger milestones to the Lua log (default noop).
+--- on_result(err, outcome) has outcome
 --- { attempted = version|nil, latest = version|nil, skipped = reason|nil }.
 function FloUpdate.new_install(opts)
   local self = { done = false }
+  local log_warn = opts.log_warn or function() end
   function self.cancel()
     self.done = true
     if self.cancel_timer then
@@ -1034,6 +1038,7 @@ function FloUpdate.new_install(opts)
         finish("Downloaded package is too large")
         return
       end
+      log_warn("update download: " .. #body .. " bytes, HTTP " .. tostring(code))
       cb(body)
     end)
     if not ok then
@@ -1048,7 +1053,7 @@ function FloUpdate.new_install(opts)
     -- stays intact and no install is triggered. Falling through would write
     -- and verify against the wrong directory, then reinstall the unchanged
     -- old build as a silent no-op.
-    progress("Staging " .. filename)
+    progress("Staging " .. filename .. " (" .. #body .. " bytes)")
     local switched = opts.file_set_dir(FloUpdate.C4Z_ROOT)
     if not switched then
       finish("File store " .. FloUpdate.C4Z_ROOT .. " denied; installed driver left intact")
@@ -1059,11 +1064,21 @@ function FloUpdate.new_install(opts)
     end
     opts.file_write(filename, body)
     -- Never trust the write call: verify by on-disk SIZE (a number), not by
-    -- re-reading binary that can false-mismatch through string marshalling.
+    -- re-reading the full binary that can false-mismatch through string
+    -- marshalling. A 4-byte magic read-back additionally proves the staged
+    -- file is a driver archive rather than an error page or truncation.
     if opts.file_size(filename) ~= #body then
       finish("Staged package size mismatch; stored package may be missing or incomplete; restore using Composer")
       return
     end
+    if opts.file_read(filename, 4) ~= "PK\003\004" then
+      log_warn("update stage: magic check failed for " .. filename)
+      finish(
+        "Staged package is not a driver archive; stored package may be missing or incomplete; restore using Composer"
+      )
+      return
+    end
+    log_warn("update stage: " .. filename .. " verified (" .. #body .. " bytes, zip magic ok)")
     cb()
   end
   function self.start()
@@ -1085,15 +1100,18 @@ function FloUpdate.new_install(opts)
         stage(FloUpdate.ASSET, body, function()
           progress("Installing " .. release.version)
           arm(30000, "Install trigger timed out")
+          log_warn("update trigger: UpdateProjectC4i " .. FloUpdate.ASSET)
           local ok, cancel = pcall(opts.soap_send, FloUpdate.build_install_packet(FloUpdate.ASSET), function(err)
             if self.done then
               return
             end
             self.cancel_soap = nil
             if err then
+              log_warn("update trigger failed: " .. tostring(err))
               finish("Install trigger failed: " .. tostring(err))
               return
             end
+            log_warn("update trigger sent for " .. release.version)
             finish(nil, { attempted = release.version, latest = release.version })
           end)
           if not ok then
@@ -1906,7 +1924,7 @@ end
 -- C4 calls (safe to load in tests with a stub C4). Lua 5.1 safe.
 -- ============================================================================
 
-FLOVALVE_DRIVER_VERSION = "2026090806"
+FLOVALVE_DRIVER_VERSION = "2026090807"
 print("[flologic-valve] Lua loaded: " .. FLOVALVE_DRIVER_VERSION)
 
 -- Static link consumer (binds to one cloud-driver FLOGIC_VALVE slot) and
@@ -2856,6 +2874,7 @@ local function flovalve_file_set_dir(alias)
       C4:FileSetDir(candidate)
     end)
     if ok then
+      flovalve_log_warn("update file store: " .. candidate)
       return true
     end
   end
@@ -2909,6 +2928,29 @@ local function flovalve_file_size(name)
   end
   if ok then
     return size
+  end
+  return nil
+end
+
+local function flovalve_file_read(name, count)
+  local handle
+  local ok, data = pcall(function()
+    if not C4:FileExists(name) then
+      return nil
+    end
+    handle = C4:FileOpen(name)
+    if handle == nil or handle == -1 then
+      return nil
+    end
+    return C4:FileRead(handle, count)
+  end)
+  if handle ~= nil and handle ~= -1 then
+    pcall(function()
+      C4:FileClose(handle)
+    end)
+  end
+  if ok then
+    return data
   end
   return nil
 end
@@ -3048,15 +3090,21 @@ local function flovalve_install_update(force)
     -- package filename, so no single wrong guess can disable installs.
     -- Confirm which key matches on a live Director.
     get_installed = function()
-      return flovalve_get_installed("flologic_valve.c4i")
-        or flovalve_get_installed("flologic_valve")
-        or flovalve_get_installed(FloUpdate.ASSET)
+      for _, key in ipairs({ "flologic_valve.c4i", "flologic_valve", FloUpdate.ASSET }) do
+        if flovalve_get_installed(key) then
+          flovalve_log_warn("update installed lookup matched: " .. key)
+          return true
+        end
+      end
+      return false
     end,
     file_set_dir = flovalve_file_set_dir,
     file_exists = flovalve_file_exists,
     file_delete = flovalve_file_delete,
     file_write = flovalve_file_write,
     file_size = flovalve_file_size,
+    file_read = flovalve_file_read,
+    log_warn = flovalve_log_warn,
     soap_send = flovalve_soap_send,
     force = force,
     current_version = FLOVALVE_DRIVER_VERSION,

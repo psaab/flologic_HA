@@ -9,9 +9,9 @@ contract is [c4/shared/flologic_link.md](shared/flologic_link.md)
 (normative code:
 [`c4/shared/flologic_link.lua`](shared/flologic_link.lua)).
 
-Both drivers share lockstep version **2026090806** (link protocol
+Both drivers share lockstep version **2026090807** (link protocol
 version **1**). Releases ship both packages under one `c4-v*` tag (e.g.
-`c4-v2026090806`); see [c4/RELEASE_NOTES.md](RELEASE_NOTES.md).
+`c4-v2026090807`); see [c4/RELEASE_NOTES.md](RELEASE_NOTES.md).
 The valve tile click needs Director OS 3.3.2+ (`DYNAMIC_ON`/`DYNAMIC_OFF`);
 the cloud driver runs on 3.3.0+.
 
@@ -172,7 +172,7 @@ monolith instances must migrate manually instead of updating.
   view binding (valve FloLogic Link 600 → cloud named slot), confirm
   `Valve Count` on the cloud, then run cloud `Refresh Valve List`.
 - **Version mismatch.** Both drivers must run the same lockstep
-  version (currently 2026090806; the release tag must equal both
+  version (currently 2026090807; the release tag must equal both
   manifests, enforced by the release workflow). Each driver's updater
   tracks only its own asset (`flologic_cloud.c4z` /
   `flologic_valve.c4z`); a valve talking to a cloud on a

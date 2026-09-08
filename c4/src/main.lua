@@ -336,6 +336,7 @@ local function flogic_file_set_dir(alias)
       C4:FileSetDir(candidate)
     end)
     if ok then
+      flogic_log_warn("update file store: " .. candidate)
       return true
     end
   end
@@ -389,6 +390,29 @@ local function flogic_file_size(name)
   end
   if ok then
     return size
+  end
+  return nil
+end
+
+local function flogic_file_read(name, count)
+  local handle
+  local ok, data = pcall(function()
+    if not C4:FileExists(name) then
+      return nil
+    end
+    handle = C4:FileOpen(name)
+    if handle == nil or handle == -1 then
+      return nil
+    end
+    return C4:FileRead(handle, count)
+  end)
+  if handle ~= nil and handle ~= -1 then
+    pcall(function()
+      C4:FileClose(handle)
+    end)
+  end
+  if ok then
+    return data
   end
   return nil
 end
@@ -515,15 +539,21 @@ local function flogic_install_update(force)
     -- bare proxy name, then the package filename, so no single wrong guess
     -- can disable installs. Confirm which key matches on a live Director.
     get_installed = function()
-      return flogic_get_installed("flologic_valve.c4i")
-        or flogic_get_installed("flologic_valve")
-        or flogic_get_installed(FloUpdate.ASSET)
+      for _, key in ipairs({ "flologic_valve.c4i", "flologic_valve", FloUpdate.ASSET }) do
+        if flogic_get_installed(key) then
+          flogic_log_warn("update installed lookup matched: " .. key)
+          return true
+        end
+      end
+      return false
     end,
     file_set_dir = flogic_file_set_dir,
     file_exists = flogic_file_exists,
     file_delete = flogic_file_delete,
     file_write = flogic_file_write,
     file_size = flogic_file_size,
+    file_read = flogic_file_read,
+    log_warn = flogic_log_warn,
     soap_send = flogic_soap_send,
     force = force,
     current_version = FLOGIC_DRIVER_VERSION,

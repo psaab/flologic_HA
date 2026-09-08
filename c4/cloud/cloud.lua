@@ -10,7 +10,7 @@
 -- favor of the slot->valve identity map below. Lua 5.1 safe.
 -- ============================================================================
 
-FLOCLOUD_DRIVER_VERSION = "2026090806"
+FLOCLOUD_DRIVER_VERSION = "2026090807"
 print("[flologic-cloud] Lua loaded: " .. FLOCLOUD_DRIVER_VERSION)
 
 FLOCLOUD_DEFAULT_HUB = "https://hub-cloudapps-prod.azurewebsites.net"
@@ -431,6 +431,7 @@ local function flocloud_file_set_dir(alias)
       C4:FileSetDir(candidate)
     end)
     if ok then
+      flocloud_log_warn("update file store: " .. candidate)
       return true
     end
   end
@@ -484,6 +485,29 @@ local function flocloud_file_size(name)
   end
   if ok then
     return size
+  end
+  return nil
+end
+
+local function flocloud_file_read(name, count)
+  local handle
+  local ok, data = pcall(function()
+    if not C4:FileExists(name) then
+      return nil
+    end
+    handle = C4:FileOpen(name)
+    if handle == nil or handle == -1 then
+      return nil
+    end
+    return C4:FileRead(handle, count)
+  end)
+  if handle ~= nil and handle ~= -1 then
+    pcall(function()
+      C4:FileClose(handle)
+    end)
+  end
+  if ok then
+    return data
   end
   return nil
 end
@@ -609,15 +633,21 @@ local function flocloud_install_update(force)
     -- package filename, so no single wrong guess can disable installs.
     -- Confirm which key matches on a live Director.
     get_installed = function()
-      return flocloud_get_installed("flologic_cloud.c4i")
-        or flocloud_get_installed("flologic_cloud")
-        or flocloud_get_installed(FloUpdate.ASSET)
+      for _, key in ipairs({ "flologic_cloud.c4i", "flologic_cloud", FloUpdate.ASSET }) do
+        if flocloud_get_installed(key) then
+          flocloud_log_warn("update installed lookup matched: " .. key)
+          return true
+        end
+      end
+      return false
     end,
     file_set_dir = flocloud_file_set_dir,
     file_exists = flocloud_file_exists,
     file_delete = flocloud_file_delete,
     file_write = flocloud_file_write,
     file_size = flocloud_file_size,
+    file_read = flocloud_file_read,
+    log_warn = flocloud_log_warn,
     soap_send = flocloud_soap_send,
     force = force,
     current_version = FLOCLOUD_DRIVER_VERSION,

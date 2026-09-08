@@ -133,6 +133,9 @@ local function director()
   function C4:FileGetSize(handle)
     return #(env.files[handle.name] or "")
   end
+  function C4:FileRead(handle, count)
+    return (env.files[handle.name] or ""):sub(1, count)
+  end
   function C4:FileClose(_) end
   function C4:FileDelete(name)
     env.files[name] = nil
@@ -527,14 +530,14 @@ D.test("director: install command stages the package and triggers Composer", fun
   env.files["flologic_valve.c4z"] = "OLD-DRIVER-BYTES"
   ExecuteCommand("Install Latest Release", {})
   D.check_equal(env.transfers[1].url, FloUpdate.API_URL, "install queries releases first")
-  env.transfers[1].done(nil, { { code = 200, body = director_release("2026090806") } }, 0)
+  env.transfers[1].done(nil, { { code = 200, body = director_release("2026090807") } }, 0)
   D.check_equal(#env.transfers, 2, "newer release downloads its asset")
-  env.transfers[2].done(nil, { { code = 200, body = "NEW-C4Z-BYTES" } }, 0)
-  D.check_equal(env.files["flologic_valve.c4z"], "NEW-C4Z-BYTES", "download staged to the file store")
+  env.transfers[2].done(nil, { { code = 200, body = "PK\003\004NEW-C4Z-BYTES" } }, 0)
+  D.check_equal(env.files["flologic_valve.c4z"], "PK\003\004NEW-C4Z-BYTES", "download staged to the file store")
   D.check_equal(#env.soap_packets, 1, "one Composer install trigger")
   D.check_equal(env.soap_packets[1], FloUpdate.build_install_packet("flologic_valve.c4z"), "trigger names the asset")
   D.check(
-    Properties["Update Status"]:find("Installation unconfirmed: 2026090806", 1, true) ~= nil,
+    Properties["Update Status"]:find("Installation unconfirmed: 2026090807", 1, true) ~= nil,
     "result does not claim a verified installation, got " .. tostring(Properties["Update Status"])
   )
   OnDriverDestroyed()
@@ -547,8 +550,8 @@ D.test("director: force reinstall bypasses the version compare", function()
   ExecuteCommand("Force Reinstall Latest Release", {})
   env.transfers[1].done(nil, { { code = 200, body = director_release(FLOGIC_DRIVER_VERSION) } }, 0)
   D.check_equal(#env.transfers, 2, "force downloads the same build")
-  env.transfers[2].done(nil, { { code = 200, body = "SAME-C4Z-BYTES" } }, 0)
-  D.check_equal(env.files["flologic_valve.c4z"], "SAME-C4Z-BYTES", "same build restaged")
+  env.transfers[2].done(nil, { { code = 200, body = "PK\003\004SAME-C4Z-BYTES" } }, 0)
+  D.check_equal(env.files["flologic_valve.c4z"], "PK\003\004SAME-C4Z-BYTES", "same build restaged")
   D.check_equal(#env.soap_packets, 1, "force still triggers Composer")
   OnDriverDestroyed()
 end)
@@ -559,8 +562,8 @@ D.test("director: denied file store fails loudly and keeps the old driver", func
   env.files["flologic_valve.c4z"] = "OLD-DRIVER-BYTES"
   env.files_denied = true
   ExecuteCommand("Install Latest Release", {})
-  env.transfers[1].done(nil, { { code = 200, body = director_release("2026090806") } }, 0)
-  env.transfers[2].done(nil, { { code = 200, body = "NEW-C4Z-BYTES" } }, 0)
+  env.transfers[1].done(nil, { { code = 200, body = director_release("2026090807") } }, 0)
+  env.transfers[2].done(nil, { { code = 200, body = "PK\003\004NEW-C4Z-BYTES" } }, 0)
   D.check_equal(env.files["flologic_valve.c4z"], "OLD-DRIVER-BYTES", "denial keeps the old build")
   D.check_equal(#env.soap_packets, 0, "denial triggers no install")
   D.check(
@@ -576,11 +579,11 @@ D.test("director: staging falls back to the documented C4Z alias", function()
   env.installed["flologic_valve.c4i"] = { [1] = true }
   env.denied_dirs = { C4Z_ROOT = true }
   ExecuteCommand("Install Latest Release", {})
-  env.transfers[1].done(nil, { { code = 200, body = director_release("2026090806") } }, 0)
-  env.transfers[2].done(nil, { { code = 200, body = "NEW-C4Z-BYTES" } }, 0)
+  env.transfers[1].done(nil, { { code = 200, body = director_release("2026090807") } }, 0)
+  env.transfers[2].done(nil, { { code = 200, body = "PK\003\004NEW-C4Z-BYTES" } }, 0)
   D.check_equal(env.dir_attempts[1], "C4Z_ROOT", "proflame alias tried first")
   D.check_equal(env.dir_attempts[2], "C4Z", "documented alias tried on denial")
-  D.check_equal(env.files["flologic_valve.c4z"], "NEW-C4Z-BYTES", "staging completes via fallback")
+  D.check_equal(env.files["flologic_valve.c4z"], "PK\003\004NEW-C4Z-BYTES", "staging completes via fallback")
   D.check_equal(#env.soap_packets, 1, "install triggers after fallback staging")
   OnDriverDestroyed()
 end)
@@ -644,8 +647,8 @@ D.test("director: polls never steal the idle Composer binding", function()
   local env = director()
   env.installed["flologic_valve"] = { [1] = true }
   ExecuteCommand("Install Latest Release", {})
-  env.transfers[1].done(nil, { { code = 200, body = director_release("2026090806") } }, 0)
-  env.transfers[2].done(nil, { { code = 200, body = "NEW-C4Z-BYTES" } }, 0)
+  env.transfers[1].done(nil, { { code = 200, body = director_release("2026090807") } }, 0)
+  env.transfers[2].done(nil, { { code = 200, body = "PK\003\004NEW-C4Z-BYTES" } }, 0)
   local soap_id = env.binding
   D.check(soap_id ~= nil, "install used a binding")
   -- Director clears the address when the SOAP connection drops; the id must

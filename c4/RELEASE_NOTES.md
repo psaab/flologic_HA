@@ -1,5 +1,12 @@
 Control4 DriverWorks package for FloLogic Connect valves (OS 3.3.0+).
 
+Version **2026090807** diagnoses the failing GitHub self-update: the
+updater now traces every milestone to the Lua log (downloaded bytes,
+which file-store alias won, which installed-lookup key matched, stage
+verification, trigger outcome) and refuses to trigger an install when
+the staged file is not a driver archive (zip-magic read-back). Run one
+update on this build and the log pinpoints the breaking step.
+
 Version **2026090806** fixes commands timing out despite being applied
 plus link naming in Connections view. (0805 never published — its release
 run failed on a formatting check; identical content ships here.) The hub applies `RequestStateChange`

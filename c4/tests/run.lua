@@ -1094,6 +1094,13 @@ local function install_fixtures(version)
     file_size = function(name)
       return files[name] and #files[name] or nil
     end,
+    file_read = function(name, count)
+      local data = files[name]
+      if data == nil then
+        return nil
+      end
+      return data:sub(1, count)
+    end,
     soap_send = function(packet, cb)
       store.soap_packets[#store.soap_packets + 1] = packet
       cb(store.soap_err)
@@ -1117,9 +1124,9 @@ end
 
 T.test("updates: install downloads, stages, and triggers on newer release", function()
   local timers = TestHelp.new_fake_timers()
-  local releases, store, fakes = install_fixtures("2026090806")
+  local releases, store, fakes = install_fixtures("2026090807")
   local seen, progress, err, outcome = {}, {}, nil, nil
-  fakes.http_get = install_http(JSON.encode(releases), "NEW-DRIVER-BYTES", seen)
+  fakes.http_get = install_http(JSON.encode(releases), "PK\003\004NEW-DRIVER-BYTES", seen)
   fakes.set_timeout = timers.set_timeout
   fakes.force, fakes.current_version = false, "2026090705"
   fakes.on_progress = function(text)
@@ -1131,8 +1138,8 @@ T.test("updates: install downloads, stages, and triggers on newer release", func
   local op = FloUpdate.new_install(fakes)
   op.start()
   T.check(err == nil, "no error, got " .. tostring(err))
-  T.check_equal(outcome.attempted, "2026090806", "attempted version")
-  T.check_equal(store.files["flologic_valve.c4z"], "NEW-DRIVER-BYTES", "staged bytes")
+  T.check_equal(outcome.attempted, "2026090807", "attempted version")
+  T.check_equal(store.files["flologic_valve.c4z"], "PK\003\004NEW-DRIVER-BYTES", "staged bytes")
   T.check_equal(store.set_dir_calls[1], "C4Z_ROOT", "staged to the install root")
   T.check_equal(#store.soap_packets, 1, "one install trigger")
   T.check_equal(store.soap_packets[1], FloUpdate.build_install_packet("flologic_valve.c4z"), "trigger packet")
@@ -1140,11 +1147,38 @@ T.test("updates: install downloads, stages, and triggers on newer release", func
   T.check(progress[1]:find("Downloading", 1, true) ~= nil, "download progress")
 end)
 
+T.test("updates: install traces milestones and rejects a non-archive stage", function()
+  local timers = TestHelp.new_fake_timers()
+  local releases, store, fakes = install_fixtures("2026090807")
+  local seen, warns = {}, {}
+  fakes.http_get = install_http(JSON.encode(releases), "NOT-A-DRIVER-ARCHIVE", seen)
+  fakes.set_timeout = timers.set_timeout
+  fakes.force, fakes.current_version = false, "2026090705"
+  fakes.log_warn = function(msg)
+    warns[#warns + 1] = msg
+  end
+  local err, outcome = nil, nil
+  fakes.on_result = function(e, o)
+    err, outcome = e, o
+  end
+  local op = FloUpdate.new_install(fakes)
+  op.start()
+  T.check(
+    err ~= nil and err:find("not a driver archive", 1, true) ~= nil,
+    "magic gate fails loud, got " .. tostring(err)
+  )
+  T.check(outcome == nil, "no outcome on gate failure")
+  T.check_equal(#store.soap_packets, 0, "no trigger for garbage")
+  local trace = table.concat(warns, "\n")
+  T.check(trace:find("update download: 20 bytes", 1, true) ~= nil, "download traced, got: " .. trace)
+  T.check(trace:find("magic check failed", 1, true) ~= nil, "gate traced")
+end)
+
 T.test("updates: install skips when current, force reinstalls anyway", function()
   local timers = TestHelp.new_fake_timers()
   local releases, store, fakes = install_fixtures("2026090705")
   local seen = {}
-  fakes.http_get = install_http(JSON.encode(releases), "NEW-DRIVER-BYTES", seen)
+  fakes.http_get = install_http(JSON.encode(releases), "PK\003\004NEW-DRIVER-BYTES", seen)
   fakes.set_timeout = timers.set_timeout
   fakes.force, fakes.current_version = false, "2026090705"
   local err, outcome = nil, nil
@@ -1164,15 +1198,15 @@ T.test("updates: install skips when current, force reinstalls anyway", function(
   FloUpdate.new_install(fakes).start()
   T.check(ferr == nil, "force has no error")
   T.check_equal(foutcome.attempted, "2026090705", "force attempts same build")
-  T.check_equal(store.files["flologic_valve.c4z"], "NEW-DRIVER-BYTES", "bytes replaced")
+  T.check_equal(store.files["flologic_valve.c4z"], "PK\003\004NEW-DRIVER-BYTES", "bytes replaced")
 end)
 
 T.test("updates: install failures leave the old driver intact", function()
   local timers = TestHelp.new_fake_timers()
   local function run(mutator, current)
-    local releases, store, fakes = install_fixtures("2026090806")
+    local releases, store, fakes = install_fixtures("2026090807")
     local seen = {}
-    fakes.http_get = install_http(JSON.encode(releases), "NEW-DRIVER-BYTES", seen)
+    fakes.http_get = install_http(JSON.encode(releases), "PK\003\004NEW-DRIVER-BYTES", seen)
     fakes.set_timeout = timers.set_timeout
     fakes.force, fakes.current_version = false, current or "2026090705"
     local err, outcome = "unset", "unset"
@@ -1214,7 +1248,7 @@ end)
 
 T.test("updates: install follows asset redirects with headers", function()
   local timers = TestHelp.new_fake_timers()
-  local releases, _, fakes = install_fixtures("2026090806")
+  local releases, _, fakes = install_fixtures("2026090807")
   local hops = {}
   fakes.http_get = function(url, _, cb)
     hops[#hops + 1] = url
@@ -1223,7 +1257,7 @@ T.test("updates: install follows asset redirects with headers", function()
     elseif #hops == 2 then
       cb(nil, "", 302, { Location = "https://objects.example.invalid/asset" })
     else
-      cb(nil, "NEW-DRIVER-BYTES", 200, nil)
+      cb(nil, "PK\003\004NEW-DRIVER-BYTES", 200, nil)
     end
     return function() end
   end
@@ -1235,13 +1269,13 @@ T.test("updates: install follows asset redirects with headers", function()
   end
   FloUpdate.new_install(fakes).start()
   T.check(err == nil, "redirect followed, got " .. tostring(err))
-  T.check_equal(outcome.attempted, "2026090806", "attempted after redirect")
+  T.check_equal(outcome.attempted, "2026090807", "attempted after redirect")
   T.check_equal(hops[3], "https://objects.example.invalid/asset", "followed Location")
 end)
 
 T.test("updates: install rejects bare redirects and cancel wins races", function()
   local timers = TestHelp.new_fake_timers()
-  local releases, _, fakes = install_fixtures("2026090806")
+  local releases, _, fakes = install_fixtures("2026090807")
   fakes.http_get = function(url, _, cb)
     if url:find("api.github.com", 1, true) then
       cb(nil, JSON.encode(releases), 200, nil)
