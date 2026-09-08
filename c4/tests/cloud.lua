@@ -187,7 +187,7 @@ local function discover(env, devices, accesses)
 end
 
 T.test("cloud: version, link pin, updater asset, no picker (CLOUD-U6)", function()
-  T.check_equal(FLOCLOUD_DRIVER_VERSION, "2026090812", "cloud version")
+  T.check_equal(FLOCLOUD_DRIVER_VERSION, "2026090813", "cloud version")
   T.check_equal(FLOGIC_LINK_VERSION, 1, "protocol version is 1")
   T.check_equal(FloUpdate.ASSET, "flologic_cloud.c4z", "updater tracks the cloud package")
   T.check_equal(FloUpdate.FAMILY_ASSETS[1], "flologic_cloud.c4z", "updater requires its own package")
@@ -1556,5 +1556,112 @@ T.test("cloud: unbind retires the slot's queued and pending work (L5)", function
   T.check_equal(#env.send_calls, 2, "surviving job still executes")
   settlers[2]()
   T.check_equal(#sends_to(env, 2002, Link.MSG_CMD_ACK), 1, "surviving job acked")
+  OnDriverDestroyed()
+end)
+
+-- Capture print output for one function, restoring print even on failure.
+local function capture_print(fn)
+  local saved = print
+  local lines = {}
+  print = function(...)
+    local parts = {}
+    for i = 1, select("#", ...) do
+      parts[#parts + 1] = tostring(select(i, ...))
+    end
+    lines[#lines + 1] = table.concat(parts, "\t")
+  end
+  local ok, err = pcall(fn)
+  print = saved
+  if not ok then
+    error(err, 0)
+  end
+  return lines
+end
+
+local function printed(lines, pattern)
+  for _, line in ipairs(lines) do
+    if line:find(pattern, 1, true) then
+      return true
+    end
+  end
+  return false
+end
+
+T.test("cloud: skip message distinguishes busy from not-ready", function()
+  local env = boot(cloud_env())
+  Properties[FLOCLOUD_PROP_DEBUG] = "On"
+  -- Fresh busy: names the owner and its age.
+  flocloud_account_fetch = function(hub, cb)
+    env.fetch_calls[#env.fetch_calls + 1] = { hub = hub }
+  end
+  flocloud_poll_now()
+  T.check(flocloud_state.busy, "held poll claims busy")
+  local lines = capture_print(flocloud_poll_now)
+  T.check(printed(lines, "poll skipped: session busy (poll "), "busy skip names the poll owner")
+  T.check(flocloud_state.poll_overdue, "due poll remembered while busy")
+  -- Uninitialized: a different message, no overdue flag.
+  flocloud_state.initialized = false
+  flocloud_state.poll_overdue = false
+  lines = capture_print(flocloud_poll_now)
+  T.check(printed(lines, "poll skipped: driver not ready"), "not-ready skip is distinct")
+  T.check(not flocloud_state.poll_overdue, "no overdue flag while not ready")
+  OnDriverDestroyed()
+end)
+
+T.test("cloud: busy watchdog clears a stuck poll and polls fresh", function()
+  local env = boot(cloud_env())
+  discover(env, { make_valve() }, {})
+  -- A hung transport: the seam records the poll but never calls back.
+  local orphans = {}
+  flocloud_account_fetch = function(hub, cb)
+    env.fetch_calls[#env.fetch_calls + 1] = { hub = hub }
+    orphans[#orphans + 1] = cb
+  end
+  flocloud_poll_now()
+  T.check(flocloud_state.busy, "stuck poll holds busy")
+  local calls = #env.fetch_calls
+  -- Age past the watchdog and poll again: the orphan is force-cleared and
+  -- a fresh poll starts in the same call.
+  flocloud_state.busy_since = os.time() - FLOCLOUD_BUSY_WATCHDOG_S - 1
+  local lines = capture_print(flocloud_poll_now)
+  T.check(printed(lines, "busy watchdog: poll stuck"), "watchdog announces the stuck poll")
+  T.check_equal(#env.fetch_calls, calls + 1, "fresh poll starts after the clear")
+  T.check(flocloud_state.busy, "fresh poll holds busy")
+  T.check_equal(flocloud_state.busy_what, "poll", "fresh claim re-stamps the owner")
+  -- The orphan's late reply settles nothing: generation fenced.
+  local devices_before = flocloud_state.last_devices
+  orphans[1](nil, { user = { id = 7 }, devices = { make_valve({ id = 99 }) }, accesses = {} })
+  T.check(flocloud_state.busy, "orphan reply does not clear the fresh poll")
+  T.check(flocloud_state.last_devices == devices_before, "orphan account ignored")
+  OnDriverDestroyed()
+end)
+
+T.test("cloud: busy watchdog nacks an orphaned command job", function()
+  local env = boot(cloud_env())
+  discover(env, { make_valve() }, {})
+  local held = nil
+  flocloud_command_send = function(job, settled)
+    env.send_calls[#env.send_calls + 1] = job
+    held = settled
+  end
+  env.proxy_sends = {}
+  ReceivedFromProxy(2001, "FLOGIC_COMMAND", Link.build_command("run-1", "mode_home"))
+  T.check(flocloud_state.busy, "command holds busy")
+  T.check_equal(flocloud_state.busy_what, "command:mode_home", "busy names the command")
+  -- Hang the send, age past the watchdog, then poll: the stuck job is
+  -- nacked and the poll proceeds.
+  flocloud_state.busy_since = os.time() - FLOCLOUD_BUSY_WATCHDOG_S - 1
+  script_account(env, { make_valve() }, {})
+  local calls = #env.fetch_calls
+  local lines = capture_print(flocloud_poll_now)
+  T.check(printed(lines, "busy watchdog: command:mode_home stuck"), "watchdog announces the stuck command")
+  local nacks = sends_to(env, 2001, Link.MSG_CMD_NACK)
+  T.check_equal(#nacks, 1, "orphaned job nacked")
+  T.check_equal(Link.parse(nacks[1].params).error_reason, "stuck", "stuck reason")
+  T.check(flocloud_state.pending_commands[2001]["run-1"] == nil, "orphaned pending cleared")
+  T.check_equal(#env.fetch_calls, calls + 1, "poll proceeds after the clear")
+  -- The orphan's late settle is fenced: no second ack.
+  held()
+  T.check_equal(#sends_to(env, 2001, Link.MSG_CMD_ACK), 0, "late settle sends no ack")
   OnDriverDestroyed()
 end)

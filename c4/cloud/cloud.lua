@@ -10,7 +10,7 @@
 -- favor of the slot->valve identity map below. Lua 5.1 safe.
 -- ============================================================================
 
-FLOCLOUD_DRIVER_VERSION = "2026090812"
+FLOCLOUD_DRIVER_VERSION = "2026090813"
 print("[flologic-cloud] Lua loaded: " .. FLOCLOUD_DRIVER_VERSION)
 
 FLOCLOUD_DEFAULT_HUB = "https://hub-cloudapps-prod.azurewebsites.net"
@@ -34,6 +34,11 @@ FLOCLOUD_REFRESH_POLL_MIN_S = 30
 -- request, so preparation (negotiate, upgrade, login, inventory) can
 -- never spend the companion's window and still transmit.
 FLOCLOUD_COMMAND_DEADLINE_S = 90
+-- Watchdog: a session (poll or command) holding busy longer than this
+-- never settled — force-clear it and poll fresh instead of wedging the
+-- driver forever. Well above any legitimate session: polls finish in
+-- seconds and commands settle inside the 90s transmit deadline.
+FLOCLOUD_BUSY_WATCHDOG_S = 180
 -- Freshness budget advertised on every snapshot: the configured poll
 -- cadence times the multiple, plus one worst-case session, clamped to
 -- the floor. The companion must not infer cadence from traffic (a
@@ -2187,6 +2192,9 @@ function flocloud_run_next()
     return
   end
   st.busy = true
+  st.busy_since = os.time()
+  st.busy_what = "command:" .. tostring(job.name)
+  st.busy_job = job
   local function settled(err)
     local slot_pending = st.pending_commands[job.slot]
     if slot_pending == nil or slot_pending[job.cmd_id] == nil then
@@ -2245,15 +2253,46 @@ end
 
 function flocloud_poll_now()
   local st = flocloud_state
-  if st.busy or not st.initialized then
-    if st.busy and st.initialized then
+  if not st.initialized then
+    flocloud_log("poll skipped: driver not ready")
+    return
+  end
+  if st.busy then
+    local age = os.time() - (st.busy_since or os.time())
+    if age < FLOCLOUD_BUSY_WATCHDOG_S then
       -- A session is running: remember the due poll so the next run_next
       -- executes it before further commands instead of dropping
       -- reconciliation until the next interval.
       st.poll_overdue = true
+      flocloud_log(
+        "poll skipped: session busy (" .. tostring(st.busy_what or "session") .. " " .. tostring(age) .. "s)"
+      )
+      return
     end
-    flocloud_log("poll skipped: session busy or driver not ready")
-    return
+    -- Watchdog: the owning session never settled (a hung transport calls
+    -- back never). Force-clear and fall through to a fresh poll — every
+    -- session callback is fenced on session identity and poll generation,
+    -- so the orphan's late reply settles nothing. An orphaned command job
+    -- is nacked so the companion learns the outcome instead of timing out.
+    flocloud_log_warn(
+      "busy watchdog: " .. tostring(st.busy_what or "session") .. " stuck " .. tostring(age) .. "s; forcing clear"
+    )
+    local orphan = st.session
+    st.session = nil
+    st.busy = false
+    st.busy_since = nil
+    st.busy_what = nil
+    st.poll_seq = (st.poll_seq or 0) + 1
+    if orphan ~= nil then
+      pcall(function()
+        orphan.cancel()
+      end)
+    end
+    local orphan_job = st.busy_job
+    st.busy_job = nil
+    if orphan_job ~= nil then
+      flocloud_drop_job(orphan_job, "stuck", "stuck session cleared by watchdog")
+    end
   end
   if flocloud_breaker_open() then
     local retry_in = st.cb_open_until - os.time()
@@ -2272,6 +2311,9 @@ function flocloud_poll_now()
     return
   end
   st.busy = true
+  st.busy_since = os.time()
+  st.busy_what = "poll"
+  st.busy_job = nil
   st.poll_seq = (st.poll_seq or 0) + 1
   local seq = st.poll_seq
   -- Scripted seams call back without clearing session state, so the wrapper

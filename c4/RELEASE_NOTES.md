@@ -1,5 +1,17 @@
 Control4 DriverWorks package for FloLogic Connect valves (OS 3.3.0+).
 
+Version **2026090813** adds a busy watchdog to the cloud driver: a
+poll or command session that never settles (a hung transport calls
+back never) used to hold `busy` forever, so every later poll skipped
+with "session busy or driver not ready" and the driver looked dead
+with no error. Past 180s the watchdog now force-clears the orphan
+(its late reply is fenced by session identity and poll generation),
+nacks an orphaned command job `stuck` so the companion learns the
+outcome, and starts a fresh poll in the same tick. The skip message
+is also split — "session busy (<owner> <age>s)" versus "driver not
+ready" — so the next field report diagnoses itself. Valve package
+is a lockstep version bump only.
+
 Version **2026090812** fixes the self-update read-back the 0811 field
 run caught: `C4:FileOpen` positions at end-of-file, so the staged
 candidate's magic gate read `""` and failed every install. All three
