@@ -1,5 +1,11 @@
 Control4 DriverWorks package for FloLogic Connect valves (OS 3.3.0+).
 
+Version **2026090815** is a version bump only (no functional change
+from 0814) to exercise the self-update path in the field: install
+0814 manually, then run Check for Update / Install Latest Release
+to confirm the updater downloads, magic-gates, moves, and reloads
+0815 end to end.
+
 Version **2026090814** fixes the 0811/0812 field wedge: first boot
 crashed in `OnDriverLateInit` at the persisted-epoch read, so the
 driver loaded but never initialized — every poll skipped, update
