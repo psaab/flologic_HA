@@ -1,5 +1,13 @@
 Control4 DriverWorks package for FloLogic Connect valves (OS 3.3.0+).
 
+Version **2026090808** removes the phantom `Valve Link 16` connection and
+fixes valve instances installing as `Light v2`. The static slot is gone:
+Composer indexes the proxy-less cloud via combo + category (the proven
+reference form), so all 16 links are dynamic and named — existing binds
+migrate untouched since restore re-creates the persisted ids. The valve
+proxy now carries `primary` + `name` like the reference proxy drivers,
+so new instances take the driver name.
+
 Version **2026090807** diagnoses the failing GitHub self-update: the
 updater now traces every milestone to the Lua log (downloaded bytes,
 which file-store alias won, which installed-lookup key matched, stage

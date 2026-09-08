@@ -2,7 +2,7 @@
 
 One `FloLogic Cloud` instance owns the FloLogic account: credentials, a
 single poll loop, discovery, and one dynamic CONTROL provider binding per
-valve (dynamic 2002–2016 first, static 2001 `Valve Link 16` overflow-last, class `FLOGIC_VALVE`). Each `FloLogic Water Valve`
+valve (ids 2001–2016, class `FLOGIC_VALVE`). Each `FloLogic Water Valve`
 driver binds to one of those slots and shows/controls that valve. Valve
 drivers hold no credentials and never talk to the cloud directly.
 
@@ -29,7 +29,7 @@ Protocol contract: [`../shared/flologic_link.md`](../shared/flologic_link.md)
 - **One poll serves N valves.** Each poll opens a single cloud session,
   takes the authoritative inventory, reconciles slot bindings (slot 2001
   is the static manifest link, 2002-2016 dynamic; new
-  valves take the lowest free dynamic slot (static 2001 only overflows at 16 valves), reusing a departed slot only once
+  valves take the lowest free slot, reusing a departed slot only once
   its binding is explicitly observed unbound; removed valves mark their
   slot unavailable without deleting the bound slot), then fans one
   `FLOGIC_STATE` slice out per bound slot.

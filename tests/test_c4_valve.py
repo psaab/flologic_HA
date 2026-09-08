@@ -81,7 +81,7 @@ def test_valve_manifest_links_switch_contacts_and_identity() -> None:
     assert manifest.findtext("name") == "FloLogic Water Valve"
     version = manifest.findtext("version")
     assert f'FLOVALVE_DRIVER_VERSION = "{version}"' in _read("valve/valve.lua")
-    assert version == "2026090807"
+    assert version == "2026090808"
     # Switch-only light proxy on 5001.
     assert len(manifest.findall("proxies/proxy")) == 1
     proxy = manifest.find("proxies/proxy")
@@ -96,6 +96,12 @@ def test_valve_manifest_links_switch_contacts_and_identity() -> None:
     # through the light proxy, mirroring the reference proxy drivers).
     assert manifest.findtext("composer_categories/category") == "Utility"
     assert manifest.find("combo") is None
+    # Instance naming: the proxy carries primary + name, or Composer
+    # names new instances after the raw proxy ("Light v2").
+    (proxy,) = manifest.findall("proxies/proxy")
+    assert proxy.attrib.get("primary") == "True"
+    assert proxy.attrib.get("name") == "FloLogic Water Valve"
+    assert (proxy.text or "").strip() == "light_v2"
     connections = {
         int(entry.findtext("id")): entry
         for entry in manifest.findall("connections/connection")

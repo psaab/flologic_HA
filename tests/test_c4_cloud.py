@@ -90,23 +90,10 @@ def test_cloud_manifest_has_no_proxies_or_valve_selection() -> None:
     assert len(manifest.findall("proxies/proxy")) == 0
     assert "CONTACT_SENSOR" not in text
     assert "light_v2" not in text
-    # Composer refuses to index a driver with neither proxies nor
-    # connections, so slot 2001 is a static CONTROL provider; slots
-    # 2002-2016 stay dynamic in Lua. The static link fills LAST (its
-    # manifest name is permanent: Director has no binding-rename API), so
-    # it is honestly named for the overflow position. Exactly one static
-    # connection, exactly one class declaration.
-    connections = manifest.findall("connections/connection")
-    assert len(connections) == 1
-    link = connections[0]
-    assert link.findtext("id") == "2001"
-    assert link.findtext("connectionname") == "Valve Link 16"
-    assert "flocloud_slot_order" in _read("cloud/cloud.lua")  # overflow-last fill order
-    assert link.findtext("consumer") == "False"
-    assert link.findtext("classes/class/classname") == "FLOGIC_VALVE"
-    assert len(manifest.findall("connections/connection/classes/class")) == 1
-    # Composer discovery for a proxy-less coordinator: combo + category,
+    # No static connections: every valve link is dynamic (and named).
+    # Composer indexes the proxy-less coordinator via combo + category,
     # mirroring the proven reference form (monolith shipped combo=true).
+    assert len(manifest.findall("connections/connection")) == 0
     assert manifest.findtext("combo") == "true"
     assert manifest.findtext("composer_categories/category") == "Utility"
     assert "Select Valve" not in text

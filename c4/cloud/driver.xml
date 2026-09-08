@@ -8,7 +8,7 @@
   <manufacturer>FloLogic</manufacturer>
   <driver>DriverWorks</driver>
   <control>lua_gen</control>
-  <version>2026090807</version>
+  <version>2026090808</version>
   <minimum_os_version>3.3.0</minimum_os_version>
   <created>09/08/2026 12:00 PM</created>
   <modified>09/08/2026 12:00 PM</modified>
@@ -49,7 +49,7 @@
       <property>
         <name>Driver Version</name>
         <type>STRING</type>
-        <default>2026090807</default>
+        <default>2026090808</default>
         <readonly>true</readonly>
       </property>
       <property>
@@ -185,31 +185,15 @@
   <composer_categories>
     <category>Utility</category>
   </composer_categories>
-  <!-- No proxies: the cloud driver owns no display, contacts, or app
-       tile. Slot 2001 is a static CONTROL provider binding; Director has
-       no binding-rename API, so its manifest name is permanent and it
-       fills LAST (overflow): slots 2002-2016 are created at runtime with
-       C4:AddDynamicBinding (plan D2) and carry their valve names, all
-       class FLOGIC_VALVE. Bind the named links; Valve Link 16 only binds
-       on a 16-valve account. -->
+  <!-- No proxies and no static connections: the cloud driver owns no
+       display, contacts, or app tile. Composer indexes it via combo +
+       composer_categories (the proven proxy-less coordinator form — cf.
+       Finite Labs ESPHome drivers), so every valve link is a dynamic
+       CONTROL provider binding created at runtime with
+       C4:AddDynamicBinding (plan D2), ids 2001-2016, class FLOGIC_VALVE,
+       each carrying its valve name. -->
   <proxies/>
-  <connections>
-    <connection>
-      <id>2001</id>
-      <facing>6</facing>
-      <connectionname>Valve Link 16</connectionname>
-      <type>1</type>
-      <consumer>False</consumer>
-      <audiosource>False</audiosource>
-      <videosource>False</videosource>
-      <linelevel>False</linelevel>
-      <classes>
-        <class>
-          <classname>FLOGIC_VALVE</classname>
-        </class>
-      </classes>
-    </connection>
-  </connections>
+  <connections/>
   <events>
     <event>
       <id>1</id>

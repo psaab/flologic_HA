@@ -10,7 +10,7 @@
 -- favor of the slot->valve identity map below. Lua 5.1 safe.
 -- ============================================================================
 
-FLOCLOUD_DRIVER_VERSION = "2026090807"
+FLOCLOUD_DRIVER_VERSION = "2026090808"
 print("[flologic-cloud] Lua loaded: " .. FLOCLOUD_DRIVER_VERSION)
 
 FLOCLOUD_DEFAULT_HUB = "https://hub-cloudapps-prod.azurewebsites.net"
@@ -24,10 +24,10 @@ FLOCLOUD_CB_FAILURES = 5
 FLOCLOUD_CB_COOLDOWN_S = 300
 FLOCLOUD_QUEUE_MAX = 8
 
--- CONTROL provider slots (plan D2): one per valve, 16-valve cap. The
--- dynamic slots fill in id order; SLOT_FIRST is the static manifest
--- provider ("Valve Link 16") and fills LAST as overflow, because Director
--- has no binding-rename API and a static name can never show a valve name.
+-- Dynamic CONTROL provider slots (plan D2): one per valve, lowest free id
+-- reused, 16-valve cap. Never declared in driver.xml: Composer indexes
+-- the cloud via combo + composer_categories, so every link is dynamic and
+-- carries its valve name.
 FLOCLOUD_SLOT_FIRST = 2001
 FLOCLOUD_SLOT_LAST = 2016
 FLOCLOUD_LINK_CLASS = "FLOGIC_VALVE"
@@ -848,20 +848,8 @@ local function flocloud_sorted_slots()
   return ids
 end
 
--- Fill order: dynamic slots in id order, static SLOT_FIRST last as
--- overflow (its manifest name is permanent, so it must never take a valve
--- while a nameable slot is free).
-local function flocloud_slot_order()
-  local ids = {}
-  for slot = FLOCLOUD_SLOT_FIRST + 1, FLOCLOUD_SLOT_LAST do
-    ids[#ids + 1] = slot
-  end
-  ids[#ids + 1] = FLOCLOUD_SLOT_FIRST
-  return ids
-end
-
 function flocloud_find_free_slot()
-  for _, slot in ipairs(flocloud_slot_order()) do
+  for slot = FLOCLOUD_SLOT_FIRST, FLOCLOUD_SLOT_LAST do
     if flocloud_state.slots[slot] == nil then
       return slot
     end
@@ -871,7 +859,7 @@ function flocloud_find_free_slot()
   -- live (bound) link, and never a never-observed one (e.g. post-restart,
   -- where a binding may still exist): the valve there would silently
   -- adopt a stranger's identity on its next hello.
-  for _, slot in ipairs(flocloud_slot_order()) do
+  for slot = FLOCLOUD_SLOT_FIRST, FLOCLOUD_SLOT_LAST do
     local entry = flocloud_state.slots[slot]
     if entry ~= nil and not entry.available and entry.bound == false then
       return slot
@@ -959,15 +947,6 @@ local function flocloud_persist_slots()
 end
 
 local function flocloud_add_binding(slot, name)
-  if slot == FLOCLOUD_SLOT_FIRST then
-    -- Slot 2001 is the static manifest provider ("Valve Link 16",
-    -- overflow-last): it exists from install, so there is nothing to
-    -- create. Composer requires at least one proxy or connection to
-    -- index a driver, and this static link is what keeps the cloud
-    -- searchable.
-    flocloud_log("static binding ready: id=" .. tostring(slot) .. " class=" .. FLOCLOUD_LINK_CLASS)
-    return
-  end
   C4:AddDynamicBinding(slot, "CONTROL", true, name, FLOCLOUD_LINK_CLASS, false, false)
   flocloud_log("dynamic binding added: id=" .. tostring(slot) .. " class=" .. FLOCLOUD_LINK_CLASS)
 end
@@ -1110,13 +1089,11 @@ function flocloud_reconcile_inventory(devices)
       local name = flocloud_display_name(valve)
       local previous = st.slots[slot]
       local renamed = false
-      if previous ~= nil and previous.valve_id ~= id and slot ~= FLOCLOUD_SLOT_FIRST then
+      if previous ~= nil and previous.valve_id ~= id then
         -- Slot reuse with a new valve: the Director binding still shows
         -- the departed valve's name, and Director has no binding-rename
         -- API. Reuse requires observed-unbound (M1), so remove + re-add is
-        -- safe — re-verified live first, since the flag may be stale. The
-        -- static overflow slot never needs this (its generic name is
-        -- always accurate).
+        -- safe — re-verified live first, since the flag may be stale.
         local consumers = flocloud_bound_consumers(slot)
         if consumers ~= nil and #consumers == 0 then
           local rok = pcall(function()
