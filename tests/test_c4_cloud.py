@@ -102,6 +102,10 @@ def test_cloud_manifest_has_no_proxies_or_valve_selection() -> None:
     assert link.findtext("consumer") == "False"
     assert link.findtext("classes/class/classname") == "FLOGIC_VALVE"
     assert len(manifest.findall("connections/connection/classes/class")) == 1
+    # Composer discovery for a proxy-less coordinator: combo + category,
+    # mirroring the proven reference form (monolith shipped combo=true).
+    assert manifest.findtext("combo") == "true"
+    assert manifest.findtext("composer_categories/category") == "Utility"
     assert "Select Valve" not in text
     assert "Valve ID Override" not in text
     properties = {

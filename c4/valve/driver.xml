@@ -8,7 +8,7 @@
   <manufacturer>FloLogic</manufacturer>
   <driver>DriverWorks</driver>
   <control>lua_gen</control>
-  <version>2026090802</version>
+  <version>2026090803</version>
   <!-- Navigator clicks arrive as DYNAMIC_ON/DYNAMIC_OFF (OS 3.3.2+). -->
   <minimum_os_version>3.3.2</minimum_os_version>
   <created>09/08/2026 12:00 PM</created>
@@ -54,7 +54,7 @@
       <property>
         <name>Driver Version</name>
         <type>STRING</type>
-        <default>2026090802</default>
+        <default>2026090803</default>
         <readonly>true</readonly>
       </property>
       <property>
@@ -349,6 +349,12 @@
     <!-- Keep the explicit closing tag used by Proflame's working reload manifest. -->
     <script file="driver.lua" encryption="0" jit="1"></script>
   </config>
+  <!-- composer_categories mirrors the proven device-driver form (Finite
+       Labs drivers all declare one). No combo element: like the reference
+       proxy drivers, this driver exposes its UI through proxies. -->
+  <composer_categories>
+    <category>Utility</category>
+  </composer_categories>
   <proxies>
     <proxy proxybindingid="5001">light_v2</proxy>
   </proxies>

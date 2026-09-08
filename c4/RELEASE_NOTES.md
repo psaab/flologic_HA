@@ -1,5 +1,12 @@
 Control4 DriverWorks package for FloLogic Connect valves (OS 3.3.0+).
 
+Version **2026090803** completes the Composer-discovery fix: the cloud
+manifest now declares `combo` plus a `Utility` composer category,
+mirroring the proven proxy-less coordinator form (and restoring the
+`combo` element the working monolith shipped). The valve declares the
+same category. If `FloLogic Cloud` still did not appear in driver
+search on 2026090802, this build resolves it.
+
 Version **2026090802** fixes Composer discovery of the cloud driver:
 Composer refuses to index a driver with neither proxies nor connections,
 so the cloud now declares its primary valve link as a static manifest

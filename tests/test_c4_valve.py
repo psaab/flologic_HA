@@ -81,7 +81,7 @@ def test_valve_manifest_links_switch_contacts_and_identity() -> None:
     assert manifest.findtext("name") == "FloLogic Water Valve"
     version = manifest.findtext("version")
     assert f'FLOVALVE_DRIVER_VERSION = "{version}"' in _read("valve/valve.lua")
-    assert version == "2026090802"
+    assert version == "2026090803"
     # Switch-only light proxy on 5001.
     assert len(manifest.findall("proxies/proxy")) == 1
     proxy = manifest.find("proxies/proxy")
@@ -92,6 +92,10 @@ def test_valve_manifest_links_switch_contacts_and_identity() -> None:
     assert "<on_off>True</on_off>" in text
     # Tile clicks need DYNAMIC_ON/DYNAMIC_OFF (OS 3.3.2+).
     assert manifest.findtext("minimum_os_version") == "3.3.2"
+    # Composer discovery: category declared; no combo element (the UI goes
+    # through the light proxy, mirroring the reference proxy drivers).
+    assert manifest.findtext("composer_categories/category") == "Utility"
+    assert manifest.find("combo") is None
     connections = {
         int(entry.findtext("id")): entry
         for entry in manifest.findall("connections/connection")

@@ -952,7 +952,7 @@ end
 
 T.test("updates: install downloads, stages, and triggers on newer release", function()
   local timers = TestHelp.new_fake_timers()
-  local releases, store, fakes = install_fixtures("2026090802")
+  local releases, store, fakes = install_fixtures("2026090803")
   local seen, progress, err, outcome = {}, {}, nil, nil
   fakes.http_get = install_http(JSON.encode(releases), "NEW-DRIVER-BYTES", seen)
   fakes.set_timeout = timers.set_timeout
@@ -966,7 +966,7 @@ T.test("updates: install downloads, stages, and triggers on newer release", func
   local op = FloUpdate.new_install(fakes)
   op.start()
   T.check(err == nil, "no error, got " .. tostring(err))
-  T.check_equal(outcome.attempted, "2026090802", "attempted version")
+  T.check_equal(outcome.attempted, "2026090803", "attempted version")
   T.check_equal(store.files["flologic_valve.c4z"], "NEW-DRIVER-BYTES", "staged bytes")
   T.check_equal(store.set_dir_calls[1], "C4Z_ROOT", "staged to the install root")
   T.check_equal(#store.soap_packets, 1, "one install trigger")
@@ -1005,7 +1005,7 @@ end)
 T.test("updates: install failures leave the old driver intact", function()
   local timers = TestHelp.new_fake_timers()
   local function run(mutator, current)
-    local releases, store, fakes = install_fixtures("2026090802")
+    local releases, store, fakes = install_fixtures("2026090803")
     local seen = {}
     fakes.http_get = install_http(JSON.encode(releases), "NEW-DRIVER-BYTES", seen)
     fakes.set_timeout = timers.set_timeout
@@ -1049,7 +1049,7 @@ end)
 
 T.test("updates: install follows asset redirects with headers", function()
   local timers = TestHelp.new_fake_timers()
-  local releases, _, fakes = install_fixtures("2026090802")
+  local releases, _, fakes = install_fixtures("2026090803")
   local hops = {}
   fakes.http_get = function(url, _, cb)
     hops[#hops + 1] = url
@@ -1070,13 +1070,13 @@ T.test("updates: install follows asset redirects with headers", function()
   end
   FloUpdate.new_install(fakes).start()
   T.check(err == nil, "redirect followed, got " .. tostring(err))
-  T.check_equal(outcome.attempted, "2026090802", "attempted after redirect")
+  T.check_equal(outcome.attempted, "2026090803", "attempted after redirect")
   T.check_equal(hops[3], "https://objects.example.invalid/asset", "followed Location")
 end)
 
 T.test("updates: install rejects bare redirects and cancel wins races", function()
   local timers = TestHelp.new_fake_timers()
-  local releases, _, fakes = install_fixtures("2026090802")
+  local releases, _, fakes = install_fixtures("2026090803")
   fakes.http_get = function(url, _, cb)
     if url:find("api.github.com", 1, true) then
       cb(nil, JSON.encode(releases), 200, nil)
