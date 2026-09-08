@@ -527,14 +527,14 @@ D.test("director: install command stages the package and triggers Composer", fun
   env.files["flologic_valve.c4z"] = "OLD-DRIVER-BYTES"
   ExecuteCommand("Install Latest Release", {})
   D.check_equal(env.transfers[1].url, FloUpdate.API_URL, "install queries releases first")
-  env.transfers[1].done(nil, { { code = 200, body = director_release("2026090805") } }, 0)
+  env.transfers[1].done(nil, { { code = 200, body = director_release("2026090806") } }, 0)
   D.check_equal(#env.transfers, 2, "newer release downloads its asset")
   env.transfers[2].done(nil, { { code = 200, body = "NEW-C4Z-BYTES" } }, 0)
   D.check_equal(env.files["flologic_valve.c4z"], "NEW-C4Z-BYTES", "download staged to the file store")
   D.check_equal(#env.soap_packets, 1, "one Composer install trigger")
   D.check_equal(env.soap_packets[1], FloUpdate.build_install_packet("flologic_valve.c4z"), "trigger names the asset")
   D.check(
-    Properties["Update Status"]:find("Installation unconfirmed: 2026090805", 1, true) ~= nil,
+    Properties["Update Status"]:find("Installation unconfirmed: 2026090806", 1, true) ~= nil,
     "result does not claim a verified installation, got " .. tostring(Properties["Update Status"])
   )
   OnDriverDestroyed()
@@ -559,7 +559,7 @@ D.test("director: denied file store fails loudly and keeps the old driver", func
   env.files["flologic_valve.c4z"] = "OLD-DRIVER-BYTES"
   env.files_denied = true
   ExecuteCommand("Install Latest Release", {})
-  env.transfers[1].done(nil, { { code = 200, body = director_release("2026090805") } }, 0)
+  env.transfers[1].done(nil, { { code = 200, body = director_release("2026090806") } }, 0)
   env.transfers[2].done(nil, { { code = 200, body = "NEW-C4Z-BYTES" } }, 0)
   D.check_equal(env.files["flologic_valve.c4z"], "OLD-DRIVER-BYTES", "denial keeps the old build")
   D.check_equal(#env.soap_packets, 0, "denial triggers no install")
@@ -576,7 +576,7 @@ D.test("director: staging falls back to the documented C4Z alias", function()
   env.installed["flologic_valve.c4i"] = { [1] = true }
   env.denied_dirs = { C4Z_ROOT = true }
   ExecuteCommand("Install Latest Release", {})
-  env.transfers[1].done(nil, { { code = 200, body = director_release("2026090805") } }, 0)
+  env.transfers[1].done(nil, { { code = 200, body = director_release("2026090806") } }, 0)
   env.transfers[2].done(nil, { { code = 200, body = "NEW-C4Z-BYTES" } }, 0)
   D.check_equal(env.dir_attempts[1], "C4Z_ROOT", "proflame alias tried first")
   D.check_equal(env.dir_attempts[2], "C4Z", "documented alias tried on denial")
@@ -644,7 +644,7 @@ D.test("director: polls never steal the idle Composer binding", function()
   local env = director()
   env.installed["flologic_valve"] = { [1] = true }
   ExecuteCommand("Install Latest Release", {})
-  env.transfers[1].done(nil, { { code = 200, body = director_release("2026090805") } }, 0)
+  env.transfers[1].done(nil, { { code = 200, body = director_release("2026090806") } }, 0)
   env.transfers[2].done(nil, { { code = 200, body = "NEW-C4Z-BYTES" } }, 0)
   local soap_id = env.binding
   D.check(soap_id ~= nil, "install used a binding")

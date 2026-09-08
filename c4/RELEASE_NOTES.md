@@ -1,7 +1,8 @@
 Control4 DriverWorks package for FloLogic Connect valves (OS 3.3.0+).
 
-Version **2026090805** fixes commands timing out despite being applied
-plus link naming in Connections view. The hub applies `RequestStateChange`
+Version **2026090806** fixes commands timing out despite being applied
+plus link naming in Connections view. (0805 never published — its release
+run failed on a formatting check; identical content ships here.) The hub applies `RequestStateChange`
 immediately but the `StateChangeResult` event is unreliable (slow/offline
 valves may never produce it), and the driver treated the event as the
 only success signal. Commands now race the event against inventory
