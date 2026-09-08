@@ -30,7 +30,13 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           version: v2.5.2
-          args: --check --config-path c4/stylua.toml c4/src c4/tests
+          args: --check --config-path c4/stylua.toml c4/src c4/tests c4/shared c4/cloud/cloud.lua c4/valve/valve.lua
+
+      - name: Check shell scripts
+        run: |
+          for script in c4/scripts/*.sh c4/cloud/bundle.sh c4/valve/bundle.sh; do
+            sh -n "$script"
+          done
 
       - name: Run Ruff
         run: ruff check .

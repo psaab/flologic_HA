@@ -1,0 +1,198 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<devicedata>
+  <agent>false</agent>
+  <copyright>Copyright 2026 Paul Saab. All rights reserved.</copyright>
+  <creator>Paul Saab</creator>
+  <name>FloLogic Cloud</name>
+  <model>FloLogic Cloud</model>
+  <manufacturer>FloLogic</manufacturer>
+  <driver>DriverWorks</driver>
+  <control>lua_gen</control>
+  <version>2026090801</version>
+  <minimum_os_version>3.3.0</minimum_os_version>
+  <created>09/08/2026 12:00 PM</created>
+  <modified>09/08/2026 12:00 PM</modified>
+  <!-- Self-distributed via GitHub; Control4's native driver-update database
+       will never carry this driver, so disable that path. -->
+  <auto_update>false</auto_update>
+  <minimum_auto_update_version>1</minimum_auto_update_version>
+  <states/>
+  <config>
+    <properties>
+      <property>
+        <name>Update Status</name>
+        <type>STRING</type>
+        <default>Not checked</default>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>Latest Driver Version</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>Update Download URL</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>Update Check Interval</name>
+        <type>RANGED_INTEGER</type>
+        <minimum>0</minimum>
+        <maximum>168</maximum>
+        <default>24</default>
+        <readonly>false</readonly>
+        <description>Hours between report-only GitHub checks; 0 disables periodic checks.</description>
+      </property>
+      <property>
+        <name>Driver Version</name>
+        <type>STRING</type>
+        <default>2026090801</default>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>Email</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>false</readonly>
+        <description>FloLogic account email, same as the mobile app.</description>
+      </property>
+      <property>
+        <name>Password</name>
+        <password>true</password>
+        <type>STRING</type>
+        <default/>
+        <readonly>false</readonly>
+        <description>FloLogic account password.</description>
+      </property>
+      <property>
+        <name>Hub URL</name>
+        <type>STRING</type>
+        <default>https://hub-cloudapps-prod.azurewebsites.net</default>
+        <readonly>false</readonly>
+        <description>Cloud hub URL. Leave unchanged unless FloLogic moves it.</description>
+      </property>
+      <property>
+        <name>Poll Interval</name>
+        <type>RANGED_INTEGER</type>
+        <minimum>30</minimum>
+        <maximum>3600</maximum>
+        <default>60</default>
+        <readonly>false</readonly>
+        <description>Seconds between cloud polls. One poll serves every bound valve.</description>
+      </property>
+      <property>
+        <name>Debug Mode</name>
+        <type>LIST</type>
+        <items>
+          <item>Off</item>
+          <item>On</item>
+        </items>
+        <default>Off</default>
+        <readonly>false</readonly>
+      </property>
+      <property>
+        <name>Connection</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>Valve Count</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+        <description>Controllable valves found on the account.</description>
+      </property>
+      <property>
+        <name>Available Valves</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+        <description>Valves found on the account, as id: name pairs.</description>
+      </property>
+      <property>
+        <name>Last Update</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>Last Command</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+      </property>
+    </properties>
+    <commands>
+      <command>
+        <name>Check for Update</name>
+        <description>Report-only: query the latest GitHub C4 release and show in Update Status whether a newer version is available. Does NOT download or install.</description>
+      </command>
+      <command>
+        <name>Install Latest Release</name>
+        <description>Download the latest published C4 release and install it on this controller. Does nothing when already up to date.</description>
+      </command>
+      <command>
+        <name>Force Reinstall Latest Release</name>
+        <description>Re-download and re-install the latest GitHub C4 release even if its version matches the running driver (recovery/repair). May reinstall an older build if the latest release is behind the current one.</description>
+      </command>
+      <command>
+        <name>Refresh</name>
+        <description>Poll the FloLogic cloud now; one poll serves every bound valve.</description>
+      </command>
+      <command>
+        <name>Refresh Valve List</name>
+        <description>Reconcile dynamic valve bindings and re-poll.</description>
+      </command>
+    </commands>
+    <actions>
+      <action>
+        <name>Refresh GitHub Updates</name>
+        <command>Check for Update</command>
+      </action>
+      <action>
+        <name>Install Latest Release</name>
+        <command>Install Latest Release</command>
+      </action>
+      <action>
+        <!-- Button label flags this as a recovery action: it reinstalls even
+             when versions match and can downgrade if the latest release is
+             behind the running build. The <command> routes to the existing
+             "Force Reinstall Latest Release" ExecuteCommand branch. -->
+        <name>Force Reinstall Latest Release (Recovery)</name>
+        <command>Force Reinstall Latest Release</command>
+      </action>
+      <action>
+        <name>Refresh</name>
+        <command>Refresh</command>
+      </action>
+      <action>
+        <name>Refresh Valve List</name>
+        <command>Refresh Valve List</command>
+      </action>
+    </actions>
+    <!-- Keep the explicit closing tag used by Proflame's working reload manifest. -->
+    <script file="driver.lua" encryption="0" jit="1"></script>
+  </config>
+  <!-- No proxies and no static connections: the cloud driver owns no
+       display, contacts, or app tile. Valve links are CONTROL provider
+       bindings created at runtime with C4:AddDynamicBinding (plan D2),
+       ids 2001-2016, class FLOGIC_VALVE. -->
+  <proxies/>
+  <connections/>
+  <events>
+    <event>
+      <id>1</id>
+      <name>Connection Lost</name>
+      <description>The cloud driver lost its connection to the FloLogic cloud.</description>
+    </event>
+    <event>
+      <id>2</id>
+      <name>Connection Restored</name>
+      <description>The cloud driver reconnected to the FloLogic cloud.</description>
+    </event>
+  </events>
+</devicedata>

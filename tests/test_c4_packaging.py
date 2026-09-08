@@ -1,0 +1,137 @@
+"""Build and verify the two split-driver Control4 packages.
+
+Unit 4 release-infra self-test: both c4z files must build reproducibly from
+c4/cloud/ and c4/valve/ (+ shared), carry the same lockstep version, and
+contain the reviewed sources. Composer identities (name/model/proxy) stay
+distinct from the monolith driver, but the valve asset intentionally reuses
+the legacy monolith filename flologic_valve.c4z: installed monoliths will
+offer it as an update, so monolith owners must migrate manually and never
+install it over a monolith instance. CI runs this file via the full pytest
+suite (check.yml) and the release workflow (release-c4.yml).
+"""
+
+from __future__ import annotations
+
+import re
+import subprocess
+import zipfile
+from pathlib import Path
+from xml.etree import ElementTree
+
+import pytest
+
+REPO = Path(__file__).resolve().parent.parent
+C4_DIR = REPO / "c4"
+CLOUD_DIR = C4_DIR / "cloud"
+VALVE_DIR = C4_DIR / "valve"
+
+CLOUD_C4Z = C4_DIR / "flologic_cloud.c4z"
+VALVE_C4Z = C4_DIR / "flologic_valve.c4z"
+CLOUD_FILES = ("driver.xml", "driver.lua", "ca-bundle.pem", "CA-LICENSE")
+VALVE_FILES = ("driver.xml", "driver.lua")
+
+
+@pytest.fixture(scope="module")
+def built_packages() -> dict[str, Path]:
+    """Build both c4z files with the packaging scripts (bundle + zip)."""
+    for script in ("c4/scripts/package-cloud.sh", "c4/scripts/package-valve.sh"):
+        completed = subprocess.run(
+            ["sh", str(REPO / script)],
+            capture_output=True,
+            text=True,
+            cwd=REPO,
+            timeout=120,
+            check=False,
+        )
+        assert completed.returncode == 0, (
+            f"{script} failed:\n{completed.stdout}\n{completed.stderr}"
+        )
+    assert CLOUD_C4Z.is_file(), "package-cloud.sh did not write flologic_cloud.c4z"
+    assert VALVE_C4Z.is_file(), "package-valve.sh did not write flologic_valve.c4z"
+    assert CLOUD_C4Z.stat().st_size > 0
+    assert VALVE_C4Z.stat().st_size > 0
+    return {"cloud": CLOUD_C4Z, "valve": VALVE_C4Z}
+
+
+def _manifest(path: Path) -> ElementTree.Element:
+    return ElementTree.parse(path).getroot()
+
+
+def test_package_contents_match_sources(
+    built_packages: dict[str, Path],
+) -> None:
+    """Each c4z holds exactly the reviewed files, byte for byte."""
+    with zipfile.ZipFile(built_packages["cloud"]) as package:
+        assert set(package.namelist()) == set(CLOUD_FILES)
+        assert package.read("driver.xml") == (CLOUD_DIR / "driver.xml").read_bytes()
+        assert package.read("driver.lua") == (CLOUD_DIR / "driver.lua").read_bytes()
+        assert package.read("ca-bundle.pem") == (C4_DIR / "ca-bundle.pem").read_bytes()
+        assert package.read("CA-LICENSE") == (C4_DIR / "CA-LICENSE").read_bytes()
+        assert "THIS FILE IS GENERATED" in package.read("driver.lua").decode()
+    with zipfile.ZipFile(built_packages["valve"]) as package:
+        assert set(package.namelist()) == set(VALVE_FILES)
+        assert package.read("driver.xml") == (VALVE_DIR / "driver.xml").read_bytes()
+        assert package.read("driver.lua") == (VALVE_DIR / "driver.lua").read_bytes()
+        assert "THIS FILE IS GENERATED" in package.read("driver.lua").decode()
+
+
+def test_version_lockstep(built_packages: dict[str, Path]) -> None:
+    """Both manifests share one version; Lua and properties agree with it."""
+    cloud_version = _manifest(CLOUD_DIR / "driver.xml").findtext("version")
+    valve_version = _manifest(VALVE_DIR / "driver.xml").findtext("version")
+    assert re.fullmatch(r"[0-9]{10}", cloud_version or ""), cloud_version
+    assert cloud_version == valve_version, (
+        f"lockstep versions differ: cloud={cloud_version} valve={valve_version}"
+    )
+    assert f'FLOCLOUD_DRIVER_VERSION = "{cloud_version}"' in (
+        CLOUD_DIR / "cloud.lua"
+    ).read_text(encoding="utf-8")
+    assert f'FLOVALVE_DRIVER_VERSION = "{valve_version}"' in (
+        VALVE_DIR / "valve.lua"
+    ).read_text(encoding="utf-8")
+    for directory, version in ((CLOUD_DIR, cloud_version), (VALVE_DIR, valve_version)):
+        manifest = _manifest(directory / "driver.xml")
+        properties = {
+            prop.findtext("name"): prop
+            for prop in manifest.findall("config/properties/property")
+        }
+        assert properties["Driver Version"].findtext("default") == version
+        with zipfile.ZipFile(built_packages[directory.name]) as package:
+            assert version.encode() in package.read("driver.xml")
+
+
+def test_composer_identities_distinct_valve_reuses_legacy_asset() -> None:
+    """Names, models, and proxies are distinct from the monolith.
+
+    Composer matches drivers by name/model/proxy identity, and those stay
+    fully distinct. The valve updater asset intentionally reuses the legacy
+    monolith filename, so this test pins that deliberate sharing: installed
+    monoliths will offer the valve package as an update and must migrate
+    manually instead of installing it.
+    """
+    monolith = _manifest(C4_DIR / "driver.xml")
+    cloud = _manifest(CLOUD_DIR / "driver.xml")
+    valve = _manifest(VALVE_DIR / "driver.xml")
+    assert (monolith.findtext("name"), monolith.findtext("model")) == (
+        "FloLogic Valve",
+        "FloLogic Connect",
+    )
+    assert [proxy.text for proxy in monolith.findall("proxies/proxy")] == [
+        "flologic_valve"
+    ]
+    assert (cloud.findtext("name"), cloud.findtext("model")) == (
+        "FloLogic Cloud",
+        "FloLogic Cloud",
+    )
+    assert (valve.findtext("name"), valve.findtext("model")) == (
+        "FloLogic Water Valve",
+        "FloLogic Water Valve",
+    )
+    for new in (cloud, valve):
+        assert new.findtext("name") != monolith.findtext("name")
+        assert new.findtext("model") != monolith.findtext("model")
+        assert "flologic_valve" not in ElementTree.tostring(new, encoding="unicode")
+    cloud_lua = (CLOUD_DIR / "cloud.lua").read_text(encoding="utf-8")
+    valve_lua = (VALVE_DIR / "valve.lua").read_text(encoding="utf-8")
+    assert 'FloUpdate.ASSET = "flologic_cloud.c4z"' in cloud_lua
+    assert 'FloUpdate.ASSET = "flologic_valve.c4z"' in valve_lua

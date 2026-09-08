@@ -1,5 +1,14 @@
 # FloLogic Control4 Driver
 
+> New installs use the split drivers — one `FloLogic Cloud` coordinator
+> plus one `FloLogic Water Valve` per valve — documented in
+> [SPLIT_README.md](SPLIT_README.md) (version 2026090801). Below
+> documents the legacy single-driver monolith (`FloLogic Valve`,
+> version **2026090709**), which still works but is no longer packaged
+> or published; see the split guide for manual migration. Do NOT install
+> any post-split `flologic_valve.c4z` on a monolith instance — that
+> filename is now the split valve driver, not a monolith upgrade.
+
 Control4 DriverWorks driver for FloLogic Connect valves, based on the
 [Home Assistant integration](../README.md). Version **2026090709**, targeting
 Control4 OS **3.3.0 or newer**. One instance monitors one explicitly selected
@@ -9,7 +18,8 @@ and away status for programming and state detection.
 
 ## Install
 
-Build the package with `sh c4/scripts/package.sh`, then add
+Install the last monolith build from the `c4-v2026090709` release tag
+(`sh c4/scripts/package.sh` no longer builds the monolith), then add
 `flologic_valve.c4z` through Composer Pro. Set **Email** and **Password**.
 The first poll discovers the account's valves. Choose **Select Valve** before
 monitoring or sending commands. **Valve ID Override** accepts an ID or UUID
@@ -23,8 +33,11 @@ A command already transmitted to the cloud cannot be recalled.
 ## Updates and reloads
 
 In Composer Pro, use **Driver → Add or Update Driver…** with the new
-`flologic_valve.c4z`, keeping the existing project instances. Confirm
-**Driver Version** on each instance. The package filename, self-proxy name,
+`flologic_valve.c4z`, keeping the existing project instances — but only
+with monolith-era builds (`c4-v2026090709` and older). Post-split
+`flologic_valve.c4z` files are the split valve driver and must never be
+installed over a monolith instance. Confirm **Driver Version** on each
+instance. The package filename, self-proxy name,
 and existing command/event identities remain stable so programming references
 can remain attached to those instances.
 
@@ -68,8 +81,11 @@ The direct installer still lacks package-content validation and safe replacement
 of the previous stored package. A write failure can leave that file incomplete
 or missing. Use Composer installation until those remaining issues are addressed.
 
-C4 releases use `c4-vYYYYMMDDNN` tags and must contain exactly named
-`flologic_valve.c4z` assets. Drafts, prereleases, and Home Assistant releases are
+C4 releases use `c4-vYYYYMMDDNN` tags. Monolith-era tags carried the
+monolith as the exactly named `flologic_valve.c4z` asset; current tags
+carry the split valve driver under that same filename instead, so a
+monolith will report it as an available update — do not install it.
+Drafts, prereleases, and Home Assistant releases are
 ignored. A build newer than GitHub is reported explicitly. A repository with
 no eligible C4 asset is reported as such, rather than as up to date.
 
@@ -208,7 +224,8 @@ protection remains independent of this driver.
 
 ## Development
 
-Edit `src/*.lua`; `driver.lua` and `flologic_valve.c4z` are generated artifacts.
+Edit `src/*.lua` (legacy; `package.sh` no longer builds the monolith —
+`driver.lua` and the old `flologic_valve.c4z` were its generated artifacts).
 The bootstrap runs before module replacement; the protocol/model and release
 selection modules are transport-independent. `src/main.lua` owns
 Director callbacks, properties, transports, and lifecycle. Tests use injected
@@ -216,7 +233,7 @@ transports plus a Director shim; production never loads test helpers.
 
 ```sh
 stylua --config-path c4/stylua.toml c4/src c4/tests
-sh c4/scripts/package.sh
+sh c4/scripts/bundle.sh
 lua5.1 c4/tests/loader_standalone.lua
 python -m pytest tests/test_c4_lua.py
 ```

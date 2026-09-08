@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<devicedata>
+  <agent>false</agent>
+  <copyright>Copyright 2026 Paul Saab. All rights reserved.</copyright>
+  <creator>Paul Saab</creator>
+  <name>FloLogic Cloud Spike</name>
+  <model>FloLogic Cloud Spike</model>
+  <manufacturer>FloLogic</manufacturer>
+  <driver>DriverWorks</driver>
+  <control>lua_gen</control>
+  <version>2026090701</version>
+  <minimum_os_version>3.3.0</minimum_os_version>
+  <created>09/07/2026 12:00 PM</created>
+  <modified>09/07/2026 12:00 PM</modified>
+  <!-- Spike stub for the unit-0 live test. Self-distributed; never updated. -->
+  <auto_update>false</auto_update>
+  <minimum_auto_update_version>1</minimum_auto_update_version>
+  <states/>
+  <config>
+    <properties>
+      <property>
+        <name>Driver Version</name>
+        <type>STRING</type>
+        <default>2026090701</default>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>Link Status</name>
+        <type>STRING</type>
+        <default>No link (run Add Valve Link)</default>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>Binding ID</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>Ping Bytes</name>
+        <type>RANGED_INTEGER</type>
+        <minimum>0</minimum>
+        <maximum>16384</maximum>
+        <default>4096</default>
+        <readonly>false</readonly>
+        <description>Payload size in bytes for the next ping.</description>
+      </property>
+      <property>
+        <name>Last Ping</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>Last Pong</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+      </property>
+    </properties>
+    <commands>
+      <command>
+        <name>Add Valve Link</name>
+        <description>Create the dynamic FLOGIC_VALVE provider binding.</description>
+      </command>
+      <command>
+        <name>Ping Peer</name>
+        <description>Send SPIKE_PING to the bound valve via BindMessage.</description>
+      </command>
+      <command>
+        <name>Ping Peer via Device</name>
+        <description>SendToDevice fallback: ping bound consumers without BindMessages.</description>
+      </command>
+    </commands>
+    <actions>
+      <action>
+        <name>Add Valve Link</name>
+        <command>Add Valve Link</command>
+      </action>
+      <action>
+        <name>Ping Peer</name>
+        <command>Ping Peer</command>
+      </action>
+      <action>
+        <name>Ping Peer via Device</name>
+        <command>Ping Peer via Device</command>
+      </action>
+    </actions>
+    <script file="driver.lua" encryption="0" jit="1"></script>
+  </config>
+  <proxies/>
+  <!-- No static connections: the valve link is created at runtime with
+       C4:AddDynamicBinding (CONTROL provider, class FLOGIC_VALVE, id 2001). -->
+  <connections/>
+  <events/>
+</devicedata>

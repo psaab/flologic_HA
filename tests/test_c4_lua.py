@@ -9,7 +9,6 @@ Lua raises through lupa and fails the test.
 
 from __future__ import annotations
 
-import zipfile
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -29,6 +28,8 @@ LOAD_ORDER = [
     "tests/helpers.lua",
     "tests/run.lua",
     "tests/driver.lua",
+    "shared/flologic_link.lua",
+    "tests/link.lua",
 ]
 
 
@@ -110,13 +111,13 @@ def test_file_handles_close_on_errors() -> None:
     )
 
 
-def test_package_matches_reviewed_files() -> None:
-    """The installable artifact must contain the reviewed code and trust store."""
-    files = {"driver.xml", "driver.lua", "ca-bundle.pem", "CA-LICENSE"}
-    with zipfile.ZipFile(C4_DIR / "flologic_valve.c4z") as package:
-        assert set(package.namelist()) == files
-        for name in files:
-            assert package.read(name) == (C4_DIR / name).read_bytes()
+def test_monolith_manifest_matches_reviewed_sources() -> None:
+    """The legacy monolith manifest must agree with its reviewed sources.
+
+    The monolith is no longer packaged (flologic_valve.c4z is now the split
+    valve driver, covered by tests/test_c4_packaging.py), but its manifest
+    and Lua must stay consistent while the sources ship in the repo.
+    """
     manifest = ElementTree.parse(C4_DIR / "driver.xml").getroot()
     version = manifest.findtext("version")
     assert f'FLOGIC_DRIVER_VERSION = "{version}"' in _read("src/main.lua")

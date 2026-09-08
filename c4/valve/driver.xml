@@ -1,0 +1,557 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<devicedata>
+  <agent>false</agent>
+  <copyright>Copyright 2026 Paul Saab. All rights reserved.</copyright>
+  <creator>Paul Saab</creator>
+  <name>FloLogic Water Valve</name>
+  <model>FloLogic Water Valve</model>
+  <manufacturer>FloLogic</manufacturer>
+  <driver>DriverWorks</driver>
+  <control>lua_gen</control>
+  <version>2026090801</version>
+  <!-- Navigator clicks arrive as DYNAMIC_ON/DYNAMIC_OFF (OS 3.3.2+). -->
+  <minimum_os_version>3.3.2</minimum_os_version>
+  <created>09/08/2026 12:00 PM</created>
+  <modified>09/08/2026 12:00 PM</modified>
+  <!-- Self-distributed via GitHub; Control4's native driver-update database
+       will never carry this driver, so disable that path. -->
+  <auto_update>false</auto_update>
+  <minimum_auto_update_version>1</minimum_auto_update_version>
+  <states/>
+  <!-- Switch-only light capabilities (plan D4) live on connection 5001
+       below, matching the spike-validated form: no dimmer, no set-level
+       slider, on/off tile only. The driver reports LIGHT_LEVEL 100/0 and
+       handles DYNAMIC_ON/DYNAMIC_OFF, TOGGLE, and SET_BRIGHTNESS_TARGET. -->
+  <config>
+    <properties>
+      <property>
+        <name>Update Status</name>
+        <type>STRING</type>
+        <default>Not checked</default>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>Latest Driver Version</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>Update Download URL</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>Update Check Interval</name>
+        <type>RANGED_INTEGER</type>
+        <minimum>0</minimum>
+        <maximum>168</maximum>
+        <default>24</default>
+        <readonly>false</readonly>
+        <description>Hours between report-only GitHub checks; 0 disables periodic checks.</description>
+      </property>
+      <property>
+        <name>Driver Version</name>
+        <type>STRING</type>
+        <default>2026090801</default>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>Valve ID</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+        <description>Cloud valve id bound to this driver, learned from the cloud handshake. Display only: every bind re-handshakes.</description>
+      </property>
+      <property>
+        <name>Valve Name</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+        <description>Display name reported by the cloud for the bound valve.</description>
+      </property>
+      <property>
+        <name>Connection</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+        <description>Link state: Online, Linking..., Not linked, or Degraded.</description>
+      </property>
+      <property>
+        <name>Mode</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>Flow State</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>Water Flowing</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>Home Limit</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>Away Limit</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>Bypass Time</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>Last Command</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>Last Link Update</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+        <description>Timestamp of the last full state push from the cloud driver.</description>
+      </property>
+      <property>
+        <name>Debug Mode</name>
+        <type>LIST</type>
+        <items>
+          <item>Off</item>
+          <item>On</item>
+        </items>
+        <default>Off</default>
+        <readonly>false</readonly>
+      </property>
+    </properties>
+    <commands>
+      <command>
+        <name>Check for Update</name>
+        <description>Report-only: query the latest GitHub C4 release and show in Update Status whether a newer version is available. Does NOT download or install.</description>
+      </command>
+      <command>
+        <name>Install Latest Release</name>
+        <description>Download the latest published C4 release and install it on this controller. Does nothing when already up to date.</description>
+      </command>
+      <command>
+        <name>Force Reinstall Latest Release</name>
+        <description>Re-download and re-install the latest GitHub C4 release even if its version matches the running driver (recovery/repair). May reinstall an older build if the latest release is behind the current one.</description>
+      </command>
+      <command>
+        <name>Refresh</name>
+        <description>Ask the cloud driver for this valve's latest state now.</description>
+      </command>
+      <command>
+        <name>Open Valve</name>
+        <description>Restore the valve's last non-shutoff mode (default Home).</description>
+      </command>
+      <command>
+        <name>Close Valve</name>
+        <description>Shut the water off.</description>
+      </command>
+      <command>
+        <name>Toggle</name>
+        <description>Close the valve when open, open it when closed.</description>
+      </command>
+      <command>
+        <name>Set Mode Home</name>
+        <description>Put the valve in home mode.</description>
+      </command>
+      <command>
+        <name>Set Mode Away</name>
+        <description>Put the valve in away mode.</description>
+      </command>
+      <command>
+        <name>Set Mode Bypass</name>
+        <description>Put the valve in bypass mode.</description>
+      </command>
+      <command>
+        <name>Set Mode Shutoff</name>
+        <description>Shut the water off.</description>
+      </command>
+      <command>
+        <name>Set Mode Disabled</name>
+        <description>Disable automatic control.</description>
+      </command>
+      <command>
+        <name>Set Home Limit</name>
+        <description>Continuous-flow limit in home mode, minutes.</description>
+        <params>
+          <param>
+            <name>Minutes</name>
+            <type>RANGED_INTEGER</type>
+            <minimum>1</minimum>
+            <maximum>10080</maximum>
+          </param>
+        </params>
+      </command>
+      <command>
+        <name>Set Away Limit</name>
+        <description>Continuous-flow limit in away mode, minutes.</description>
+        <params>
+          <param>
+            <name>Minutes</name>
+            <type>NUMBER</type>
+          </param>
+        </params>
+      </command>
+      <command>
+        <name>Set Bypass Time</name>
+        <description>Bypass duration in minutes.</description>
+        <params>
+          <param>
+            <name>Minutes</name>
+            <type>RANGED_INTEGER</type>
+            <minimum>1</minimum>
+            <maximum>10080</maximum>
+          </param>
+        </params>
+      </command>
+      <command>
+        <name>Set Auto Away</name>
+        <description>Idle time before automatic away mode, hours.</description>
+        <params>
+          <param>
+            <name>Hours</name>
+            <type>RANGED_INTEGER</type>
+            <minimum>1</minimum>
+            <maximum>8760</maximum>
+          </param>
+        </params>
+      </command>
+      <command>
+        <name>Set Temp Alert</name>
+        <description>Low-temperature alert threshold in Fahrenheit.</description>
+        <params>
+          <param>
+            <name>Temperature</name>
+            <type>RANGED_INTEGER</type>
+            <minimum>-50</minimum>
+            <maximum>150</maximum>
+          </param>
+        </params>
+      </command>
+      <command>
+        <name>Set Temp Shutoff</name>
+        <description>Low-temperature shutoff threshold in Fahrenheit.</description>
+        <params>
+          <param>
+            <name>Temperature</name>
+            <type>RANGED_INTEGER</type>
+            <minimum>-50</minimum>
+            <maximum>150</maximum>
+          </param>
+        </params>
+      </command>
+      <command>
+        <name>Set Pre-Alert</name>
+        <description>Advance shutoff warning window in minutes.</description>
+        <params>
+          <param>
+            <name>Minutes</name>
+            <type>RANGED_INTEGER</type>
+            <minimum>1</minimum>
+            <maximum>10080</maximum>
+          </param>
+        </params>
+      </command>
+      <command>
+        <name>Set No-Flow Notice</name>
+        <description>No-flow notice interval in seconds.</description>
+        <params>
+          <param>
+            <name>Seconds</name>
+            <type>RANGED_INTEGER</type>
+            <minimum>1</minimum>
+            <maximum>604800</maximum>
+          </param>
+        </params>
+      </command>
+      <command>
+        <name>Set Flow Sensitivity</name>
+        <description>Flow sensitivity in oz/min (0-1000).</description>
+        <params>
+          <param>
+            <name>Value</name>
+            <type>NUMBER</type>
+          </param>
+        </params>
+      </command>
+    </commands>
+    <actions>
+      <action>
+        <name>Refresh GitHub Updates</name>
+        <command>Check for Update</command>
+      </action>
+      <action>
+        <name>Install Latest Release</name>
+        <command>Install Latest Release</command>
+      </action>
+      <action>
+        <!-- Button label flags this as a recovery action: it reinstalls even
+             when versions match and can downgrade if the latest release is
+             behind the running build. The <command> routes to the existing
+             "Force Reinstall Latest Release" ExecuteCommand branch. -->
+        <name>Force Reinstall Latest Release (Recovery)</name>
+        <command>Force Reinstall Latest Release</command>
+      </action>
+      <action>
+        <name>Refresh</name>
+        <command>Refresh</command>
+      </action>
+      <action>
+        <name>Open Valve</name>
+        <command>Open Valve</command>
+      </action>
+      <action>
+        <name>Close Valve</name>
+        <command>Close Valve</command>
+      </action>
+      <action>
+        <name>Toggle</name>
+        <command>Toggle</command>
+      </action>
+      <action>
+        <name>Set Mode Home</name>
+        <command>Set Mode Home</command>
+      </action>
+      <action>
+        <name>Set Mode Away</name>
+        <command>Set Mode Away</command>
+      </action>
+      <action>
+        <name>Set Mode Bypass</name>
+        <command>Set Mode Bypass</command>
+      </action>
+      <action>
+        <name>Set Mode Shutoff</name>
+        <command>Set Mode Shutoff</command>
+      </action>
+      <action>
+        <name>Set Mode Disabled</name>
+        <command>Set Mode Disabled</command>
+      </action>
+    </actions>
+    <!-- Keep the explicit closing tag used by Proflame's working reload manifest. -->
+    <script file="driver.lua" encryption="0" jit="1"></script>
+  </config>
+  <proxies>
+    <proxy proxybindingid="5001">light_v2</proxy>
+  </proxies>
+  <connections>
+    <!-- Static CONTROL consumer (plan D2/D3): binds to one cloud-driver
+         FLOGIC_VALVE provider slot. The slot's handshake assigns this
+         driver's valve; see VALVE-U4 in README.md. -->
+    <connection>
+      <id>600</id>
+      <facing>6</facing>
+      <connectionname>FloLogic Link</connectionname>
+      <type>1</type>
+      <consumer>True</consumer>
+      <audiosource>False</audiosource>
+      <videosource>False</videosource>
+      <linelevel>False</linelevel>
+      <classes>
+        <class>
+          <classname>FLOGIC_VALVE</classname>
+        </class>
+      </classes>
+    </connection>
+    <connection>
+      <id>5001</id>
+      <facing>6</facing>
+      <connectionname>Valve Switch</connectionname>
+      <type>1</type>
+      <consumer>False</consumer>
+      <audiosource>False</audiosource>
+      <videosource>False</videosource>
+      <linelevel>False</linelevel>
+      <classes>
+        <class>
+          <classname>LIGHT_V2</classname>
+        </class>
+      </classes>
+      <capabilities>
+        <dimmer>false</dimmer>
+        <set_level>false</set_level>
+        <on_off>True</on_off>
+      </capabilities>
+    </connection>
+    <connection>
+      <id>101</id>
+      <facing>6</facing>
+      <connectionname>Valve Closed</connectionname>
+      <type>1</type>
+      <consumer>False</consumer>
+      <audiosource>False</audiosource>
+      <videosource>False</videosource>
+      <linelevel>False</linelevel>
+      <classes>
+        <class>
+          <classname>CONTACT_SENSOR</classname>
+        </class>
+      </classes>
+    </connection>
+    <connection>
+      <id>102</id>
+      <facing>6</facing>
+      <connectionname>Away Mode</connectionname>
+      <type>1</type>
+      <consumer>False</consumer>
+      <audiosource>False</audiosource>
+      <videosource>False</videosource>
+      <linelevel>False</linelevel>
+      <classes>
+        <class>
+          <classname>CONTACT_SENSOR</classname>
+        </class>
+      </classes>
+    </connection>
+    <connection>
+      <id>103</id>
+      <facing>6</facing>
+      <connectionname>Flowing</connectionname>
+      <type>1</type>
+      <consumer>False</consumer>
+      <audiosource>False</audiosource>
+      <videosource>False</videosource>
+      <linelevel>False</linelevel>
+      <classes>
+        <class>
+          <classname>CONTACT_SENSOR</classname>
+        </class>
+      </classes>
+    </connection>
+    <connection>
+      <id>104</id>
+      <facing>6</facing>
+      <connectionname>Leak Detected</connectionname>
+      <type>1</type>
+      <consumer>False</consumer>
+      <audiosource>False</audiosource>
+      <videosource>False</videosource>
+      <linelevel>False</linelevel>
+      <classes>
+        <class>
+          <classname>CONTACT_SENSOR</classname>
+        </class>
+      </classes>
+    </connection>
+    <connection>
+      <id>105</id>
+      <facing>6</facing>
+      <connectionname>Warning Active</connectionname>
+      <type>1</type>
+      <consumer>False</consumer>
+      <audiosource>False</audiosource>
+      <videosource>False</videosource>
+      <linelevel>False</linelevel>
+      <classes>
+        <class>
+          <classname>CONTACT_SENSOR</classname>
+        </class>
+      </classes>
+    </connection>
+    <connection>
+      <id>106</id>
+      <facing>6</facing>
+      <connectionname>Critical Fault</connectionname>
+      <type>1</type>
+      <consumer>False</consumer>
+      <audiosource>False</audiosource>
+      <videosource>False</videosource>
+      <linelevel>False</linelevel>
+      <classes>
+        <class>
+          <classname>CONTACT_SENSOR</classname>
+        </class>
+      </classes>
+    </connection>
+    <connection>
+      <id>107</id>
+      <facing>6</facing>
+      <connectionname>Valve Online</connectionname>
+      <type>1</type>
+      <consumer>False</consumer>
+      <audiosource>False</audiosource>
+      <videosource>False</videosource>
+      <linelevel>False</linelevel>
+      <classes>
+        <class>
+          <classname>CONTACT_SENSOR</classname>
+        </class>
+      </classes>
+    </connection>
+  </connections>
+  <events>
+    <event>
+      <id>1</id>
+      <name>Flow Started</name>
+      <description>Water started flowing.</description>
+    </event>
+    <event>
+      <id>2</id>
+      <name>Flow Stopped</name>
+      <description>Water stopped flowing.</description>
+    </event>
+    <event>
+      <id>3</id>
+      <name>Water Off Detected</name>
+      <description>A water-off mode flag became active (shutoff, leak, freeze).</description>
+    </event>
+    <event>
+      <id>4</id>
+      <name>Water Off Cleared</name>
+      <description>All water-off mode flags cleared.</description>
+    </event>
+    <event>
+      <id>5</id>
+      <name>Warning Alert</name>
+      <description>A warning mode flag became active.</description>
+    </event>
+    <event>
+      <id>6</id>
+      <name>Warning Cleared</name>
+      <description>All warning mode flags cleared.</description>
+    </event>
+    <event>
+      <id>7</id>
+      <name>Critical Fault</name>
+      <description>A critical fault flag became active.</description>
+    </event>
+    <event>
+      <id>8</id>
+      <name>Critical Cleared</name>
+      <description>All critical fault flags cleared.</description>
+    </event>
+    <event>
+      <id>9</id>
+      <name>Mode Changed</name>
+      <description>The valve mode changed.</description>
+    </event>
+    <event>
+      <id>10</id>
+      <name>Connection Lost</name>
+      <description>The link to the cloud driver went down.</description>
+    </event>
+    <event>
+      <id>11</id>
+      <name>Connection Restored</name>
+      <description>The link to the cloud driver recovered.</description>
+    </event>
+  </events>
+</devicedata>

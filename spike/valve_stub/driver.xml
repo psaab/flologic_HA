@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<devicedata>
+  <agent>false</agent>
+  <copyright>Copyright 2026 Paul Saab. All rights reserved.</copyright>
+  <creator>Paul Saab</creator>
+  <name>FloLogic Valve Spike</name>
+  <model>FloLogic Valve Spike</model>
+  <manufacturer>FloLogic</manufacturer>
+  <driver>DriverWorks</driver>
+  <control>lua_gen</control>
+  <version>2026090701</version>
+  <minimum_os_version>3.3.0</minimum_os_version>
+  <created>09/07/2026 12:00 PM</created>
+  <modified>09/07/2026 12:00 PM</modified>
+  <!-- Spike stub for the unit-0 live test. Self-distributed; never updated. -->
+  <auto_update>false</auto_update>
+  <minimum_auto_update_version>1</minimum_auto_update_version>
+  <states/>
+  <config>
+    <properties>
+      <property>
+        <name>Driver Version</name>
+        <type>STRING</type>
+        <default>2026090701</default>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>Link Status</name>
+        <type>STRING</type>
+        <default>Not linked</default>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>Light Level</name>
+        <type>STRING</type>
+        <default>100</default>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>Last Ping</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>Last Pong</name>
+        <type>STRING</type>
+        <default/>
+        <readonly>true</readonly>
+      </property>
+    </properties>
+    <commands>
+      <command>
+        <name>Ping Cloud</name>
+        <description>Send SPIKE_PING to the cloud stub via BindMessage.</description>
+      </command>
+      <command>
+        <name>Ping Cloud via Device</name>
+        <description>SendToDevice fallback: ping the provider without BindMessages.</description>
+      </command>
+      <command>
+        <name>Turn On</name>
+        <description>Programming equivalent of tapping the switch on.</description>
+      </command>
+      <command>
+        <name>Turn Off</name>
+        <description>Programming equivalent of tapping the switch off.</description>
+      </command>
+    </commands>
+    <actions>
+      <action>
+        <name>Ping Cloud</name>
+        <command>Ping Cloud</command>
+      </action>
+      <action>
+        <name>Ping Cloud via Device</name>
+        <command>Ping Cloud via Device</command>
+      </action>
+      <action>
+        <name>Turn On</name>
+        <command>Turn On</command>
+      </action>
+      <action>
+        <name>Turn Off</name>
+        <command>Turn Off</command>
+      </action>
+    </actions>
+    <script file="driver.lua" encryption="0" jit="1"></script>
+  </config>
+  <proxies>
+    <proxy proxybindingid="5001">light_v2</proxy>
+  </proxies>
+  <connections>
+    <connection>
+      <id>6000</id>
+      <facing>6</facing>
+      <connectionname>Cloud Link</connectionname>
+      <type>1</type>
+      <consumer>True</consumer>
+      <audiosource>False</audiosource>
+      <videosource>False</videosource>
+      <linelevel>False</linelevel>
+      <classes>
+        <class>
+          <classname>FLOGIC_VALVE</classname>
+        </class>
+      </classes>
+    </connection>
+    <connection>
+      <id>5001</id>
+      <facing>6</facing>
+      <connectionname>Light</connectionname>
+      <type>1</type>
+      <consumer>False</consumer>
+      <audiosource>False</audiosource>
+      <videosource>False</videosource>
+      <linelevel>False</linelevel>
+      <classes>
+        <class>
+          <classname>LIGHT_V2</classname>
+        </class>
+      </classes>
+      <capabilities>
+        <dimmer>false</dimmer>
+        <set_level>false</set_level>
+        <on_off>True</on_off>
+      </capabilities>
+    </connection>
+  </connections>
+  <events/>
+</devicedata>
