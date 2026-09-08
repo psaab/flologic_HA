@@ -37,6 +37,12 @@ local function director()
     env.events[#env.events + 1] = name
   end
   function C4:PersistGetValue(key)
+    -- Director answers a missing key with zero values, not nil: model
+    -- that, so nested-call crashes (tonumber of nothing raises) fail
+    -- here instead of only in the field.
+    if env.saved[key] == nil then
+      return
+    end
     return env.saved[key]
   end
   function C4:PersistSetValue(key, value)

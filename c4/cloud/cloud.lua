@@ -10,7 +10,7 @@
 -- favor of the slot->valve identity map below. Lua 5.1 safe.
 -- ============================================================================
 
-FLOCLOUD_DRIVER_VERSION = "2026090813"
+FLOCLOUD_DRIVER_VERSION = "2026090814"
 print("[flologic-cloud] Lua loaded: " .. FLOCLOUD_DRIVER_VERSION)
 
 FLOCLOUD_DEFAULT_HUB = "https://hub-cloudapps-prod.azurewebsites.net"
@@ -2473,8 +2473,13 @@ function OnDriverLateInit(driver_init_type)
   flocloud_state = flocloud_fresh_state()
   -- Link epoch: strictly increasing across restarts (persisted), so a
   -- companion never compares a new boot's per-slot sequences against
-  -- the previous boot's numbering.
-  local saved_epoch = tonumber(C4:PersistGetValue(FLOCLOUD_PERSIST_EPOCH)) or 0
+  -- the previous boot's numbering. PersistGetValue answers a missing
+  -- key with ZERO values (not nil), and a zero-value call nested in
+  -- argument position invokes tonumber() with no arguments, which
+  -- raises — so capture into a local (zero values land as nil) before
+  -- converting, or first boot crashes before initializing.
+  local saved_epoch_raw = C4:PersistGetValue(FLOCLOUD_PERSIST_EPOCH)
+  local saved_epoch = tonumber(saved_epoch_raw) or 0
   flocloud_state.link_epoch = saved_epoch + 1
   C4:PersistSetValue(FLOCLOUD_PERSIST_EPOCH, tostring(saved_epoch + 1))
   flocloud_restore_relog()

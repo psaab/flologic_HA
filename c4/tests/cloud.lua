@@ -89,6 +89,12 @@ local function cloud_env()
     env.events[#env.events + 1] = name
   end
   function C4:PersistGetValue(key)
+    -- Director answers a missing key with zero values, not nil: model
+    -- that, so nested-call crashes (tonumber of nothing raises) fail
+    -- here instead of only in the field.
+    if env.saved[key] == nil then
+      return
+    end
     return env.saved[key]
   end
   function C4:PersistSetValue(key, value)
@@ -187,7 +193,7 @@ local function discover(env, devices, accesses)
 end
 
 T.test("cloud: version, link pin, updater asset, no picker (CLOUD-U6)", function()
-  T.check_equal(FLOCLOUD_DRIVER_VERSION, "2026090813", "cloud version")
+  T.check_equal(FLOCLOUD_DRIVER_VERSION, "2026090814", "cloud version")
   T.check_equal(FLOGIC_LINK_VERSION, 1, "protocol version is 1")
   T.check_equal(FloUpdate.ASSET, "flologic_cloud.c4z", "updater tracks the cloud package")
   T.check_equal(FloUpdate.FAMILY_ASSETS[1], "flologic_cloud.c4z", "updater requires its own package")
@@ -1663,5 +1669,27 @@ T.test("cloud: busy watchdog nacks an orphaned command job", function()
   -- The orphan's late settle is fenced: no second ack.
   held()
   T.check_equal(#sends_to(env, 2001, Link.MSG_CMD_ACK), 0, "late settle sends no ack")
+  OnDriverDestroyed()
+end)
+
+T.test("cloud: first boot without the epoch key initializes at epoch 1", function()
+  -- The mock answers a missing key with zero values, like Director: a
+  -- nested tonumber(PersistGetValue()) would raise here and abort
+  -- LateInit before the runtime enables (0811/0812 field wedge).
+  local env = boot(cloud_env())
+  T.check(flocloud_state.initialized, "runtime enabled on first boot")
+  T.check_equal(flocloud_state.link_epoch, 1, "epoch starts at 1")
+  T.check_equal(env.saved[FLOCLOUD_PERSIST_EPOCH], "1", "epoch persisted")
+  T.check_equal(Properties[FLOCLOUD_PROP_CONNECTION], "Initializing", "boot reaches connection setup")
+  OnDriverDestroyed()
+end)
+
+T.test("cloud: restart with an existing epoch increments it", function()
+  local env = cloud_env()
+  env.saved[FLOCLOUD_PERSIST_EPOCH] = "5"
+  boot(env)
+  T.check(flocloud_state.initialized, "runtime enabled on restart")
+  T.check_equal(flocloud_state.link_epoch, 6, "epoch strictly increases")
+  T.check_equal(env.saved[FLOCLOUD_PERSIST_EPOCH], "6", "epoch re-persisted")
   OnDriverDestroyed()
 end)

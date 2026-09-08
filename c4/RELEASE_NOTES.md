@@ -1,5 +1,20 @@
 Control4 DriverWorks package for FloLogic Connect valves (OS 3.3.0+).
 
+Version **2026090814** fixes the 0811/0812 field wedge: first boot
+crashed in `OnDriverLateInit` at the persisted-epoch read, so the
+driver loaded but never initialized — every poll skipped, update
+checks silently returned, and Connection stayed blank. Root cause:
+Director answers a missing persist key with zero values (not nil),
+and the nested `tonumber(C4:PersistGetValue(...))` therefore invoked
+`tonumber()` with no arguments, which raises; the `or 0` fallback
+never ran, and the crash preceded the epoch write, so every boot
+crashed identically. The read now captures into a local before
+converting. All three Director mocks model zero-value returns for
+missing keys, pinned by first-boot and restart regression tests
+(without the fix, 53 of 58 cloud tests fail exactly as the field
+did). Install this build manually in Composer: the wedged 0811/0812
+updater never runs, so self-update cannot reach it.
+
 Version **2026090813** adds a busy watchdog to the cloud driver: a
 poll or command session that never settles (a hung transport calls
 back never) used to hold `busy` forever, so every later poll skipped

@@ -60,6 +60,12 @@ local function valve_env()
     env.events[#env.events + 1] = name
   end
   function C4:PersistGetValue(key)
+    -- Director answers a missing key with zero values, not nil: model
+    -- that, so nested-call crashes (tonumber of nothing raises) fail
+    -- here instead of only in the field.
+    if env.saved[key] == nil then
+      return
+    end
     return env.saved[key]
   end
   function C4:PersistSetValue(key, value)
@@ -232,7 +238,7 @@ end
 
 T.test("valve: version, link pin, updater asset, no selector (VALVE-U4)", function()
   valve_env()
-  T.check_equal(FLOVALVE_DRIVER_VERSION, "2026090813", "valve version lockstep with cloud")
+  T.check_equal(FLOVALVE_DRIVER_VERSION, "2026090814", "valve version lockstep with cloud")
   T.check_equal(FLOGIC_LINK_VERSION, 1, "protocol version is 1")
   T.check_equal(FloUpdate.ASSET, "flologic_water_valve.c4z", "updater tracks the valve package")
   T.check_equal(FloUpdate.FAMILY_ASSETS[1], "flologic_cloud.c4z", "updater requires the cloud sibling")
