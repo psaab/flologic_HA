@@ -2328,13 +2328,16 @@ function FloUpdate.new_install(opts)
     opts.file_write(filename, body)
     -- Never trust the write call: verify by on-disk SIZE (a number), not by
     -- re-reading the full binary that can false-mismatch through string
-    -- marshalling. A 4-byte magic read-back additionally proves the staged
-    -- file is a driver archive rather than an error page or truncation.
+    -- marshalling. Director strips the zip magic's control bytes (\003\004
+    -- are illegal in XML), so gate on the ASCII "PK" prefix that survives
+    -- the read-back: with the exact size match above this still rejects
+    -- error pages and truncations.
     if opts.file_size(filename) ~= #body then
       finish("Staged package size mismatch; stored package may be missing or incomplete; restore using Composer")
       return
     end
-    if opts.file_read(filename, 4) ~= "PK\003\004" then
+    local head = opts.file_read(filename, 4)
+    if type(head) ~= "string" or head:sub(1, 2) ~= "PK" then
       log_warn("update stage: magic check failed for " .. filename)
       finish(
         "Staged package is not a driver archive; stored package may be missing or incomplete; restore using Composer"

@@ -1099,7 +1099,11 @@ local function install_fixtures(version)
       if data == nil then
         return nil
       end
-      return data:sub(1, count)
+      -- Simulate Director string marshalling: control bytes below 0x20
+      -- (except tab/LF/CR) are illegal in XML and do not survive the
+      -- read-back, which is why the stage gate must not depend on the
+      -- \003\004 of the zip magic (field failure on 2026090808).
+      return (data:gsub("[%z\1-\8\11-\12\14-\31]", ""):sub(1, count))
     end,
     soap_send = function(packet, cb)
       store.soap_packets[#store.soap_packets + 1] = packet
