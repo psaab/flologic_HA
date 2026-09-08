@@ -88,14 +88,20 @@ def test_cloud_manifest_has_no_proxies_or_valve_selection() -> None:
     assert f'FLOCLOUD_DRIVER_VERSION = "{version}"' in _read("cloud/cloud.lua")
     assert manifest.find("proxies") is not None
     assert len(manifest.findall("proxies/proxy")) == 0
-    assert len(manifest.findall("connections/connection")) == 0
     assert "CONTACT_SENSOR" not in text
     assert "light_v2" not in text
-    # The dynamic FLOGIC_VALVE provider bindings live in Lua only: no static
-    # connection or class element may declare them (the XML comment may name
-    # the class to explain why <connections/> is empty).
-    assert len(manifest.findall("connections/connection")) == 0
-    assert "classname" not in text
+    # Composer refuses to index a driver with neither proxies nor
+    # connections, so slot 2001 is a static CONTROL provider (the primary
+    # valve link); slots 2002-2016 stay dynamic in Lua. Exactly one static
+    # connection, exactly one class declaration.
+    connections = manifest.findall("connections/connection")
+    assert len(connections) == 1
+    link = connections[0]
+    assert link.findtext("id") == "2001"
+    assert link.findtext("connectionname") == "Valve Link 1"
+    assert link.findtext("consumer") == "False"
+    assert link.findtext("classes/class/classname") == "FLOGIC_VALVE"
+    assert len(manifest.findall("connections/connection/classes/class")) == 1
     assert "Select Valve" not in text
     assert "Valve ID Override" not in text
     properties = {

@@ -56,15 +56,24 @@ def test_spike_light_form_matches_production() -> None:
 
 
 def test_spike_link_ids_match_procedure() -> None:
-    """Stub link ids match the procedure text (2001 / 6000 / 5001)."""
+    """Stub link ids match the procedure text (2001 static / 2002 / 6000 / 5001)."""
     valve = _manifest("valve_stub")
     link_ids = {
         entry.findtext("classes/class/classname"): entry.findtext("id")
         for entry in valve.findall("connections/connection")
     }
     assert link_ids["FLOGIC_VALVE"] == "6000"
+    # The cloud stub needs a static connection or Composer never indexes
+    # it (same rule as production); the test link stays dynamic 2002.
+    cloud = _manifest("cloud_stub")
+    statics = cloud.findall("connections/connection")
+    assert len(statics) == 1
+    assert statics[0].findtext("id") == "2001"
+    assert statics[0].findtext("classes/class/classname") == "FLOGIC_VALVE"
+    stub_lua = (SPIKE / "cloud_stub" / "driver.lua").read_text(encoding="utf-8")
+    assert "SPIKE_BINDING_ID = 2002" in stub_lua
     procedure = (SPIKE / "PROCEDURE.md").read_text(encoding="utf-8")
-    for token in ("2001", "6000", "5001", "FLOGIC_VALVE", "2026090701"):
+    for token in ("2001", "2002", "6000", "5001", "FLOGIC_VALVE", "2026090701"):
         assert token in procedure, token
     # H4: the Lua-reload case must exist, not just the restart case.
     assert "Lua reload" in procedure

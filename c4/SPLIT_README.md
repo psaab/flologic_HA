@@ -9,15 +9,15 @@ contract is [c4/shared/flologic_link.md](shared/flologic_link.md)
 (normative code:
 [`c4/shared/flologic_link.lua`](shared/flologic_link.lua)).
 
-Both drivers share lockstep version **2026090801** (link protocol
+Both drivers share lockstep version **2026090802** (link protocol
 version **1**). Releases ship both packages under one `c4-v*` tag (e.g.
-`c4-v2026090801`); see [c4/RELEASE_NOTES.md](RELEASE_NOTES.md).
+`c4-v2026090802`); see [c4/RELEASE_NOTES.md](RELEASE_NOTES.md).
 The valve tile click needs Director OS 3.3.2+ (`DYNAMIC_ON`/`DYNAMIC_OFF`);
 the cloud driver runs on 3.3.0+.
 
 | Driver | Name / model | Package | Proxy | Role |
 | --- | --- | --- | --- | --- |
-| Cloud | `FloLogic Cloud` | `c4/flologic_cloud.c4z` | none (no app tile, no contacts) | Account credentials, single poll loop, discovery, one dynamic `FLOGIC_VALVE` provider slot (ids 2001–2016) per valve |
+| Cloud | `FloLogic Cloud` | `c4/flologic_cloud.c4z` | none (no app tile, no contacts) | Account credentials, single poll loop, discovery, one `FLOGIC_VALVE` provider slot (static 2001 + dynamic 2002–2016) per valve |
 | Valve | `FloLogic Water Valve` | `c4/flologic_valve.c4z` | `light_v2` (switch tile, binding 5001) | One instance per physical valve: state display, seven contact outputs, app on/off, programming commands |
 
 Composer identities (name, model, proxy) are fully distinct from the
@@ -44,7 +44,7 @@ manually (delete the monolith, add cloud + valves) instead.
    `flologic_valve.c4z`).
 6. In Connections view, bind each valve instance's **FloLogic Link**
    (consumer, id 600, class `FLOGIC_VALVE`) to that valve's named slot
-   on the cloud driver (provider, ids 2001–2016, class `FLOGIC_VALVE`).
+   on the cloud driver (provider, static 2001 + dynamic 2002–2016, class `FLOGIC_VALVE`).
    See [c4/cloud/README.md](cloud/README.md) for the handshake sequence
    (`FLOGIC_HELLO` → `FLOGIC_IDENTITY`).
 7. Confirm on each valve: `Valve ID` / `Valve Name` fill in,
@@ -172,7 +172,7 @@ monolith instances must migrate manually instead of updating.
   view binding (valve FloLogic Link 600 → cloud named slot), confirm
   `Valve Count` on the cloud, then run cloud `Refresh Valve List`.
 - **Version mismatch.** Both drivers must run the same lockstep
-  version (currently 2026090801; the release tag must equal both
+  version (currently 2026090802; the release tag must equal both
   manifests, enforced by the release workflow). Each driver's updater
   tracks only its own asset (`flologic_cloud.c4z` /
   `flologic_valve.c4z`); a valve talking to a cloud on a
@@ -204,7 +204,7 @@ identities that never touch production drivers) to prove the
 architecture's two risky assumptions:
 
 1. Create the cloud stub's dynamic binding (`Add Valve Link` → id
-   2001, class `FLOGIC_VALVE`).
+   2002, class `FLOGIC_VALVE`; static 2001 is a Composer-indexing shim).
 2. Bind it to the valve stub's link input; confirm the hello/identity
    exchange in both Lua logs.
 3. Ping/pong both directions at 4096 then 16384 bytes; confirm full

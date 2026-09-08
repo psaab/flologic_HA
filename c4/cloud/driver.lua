@@ -2990,7 +2990,7 @@ end
 -- favor of the slot->valve identity map below. Lua 5.1 safe.
 -- ============================================================================
 
-FLOCLOUD_DRIVER_VERSION = "2026090801"
+FLOCLOUD_DRIVER_VERSION = "2026090802"
 print("[flologic-cloud] Lua loaded: " .. FLOCLOUD_DRIVER_VERSION)
 
 FLOCLOUD_DEFAULT_HUB = "https://hub-cloudapps-prod.azurewebsites.net"
@@ -3004,8 +3004,9 @@ FLOCLOUD_CB_FAILURES = 5
 FLOCLOUD_CB_COOLDOWN_S = 300
 FLOCLOUD_QUEUE_MAX = 8
 
--- Dynamic CONTROL provider slots (plan D2): one per valve, lowest free id
--- reused, 16-valve cap. Never declared in driver.xml.
+-- CONTROL provider slots (plan D2): one per valve, lowest free id
+-- reused, 16-valve cap. SLOT_FIRST is the static manifest provider
+-- ("Valve Link 1"); the rest are created with C4:AddDynamicBinding.
 FLOCLOUD_SLOT_FIRST = 2001
 FLOCLOUD_SLOT_LAST = 2016
 FLOCLOUD_LINK_CLASS = "FLOGIC_VALVE"
@@ -3758,7 +3759,7 @@ local function flocloud_hub_url()
 end
 
 -- --- Per-valve identity and slot map ---------------------------------------
--- Each dynamic slot binds to one valve id (the "index"). The location hash
+-- Each slot binds to one valve id (the "index"). The location hash
 -- binds that slot to the valve's stable cloud identity (id + uuid) so a
 -- reused numeric id with different cloud metadata is detected instead of
 -- silently inheriting the old slot. The persisted map restores Composer
@@ -3894,6 +3895,14 @@ local function flocloud_persist_slots()
 end
 
 local function flocloud_add_binding(slot, name)
+  if slot == FLOCLOUD_SLOT_FIRST then
+    -- Slot 2001 is the static manifest provider ("Valve Link 1"): it
+    -- exists from install, so there is nothing to create. Composer
+    -- requires at least one proxy or connection to index a driver, and
+    -- this static primary link is what keeps the cloud searchable.
+    flocloud_log("static binding ready: id=" .. tostring(slot) .. " class=" .. FLOCLOUD_LINK_CLASS)
+    return
+  end
   C4:AddDynamicBinding(slot, "CONTROL", true, name, FLOCLOUD_LINK_CLASS, false, false)
   flocloud_log("dynamic binding added: id=" .. tostring(slot) .. " class=" .. FLOCLOUD_LINK_CLASS)
 end

@@ -1,8 +1,11 @@
 -- ============================================================================
 -- spike/cloud_stub/driver.lua — Unit-0 spike: dynamic CONTROL provider stub.
 --
--- Creates ONE dynamic provider binding (class FLOGIC_VALVE) at runtime via
--- C4:AddDynamicBinding, persists it, and restores it on init. Speaks a
+-- Creates ONE dynamic provider binding (id 2002, class FLOGIC_VALVE) at
+-- runtime via C4:AddDynamicBinding, persists it, and restores it on init.
+-- Binding 2001 is the static manifest provider: Composer refuses to index
+-- a driver with neither proxies nor connections, so the stub declares it
+-- (mirroring production) purely to stay searchable. Speaks a
 -- minimal BindMessage ping/pong in both directions (ReceivedFromProxy /
 -- SendToProxy) with a multi-KB payload, plus a SendToDevice fallback path
 -- (ExecuteCommand + GetBound* discovery) if peer BindMessages do not arrive.
@@ -13,7 +16,9 @@
 SPIKE_CLOUD_VERSION = "2026090701"
 print("[spike-cloud] Lua loaded: " .. SPIKE_CLOUD_VERSION)
 
-SPIKE_BINDING_ID = 2001
+-- The dynamic test link. Static 2001 (driver.xml) exists only so Composer
+-- indexes the stub; the procedure binds and pings over this id.
+SPIKE_BINDING_ID = 2002
 SPIKE_BINDING_CLASS = "FLOGIC_VALVE"
 SPIKE_BINDING_NAME = "Spike Valve 1"
 SPIKE_PERSIST_KEY = "spike_cloud_binding"

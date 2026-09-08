@@ -7,8 +7,10 @@ Estimated time: under an hour.
 
 Artifacts:
 
-- `spike/cloud_stub/` — dynamic CONTROL provider stub (binding 2001, custom
-  class `FLOGIC_VALVE`, persisted and restored on init).
+- `spike/cloud_stub/` — CONTROL provider stub: static manifest link 2001
+  (Composer-indexing shim, class `FLOGIC_VALVE`) plus the dynamic test
+  link 2002 of the same class, persisted and restored on init. Bind and
+  ping over the dynamic `Spike Valve 1` (2002), never the static shim.
 - `spike/valve_stub/` — static link consumer (6000) + `light_v2` proxy (5001,
   switch capabilities: dimmer/set_level false, on_off true).
 - `spike/cloud_stub.c4z`, `spike/valve_stub.c4z` — packaged drivers.
@@ -31,11 +33,12 @@ Expected: both drivers load with no script errors; cloud Link Status reads
 1. On the cloud driver, run the `Add Valve Link` programming command
    (or its Composer action button).
 2. Check the cloud Lua log for
-   `dynamic binding added: id=2001 class=FLOGIC_VALVE`.
+   `dynamic binding added: id=2002 class=FLOGIC_VALVE`.
 3. Open Connections view: a new provider connection named `Spike Valve 1`
-   with class `FLOGIC_VALVE` is listed on the cloud driver.
+   with class `FLOGIC_VALVE` is listed on the cloud driver (alongside the
+   static `Valve Link 1 (static)` shim, which you ignore).
 
-Expected: binding id 2001 appears; Binding ID property reads `2001`;
+Expected: binding id 2002 appears; Binding ID property reads `2002`;
 Link Status reads `Waiting for bind`.
 
 ## 2. Bind the custom class
@@ -85,7 +88,7 @@ SET_BRIGHTNESS_TARGET from a scene if available).
 1. Note the current bind state (both `Bound`).
 2. Restart Director (or reboot the controller).
 3. Immediately check: is the Connections-view link still drawn?
-4. Check the cloud log for `restored dynamic binding id=2001` during init,
+4. Check the cloud log for `restored dynamic binding id=2002` during init,
    before any human action.
 5. Record whether either driver logged a fresh `OnBindingChanged ...
    bound=true` line after the restart without touching anything.
@@ -108,7 +111,7 @@ orphaning the link.
 1. With the link `Bound` from step 2, update the cloud stub driver in
    place (Composer: update/reload the driver without rebooting).
 2. Check the cloud log during init for `restored dynamic binding
-   id=2001` (fresh re-add) or a single `WARN: restore re-add failed
+   id=2002` (fresh re-add) or a single `WARN: restore re-add failed
    (binding may already exist)` (binding survived the reload). Either is
    fine; a loop of re-add failures is not.
 3. Without rebinding, run cloud `Ping Peer` again.

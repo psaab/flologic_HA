@@ -153,7 +153,7 @@ local function discover(env, devices, accesses)
 end
 
 T.test("cloud: version, link pin, updater asset, no picker (CLOUD-U6)", function()
-  T.check_equal(FLOCLOUD_DRIVER_VERSION, "2026090801", "cloud version")
+  T.check_equal(FLOCLOUD_DRIVER_VERSION, "2026090802", "cloud version")
   T.check_equal(FLOGIC_LINK_VERSION, 1, "protocol version is 1")
   T.check_equal(FloUpdate.ASSET, "flologic_cloud.c4z", "updater tracks the cloud package")
   T.check(flocloud_selection == nil, "no single-valve selection helper")
@@ -161,42 +161,43 @@ T.test("cloud: version, link pin, updater asset, no picker (CLOUD-U6)", function
   T.check(FLOCLOUD_PROP_OVERRIDE == nil, "no override property constant")
   local body = JSON.encode({
     {
-      tag_name = "c4-v2026090801",
+      tag_name = "c4-v2026090802",
       draft = false,
       prerelease = false,
       assets = {
         {
           name = "flologic_cloud.c4z",
-          browser_download_url = "https://github.com/psaab/flologic_HA/releases/download/c4-v2026090801/flologic_cloud.c4z",
+          browser_download_url = "https://github.com/psaab/flologic_HA/releases/download/c4-v2026090802/flologic_cloud.c4z",
         },
       },
     },
     {
-      tag_name = "c4-v2026090801",
+      tag_name = "c4-v2026090802",
       draft = false,
       prerelease = false,
       assets = {
         {
           name = "flologic_valve.c4z",
-          browser_download_url = "https://github.com/psaab/flologic_HA/releases/download/c4-v2026090801/flologic_valve.c4z",
+          browser_download_url = "https://github.com/psaab/flologic_HA/releases/download/c4-v2026090802/flologic_valve.c4z",
         },
       },
     },
   })
   local release = FloUpdate.select_release(JSON.decode(body))
   T.check(release ~= nil, "cloud asset selected")
-  T.check_equal(release.version, "2026090801", "cloud release version")
+  T.check_equal(release.version, "2026090802", "cloud release version")
   T.check(release.url:find("flologic_cloud.c4z", 1, true) ~= nil, "cloud asset url")
 end)
 
-T.test("cloud: discovery creates one dynamic binding per valve", function()
+T.test("cloud: discovery creates one binding per valve, first static", function()
   local env = boot(cloud_env())
   T.check_equal(env.timers.pending_count(), 5, "poll, reconcile, soon, and update timers")
   local v1, v2 = make_valve(), make_valve({ id = 22, uuid = "uuid-2", valveFriendlyName = "Garden" })
   discover(env, { v1, v2 }, { { valveId = 11, notificationsList = 64 } })
-  T.check_equal(#env.bindings, 2, "two dynamic bindings")
-  T.check_equal(env.bindings[1].id, 2001, "lowest free slot first")
-  T.check_equal(env.bindings[2].id, 2002, "second valve takes 2002")
+  -- Slot 2001 is the static manifest provider, so only 2002 is created
+  -- dynamically; both slots are managed identically from here on.
+  T.check_equal(#env.bindings, 1, "one dynamic binding")
+  T.check_equal(env.bindings[1].id, 2002, "second valve takes 2002")
   for _, binding in ipairs(env.bindings) do
     T.check_equal(binding.kind, "CONTROL", "control binding")
     T.check(binding.provider, "provider side")
@@ -210,17 +211,17 @@ T.test("cloud: discovery creates one dynamic binding per valve", function()
   T.check(env.saved.flocloud_slots ~= nil, "slot map persisted")
   -- A repeat poll with the same inventory adds nothing.
   flocloud_poll_now()
-  T.check_equal(#env.bindings, 2, "stable map adds no bindings")
+  T.check_equal(#env.bindings, 1, "stable map adds no bindings")
   -- A departed valve marks its slot unavailable without deleting it.
   script_account(env, { v1 }, {})
   flocloud_poll_now()
-  T.check_equal(#env.bindings, 2, "removed slot is never deleted")
+  T.check_equal(#env.bindings, 1, "removed slot is never deleted")
   T.check_equal(flocloud_state.slots[2002].available, false, "removed slot unavailable")
   T.check_equal(Properties["Valve Count"], "1", "count tracks the account")
   -- The valve returns: same slot resumes without a new binding.
   script_account(env, { v1, v2 }, {})
   flocloud_poll_now()
-  T.check_equal(#env.bindings, 2, "returning valve reuses its slot")
+  T.check_equal(#env.bindings, 1, "returning valve reuses its slot")
   T.check(flocloud_state.slots[2002].available, "slot available again")
   OnDriverDestroyed()
 end)
@@ -430,10 +431,10 @@ T.test("cloud: persist and restore revive bindings across restarts", function()
   env.bindings = {}
   env.proxy_sends = {}
   OnDriverLateInit("test")
-  T.check_equal(#env.bindings, 2, "both bindings re-created")
-  T.check_equal(env.bindings[1].id, 2001, "slot order restored")
-  T.check_equal(env.bindings[2].class, "FLOGIC_VALVE", "class restored")
-  T.check_equal(flocloud_state.valve_slots["11"], 2001, "identity restored")
+  T.check_equal(#env.bindings, 1, "dynamic binding re-created, static remembered")
+  T.check_equal(env.bindings[1].id, 2002, "dynamic slot restored")
+  T.check_equal(env.bindings[1].class, "FLOGIC_VALVE", "class restored")
+  T.check_equal(flocloud_state.valve_slots["11"], 2001, "static identity restored")
   T.check_equal(flocloud_state.valve_slots["22"], 2002, "identity restored")
   -- Restored slots handshake immediately, before the next poll.
   ReceivedFromProxy(2002, "FLOGIC_HELLO", Link.build_hello())
@@ -535,22 +536,26 @@ end)
 
 T.test("cloud: restore keeps the map when re-add fails, Lua reload (H4)", function()
   local env = boot(cloud_env())
-  discover(env, { make_valve() }, {})
+  local v2 = make_valve({ id = 22, uuid = "uuid-2", valveFriendlyName = "Garden" })
+  discover(env, { make_valve(), v2 }, {})
   T.check(env.saved.flocloud_slots ~= nil, "map persisted")
   OnDriverDestroyed()
   env.bindings = {}
   env.proxy_sends = {}
   -- A Lua reload (driver update) keeps Director-side runtime bindings, so
-  -- re-adding the same id may fail: the map must survive anyway.
+  -- re-adding the same id may fail: the map must survive anyway. Two
+  -- valves so the dynamic slot (2002) exercises the failing re-add; the
+  -- static slot (2001) never re-adds.
   local real_add = C4.AddDynamicBinding
   function C4:AddDynamicBinding(_id)
     error("already exists")
   end
   OnDriverLateInit("test")
   C4.AddDynamicBinding = real_add
-  T.check_equal(flocloud_state.valve_slots["11"], 2001, "map kept despite re-add failure")
-  ReceivedFromProxy(2001, "FLOGIC_HELLO", Link.build_hello())
-  T.check_equal(#sends_to(env, 2001, Link.MSG_IDENTITY), 1, "restored slot still answers hello")
+  T.check_equal(flocloud_state.valve_slots["11"], 2001, "static map kept")
+  T.check_equal(flocloud_state.valve_slots["22"], 2002, "dynamic map kept despite re-add failure")
+  ReceivedFromProxy(2002, "FLOGIC_HELLO", Link.build_hello())
+  T.check_equal(#sends_to(env, 2002, Link.MSG_IDENTITY), 1, "restored slot still answers hello")
   OnDriverDestroyed()
 end)
 
@@ -563,7 +568,8 @@ T.test("cloud: departed slot is reused only after explicit unbind (M1)", functio
     valves[i] = make_valve({ id = 100 + i, uuid = "uuid-" .. i, valveFriendlyName = "V" .. i })
   end
   discover(env, valves, {})
-  T.check_equal(#env.bindings, 16, "all slots consumed")
+  -- 2001 is the static manifest provider; the other 15 are dynamic.
+  T.check_equal(#env.bindings, 15, "all dynamic slots consumed")
   -- Valve 101 leaves; its slot goes unavailable but keeps the link.
   local remaining = {}
   for i = 2, 16 do

@@ -89,8 +89,26 @@
     <script file="driver.lua" encryption="0" jit="1"></script>
   </config>
   <proxies/>
-  <!-- No static connections: the valve link is created at runtime with
-       C4:AddDynamicBinding (CONTROL provider, class FLOGIC_VALVE, id 2001). -->
-  <connections/>
+  <!-- Static 2001 exists only so Composer indexes the stub (a driver with
+       neither proxies nor connections never appears in driver search).
+       The test link is the dynamic 2002 binding ("Spike Valve 1"); bind
+       that one, not this shim. -->
+  <connections>
+    <connection>
+      <id>2001</id>
+      <facing>6</facing>
+      <connectionname>Valve Link 1 (static)</connectionname>
+      <type>1</type>
+      <consumer>False</consumer>
+      <audiosource>False</audiosource>
+      <videosource>False</videosource>
+      <linelevel>False</linelevel>
+      <classes>
+        <class>
+          <classname>FLOGIC_VALVE</classname>
+        </class>
+      </classes>
+    </connection>
+  </connections>
   <events/>
 </devicedata>

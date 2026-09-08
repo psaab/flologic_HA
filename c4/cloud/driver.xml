@@ -8,7 +8,7 @@
   <manufacturer>FloLogic</manufacturer>
   <driver>DriverWorks</driver>
   <control>lua_gen</control>
-  <version>2026090801</version>
+  <version>2026090802</version>
   <minimum_os_version>3.3.0</minimum_os_version>
   <created>09/08/2026 12:00 PM</created>
   <modified>09/08/2026 12:00 PM</modified>
@@ -49,7 +49,7 @@
       <property>
         <name>Driver Version</name>
         <type>STRING</type>
-        <default>2026090801</default>
+        <default>2026090802</default>
         <readonly>true</readonly>
       </property>
       <property>
@@ -177,12 +177,30 @@
     <!-- Keep the explicit closing tag used by Proflame's working reload manifest. -->
     <script file="driver.lua" encryption="0" jit="1"></script>
   </config>
-  <!-- No proxies and no static connections: the cloud driver owns no
-       display, contacts, or app tile. Valve links are CONTROL provider
-       bindings created at runtime with C4:AddDynamicBinding (plan D2),
-       ids 2001-2016, class FLOGIC_VALVE. -->
+  <!-- No proxies: the cloud driver owns no display, contacts, or app
+       tile. Composer refuses to index a driver with neither proxies nor
+       connections (a blank driver never appears in driver search), so
+       slot 2001 is a static CONTROL provider binding and the honest
+       primary valve link; slots 2002-2016 are created at runtime with
+       C4:AddDynamicBinding (plan D2), all class FLOGIC_VALVE. -->
   <proxies/>
-  <connections/>
+  <connections>
+    <connection>
+      <id>2001</id>
+      <facing>6</facing>
+      <connectionname>Valve Link 1</connectionname>
+      <type>1</type>
+      <consumer>False</consumer>
+      <audiosource>False</audiosource>
+      <videosource>False</videosource>
+      <linelevel>False</linelevel>
+      <classes>
+        <class>
+          <classname>FLOGIC_VALVE</classname>
+        </class>
+      </classes>
+    </connection>
+  </connections>
   <events>
     <event>
       <id>1</id>
