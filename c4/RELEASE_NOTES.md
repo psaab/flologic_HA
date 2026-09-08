@@ -1,5 +1,36 @@
 Control4 DriverWorks package for FloLogic Connect valves (OS 3.3.0+).
 
+Version **2026090810** implements the adversarial-review remediation (14
+findings, all fixed and covered; see `c4/ADVERSARIAL_REVIEW.md`).
+
+- Valve package renamed `flologic_valve.c4z` →
+  `flologic_water_valve.c4z`: installed monoliths no longer see split
+  releases as updates, and split updaters require the whole lockstep
+  family before staging. Split installs on tags
+  `c4-v2026090801`–`c4-v2026090809` need ONE manual Composer update to
+  this release; self-updates resume after that hop. Monolith owners
+  still migrate manually.
+- Updater stages to a validated separate candidate (never deletes the
+  installed package first), screens downloads by published size plus
+  archive prefix, and the valve install socket is now actually
+  dispatched through lifecycle entry points.
+- Slot safety: Director bound-device maps decoded by ID key; slot reuse
+  vetoed on any live consumer or failed lookup; exact valve identity
+  (id + uuid) verified before any write, with quarantine + explicit
+  re-link on conflict; account changes invalidate cached authorization.
+- Truthful state: companions publish unavailable transitions, expire
+  stale snapshots on a cadence-aware watchdog, display observation
+  time, drop out-of-order snapshots, and settle unanswered commands on
+  a real deadline that reconciles the tile. Commands carry a transmit
+  deadline, never replay, and share the breaker policy with polls;
+  overdue polls run before further commands.
+- Fallback: hints follow the live handshake only (never a stale
+  binding); proxy hellos retry in a bounded burst with an explicit
+  failed state plus slow recovery. Snapshots validate atomically
+  (domains + clean text); relog tokens harvest from any settled
+  session and drop on auth failure; hub frame logs are scrubbed and
+  retired bindings drain safely.
+
 Version **2026090808** removes the phantom `Valve Link 16` connection and
 fixes valve instances installing as `Light v2`. The static slot is gone:
 Composer indexes the proxy-less cloud via combo + category (the proven
@@ -50,16 +81,18 @@ this lockstep version.
 
 Version **2026090801** was the split-driver release: one `FloLogic Cloud`
 account coordinator (`flologic_cloud.c4z`) plus one `FloLogic Water
-Valve` companion per valve (`flologic_valve.c4z`), both under one tag
+Valve` companion per valve (`flologic_valve.c4z` on tags
+`c4-v2026090801`–`c4-v2026090809`, renamed to
+`flologic_water_valve.c4z` from `c4-v2026090810`), both under one tag
 at one lockstep version. New installs start with the split drivers;
 see [SPLIT_README.md](SPLIT_README.md) for the install/bind guide and
 manual migration from the monolith. The valve driver requires OS 3.3.2+
-for the app-tile click; the cloud driver runs on 3.3.0+. The valve package
-intentionally reuses the legacy monolith filename, so installed monoliths
-will offer it as an update: do NOT install it over a monolith instance —
-migrate manually instead (delete the monolith, add cloud + valves, rebind
-programming). Both new drivers self-update from GitHub releases, each
-tracking only its own asset.
+for the app-tile click; the cloud driver runs on 3.3.0+. Tags
+`c4-v2026090801`–`c4-v2026090809` reuse the legacy monolith filename, so
+installed monoliths will offer those as an update: do NOT install them
+over a monolith instance — migrate manually instead (delete the
+monolith, add cloud + valves, rebind programming). Both new drivers
+self-update from GitHub releases, each tracking only its own asset.
 
 Monolith owners: the legacy single-driver line ended at Driver Version
 2026090709; its notes stay on the older release tags.

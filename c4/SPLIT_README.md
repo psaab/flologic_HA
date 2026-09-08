@@ -18,14 +18,18 @@ the cloud driver runs on 3.3.0+.
 | Driver | Name / model | Package | Proxy | Role |
 | --- | --- | --- | --- | --- |
 | Cloud | `FloLogic Cloud` | `c4/flologic_cloud.c4z` | none (no app tile, no contacts) | Account credentials, single poll loop, discovery, one dynamic `FLOGIC_VALVE` provider slot (ids 2001–2016) per valve |
-| Valve | `FloLogic Water Valve` | `c4/flologic_valve.c4z` | `light_v2` (switch tile, binding 5001) | One instance per physical valve: state display, seven contact outputs, app on/off, programming commands |
+| Valve | `FloLogic Water Valve` | `c4/flologic_water_valve.c4z` | `light_v2` (switch tile, binding 5001) | One instance per physical valve: state display, seven contact outputs, app on/off, programming commands |
 
 Composer identities (name, model, proxy) are fully distinct from the
-monolith (`FloLogic Valve` / `FloLogic Connect` / `flologic_valve`), but
-the valve package intentionally reuses the legacy monolith asset filename
-`flologic_valve.c4z`. Installed monoliths will therefore offer the valve
-driver as an update: never install it over a monolith instance — migrate
-manually (delete the monolith, add cloud + valves) instead.
+monolith (`FloLogic Valve` / `FloLogic Connect` / `flologic_valve`), and
+the valve package ships under its own asset filename
+`flologic_water_valve.c4z` — never the legacy monolith filename
+`flologic_valve.c4z`, so installed monoliths never see split releases as
+updates. (Tags `c4-v2026090801`–`c4-v2026090809` predate the rename and
+do reuse the legacy filename: never install those over a monolith
+instance — migrate manually (delete the monolith, add cloud + valves)
+instead. Split installs on those tags need one manual Composer update to
+a renamed release; self-updates resume after that hop.)
 
 ## Install order
 
@@ -41,7 +45,7 @@ manually (delete the monolith, add cloud + valves) instead.
    cloud `Refresh` command. `Valve Count` / `Available Valves` (id: name
    pairs) confirm the account inventory.
 5. Add **one `FloLogic Water Valve` driver per physical valve** (from
-   `flologic_valve.c4z`).
+   `flologic_water_valve.c4z`).
 6. In Connections view, bind each valve instance's **FloLogic Link**
    (consumer, id 600, class `FLOGIC_VALVE`) to that valve's named slot
    on the cloud driver (provider, ids 2001–2016, class `FLOGIC_VALVE`, each carrying its valve name).
@@ -119,7 +123,7 @@ Set Away Limit, Set Bypass Time, Set Auto Away, Set Temp
 Alert/Shutoff, Set Pre-Alert, Set No-Flow Notice, Set Flow
 Sensitivity), Refresh (ask the cloud for state now), plus report-only
 Check for Update and the Composer install commands tracking the
-`flologic_valve.c4z` asset. Ranges mirror the monolith
+`flologic_water_valve.c4z` asset. Ranges mirror the monolith
 (home/bypass/pre-alert 1–10080, away 0–10080 fractional, auto-away
 1–8760 h, temperatures −50–150, no-flow notice 1–604800 s, flow
 sensitivity 0–1000 fractional); the cloud revalidates and NACKs
@@ -157,9 +161,11 @@ Do not install the monolith `.c4z` and the new `.c4z` files as if they
 were upgrades of each other. Note the repository still ships the
 monolith sources alongside the split drivers (kept deliberately against
 the plan's deletion step, so the legacy driver stays reviewable and its
-last build stays reproducible); the release workflow publishes the valve
-driver under the legacy `flologic_valve.c4z` filename, which is why
-monolith instances must migrate manually instead of updating.
+last build stays reproducible); tags `c4-v2026090801`–`c4-v2026090809`
+published the valve driver under the legacy `flologic_valve.c4z`
+filename, so monolith instances must migrate manually instead of
+updating to those. Newer tags renamed the split valve and no longer
+appear as monolith updates at all.
 
 ## Troubleshooting
 
@@ -175,7 +181,7 @@ monolith instances must migrate manually instead of updating.
   version (currently 2026090808; the release tag must equal both
   manifests, enforced by the release workflow). Each driver's updater
   tracks only its own asset (`flologic_cloud.c4z` /
-  `flologic_valve.c4z`); a valve talking to a cloud on a
+  `flologic_water_valve.c4z`); a valve talking to a cloud on a
   different link version is rejected with `version-mismatch` (link
   protocol has no negotiation — either side rejects a foreign
   version). Fix: install the same release on both drivers via

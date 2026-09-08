@@ -46,12 +46,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Both split-driver assets ship under one tag (lockstep); gh errors
-          # when either file is missing, so both are required. Note the valve
-          # asset intentionally reuses the legacy monolith filename, so
-          # installed monoliths will offer it as an update: monolith owners
-          # must migrate manually (delete monolith, add cloud + valves) and
-          # never install it over a monolith instance.
-          gh release create "$GITHUB_REF_NAME" c4/flologic_cloud.c4z c4/flologic_valve.c4z \
+          # when either file is missing, so both are required. The split
+          # valve ships as flologic_water_valve.c4z and must NEVER be
+          # published as flologic_valve.c4z: that legacy monolith filename
+          # would make installed monoliths offer the incompatible
+          # companion as an update. Fail loudly if a stale file exists.
+          test ! -e c4/flologic_valve.c4z
+          gh release create "$GITHUB_REF_NAME" c4/flologic_cloud.c4z c4/flologic_water_valve.c4z \
             --verify-tag --latest=false \
             --title "FloLogic Control4 ${GITHUB_REF_NAME#c4-v}" \
             --notes-file c4/RELEASE_NOTES.md

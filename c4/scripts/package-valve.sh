@@ -1,14 +1,16 @@
 #!/bin/sh
 # Package the FloLogic Water Valve driver for Composer Pro: driver.xml +
-# bundled driver.lua zipped as flologic_valve.c4z (the valve reuses the
-# legacy monolith asset filename). No trust store: the
-# valve driver uses only platform HTTPS (C4:url) and plain-TCP Composer SOAP,
-# with no raw-TLS CACERTFILE reference.
+# bundled driver.lua zipped as flologic_water_valve.c4z. The split valve
+# must NEVER reuse the legacy monolith asset filename flologic_valve.c4z:
+# installed monoliths would offer the incompatible companion as an
+# update. No trust store: the valve driver uses only platform HTTPS
+# (C4:url) and plain-TCP Composer SOAP, with no raw-TLS CACERTFILE
+# reference.
 # Usage: sh c4/scripts/package-valve.sh
 set -eu
 cd "$(dirname "$0")/.."
 sh valve/bundle.sh
-OUT="flologic_valve.c4z"
+OUT="flologic_water_valve.c4z"
 rm -f "$OUT"
 if command -v zip >/dev/null 2>&1; then
   zip -q -j "$OUT" valve/driver.xml valve/driver.lua

@@ -20,7 +20,9 @@
 --   FLOGIC_CMD   command correlation id for COMMAND / CMD_ACK / CMD_NACK
 --   FLOGIC_TRUNC "1" when a FLOGIC_STATE envelope carries a digest instead
 --                of the full body (see the digest-fallback note below)
---   FLOGIC_ERROR human-readable nack reason for FLOGIC_CMD_NACK
+--   FLOGIC_ERROR human-readable nack reason for FLOGIC_CMD_NACK, or the
+--                unavailability reason for FLOGIC_UNAVAILABLE (whose body
+--                is the raw valve id, like FLOGIC_IDENTITY)
 --
 -- Digest fallback: a full valve_state body always fits the budget in
 -- practice (see flologic_link.md for the measured worst case), but a
@@ -46,6 +48,7 @@ FloLogicLink.MSG_IDENTITY = "FLOGIC_IDENTITY"
 FloLogicLink.MSG_STATE = "FLOGIC_STATE"
 FloLogicLink.MSG_CMD_ACK = "FLOGIC_CMD_ACK"
 FloLogicLink.MSG_CMD_NACK = "FLOGIC_CMD_NACK"
+FloLogicLink.MSG_UNAVAILABLE = "FLOGIC_UNAVAILABLE"
 
 FloLogicLink.VALVE_TO_CLOUD = {
   FloLogicLink.MSG_HELLO,
@@ -57,6 +60,7 @@ FloLogicLink.CLOUD_TO_VALVE = {
   FloLogicLink.MSG_STATE,
   FloLogicLink.MSG_CMD_ACK,
   FloLogicLink.MSG_CMD_NACK,
+  FloLogicLink.MSG_UNAVAILABLE,
 }
 
 -- Wire keys (BindMessage params are flat string tables).
@@ -96,6 +100,7 @@ local KNOWN_MESSAGES = {
   [FloLogicLink.MSG_STATE] = true,
   [FloLogicLink.MSG_CMD_ACK] = true,
   [FloLogicLink.MSG_CMD_NACK] = true,
+  [FloLogicLink.MSG_UNAVAILABLE] = true,
 }
 
 local VALVE_TO_CLOUD = {
@@ -109,6 +114,7 @@ local CLOUD_TO_VALVE = {
   [FloLogicLink.MSG_STATE] = true,
   [FloLogicLink.MSG_CMD_ACK] = true,
   [FloLogicLink.MSG_CMD_NACK] = true,
+  [FloLogicLink.MSG_UNAVAILABLE] = true,
 }
 
 -- --- Small validators (all return true/false, never raise). ---
@@ -408,6 +414,14 @@ end
 -- scalars below; anything else rejected so a renamed cloud field fails
 -- loudly instead of silently dropping.
 
+-- Snapshot numerics with flag/enum semantics must be non-negative
+-- integers: only those carry the documented meaning. Floats would floor
+-- silently and negatives test every flag set under modulo arithmetic, so
+-- both fail the whole snapshot atomically instead of being interpreted.
+local function is_snapshot_int(value)
+  return is_finite_number(value) and value % 1 == 0 and value >= 0
+end
+
 local function check_state_fields(fields)
   if type(fields) ~= "table" then
     return nil, "state-not-table"
@@ -422,7 +436,7 @@ local function check_state_fields(fields)
   if not is_clean_text(id, FloLogicLink.MAX_VALVE_ID_LEN) then
     return nil, "bad-state-id"
   end
-  if not is_finite_number(fields.mode) then
+  if not is_snapshot_int(fields.mode) then
     return nil, "bad-state-mode"
   end
   if type(fields.online) ~= "boolean" then
@@ -430,14 +444,15 @@ local function check_state_fields(fields)
   end
   for name, cap in pairs(FloLogicLink.STATE_STRING_FIELDS) do
     local value = fields[name]
-    if value ~= nil then
-      if type(value) ~= "string" or #value > cap then
-        return nil, "bad-state-field:" .. name
-      end
+    if value ~= nil and not is_clean_text(value, cap) then
+      return nil, "bad-state-field:" .. name
     end
   end
+  if fields.flow_state ~= nil and not is_snapshot_int(fields.flow_state) then
+    return nil, "bad-state-field:flow_state"
+  end
   for name in pairs(FloLogicLink.STATE_NUMBER_FIELDS) do
-    if fields[name] ~= nil and not is_finite_number(fields[name]) then
+    if name ~= "flow_state" and fields[name] ~= nil and not is_finite_number(fields[name]) then
       return nil, "bad-state-field:" .. name
     end
   end
@@ -617,6 +632,23 @@ function FloLogicLink.build_ack(cmd_id)
   return env
 end
 
+-- Cloud->valve: the slot's valve left the account or failed identity
+-- verification. Carries the valve id plus a short reason; the companion
+-- stops claiming current knowledge until a new identity + slice arrive.
+function FloLogicLink.build_unavailable(valve_id, reason)
+  local id, err = check_valve_id(valve_id)
+  if id == nil then
+    return nil, err
+  end
+  if not is_clean_text(reason, FloLogicLink.MAX_ERROR_LEN) then
+    return nil, "bad-reason"
+  end
+  local env = base_envelope(FloLogicLink.MSG_UNAVAILABLE)
+  env[FloLogicLink.K_BODY] = id
+  env[FloLogicLink.K_ERROR] = reason
+  return env
+end
+
 -- Cloud->valve: negative acknowledgement echoing the command id plus a
 -- human-readable reason (authorization, queue, or cloud failure).
 function FloLogicLink.build_nack(cmd_id, reason)
@@ -725,6 +757,19 @@ function FloLogicLink.parse(params)
       return nil, "bad-action"
     end
     out.fields = fields
+    return out
+  end
+  if msg == FloLogicLink.MSG_UNAVAILABLE then
+    local id, err = check_valve_id(body)
+    if id == nil then
+      return nil, err
+    end
+    local reason = params[FloLogicLink.K_ERROR]
+    if not is_clean_text(reason, FloLogicLink.MAX_ERROR_LEN) then
+      return nil, "bad-reason"
+    end
+    out.valve_id = id
+    out.error_reason = reason
     return out
   end
   -- MSG_STATE: digest-only envelopes carry the hash without the body.

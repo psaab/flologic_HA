@@ -194,6 +194,21 @@ T.test("signalr: cancel and fail_all", function()
   T.check_equal(bad, 1, "bad frame reported, stream survives")
 end)
 
+T.test("signalr: undecodable frame detail is truncated and single-line", function()
+  local detail = nil
+  local d = SignalR.new_dispatcher({
+    on_error = function(_msg, snippet)
+      detail = snippet
+    end,
+  })
+  d.feed("FAKE-LOG-LINE\nsecond\001line" .. string.rep("x", 300) .. "\030")
+  T.check(detail ~= nil, "detail supplied")
+  T.check(#detail <= 160, "detail bounded, got " .. #detail)
+  T.check(detail:find("[\r\n]") == nil, "no line injection")
+  T.check(detail:find("%c") == nil, "no control bytes")
+  T.check(detail:sub(1, 14) == "FAKE-LOG-LINE ", "content preserved, blanked")
+end)
+
 -- --- WebSocket ---
 
 T.test("websocket: RFC 6455 handshake vector", function()
@@ -1008,6 +1023,30 @@ T.test("updates: select only stable C4 releases with the expected package", func
   T.check(FloUpdate.select_release({ { tag_name = "v0.2.2", assets = {} } }) == nil, "HA release ignored")
 end)
 
+T.test("updates: a set family requires every sibling asset in the release", function()
+  local saved_asset, saved_family = FloUpdate.ASSET, FloUpdate.FAMILY_ASSETS
+  FloUpdate.ASSET = "flologic_cloud.c4z"
+  FloUpdate.FAMILY_ASSETS = { "flologic_cloud.c4z", "flologic_water_valve.c4z" }
+  local function asset(tag, name)
+    return {
+      name = name,
+      browser_download_url = "https://github.com/psaab/flologic_HA/releases/download/" .. tag .. "/" .. name,
+    }
+  end
+  local complete = {
+    tag_name = "c4-v2026090703",
+    assets = { asset("c4-v2026090703", "flologic_cloud.c4z"), asset("c4-v2026090703", "flologic_water_valve.c4z") },
+  }
+  local partial = {
+    tag_name = "c4-v2026090704",
+    assets = { asset("c4-v2026090704", "flologic_cloud.c4z") },
+  }
+  local best = FloUpdate.select_release({ partial, complete })
+  T.check_equal(best.version, "2026090703", "incomplete newer release skipped")
+  T.check(FloUpdate.select_release({ partial }) == nil, "no complete release, no selection")
+  FloUpdate.ASSET, FloUpdate.FAMILY_ASSETS = saved_asset, saved_family
+end)
+
 T.test("updates: watchdog cancels HTTP and suppresses late results", function()
   local timers = TestHelp.new_fake_timers()
   local callback, cancelled, result, count
@@ -1095,6 +1134,9 @@ local function install_fixtures(version)
       return files[name] and #files[name] or nil
     end,
     file_read = function(name, count)
+      if store.spoof_read ~= nil then
+        return store.spoof_read:sub(1, count)
+      end
       local data = files[name]
       if data == nil then
         return nil
@@ -1144,6 +1186,7 @@ T.test("updates: install downloads, stages, and triggers on newer release", func
   T.check(err == nil, "no error, got " .. tostring(err))
   T.check_equal(outcome.attempted, "2026090808", "attempted version")
   T.check_equal(store.files["flologic_valve.c4z"], "PK\003\004NEW-DRIVER-BYTES", "staged bytes")
+  T.check_equal(store.files["flologic_valve.c4z.new"], nil, "candidate cleaned after success")
   T.check_equal(store.set_dir_calls[1], "C4Z_ROOT", "staged to the install root")
   T.check_equal(#store.soap_packets, 1, "one install trigger")
   T.check_equal(store.soap_packets[1], FloUpdate.build_install_packet("flologic_valve.c4z"), "trigger packet")
@@ -1151,7 +1194,7 @@ T.test("updates: install downloads, stages, and triggers on newer release", func
   T.check(progress[1]:find("Downloading", 1, true) ~= nil, "download progress")
 end)
 
-T.test("updates: install traces milestones and rejects a non-archive stage", function()
+T.test("updates: install traces milestones and rejects a non-archive download", function()
   local timers = TestHelp.new_fake_timers()
   local releases, store, fakes = install_fixtures("2026090808")
   local seen, warns = {}, {}
@@ -1169,13 +1212,74 @@ T.test("updates: install traces milestones and rejects a non-archive stage", fun
   op.start()
   T.check(
     err ~= nil and err:find("not a driver archive", 1, true) ~= nil,
-    "magic gate fails loud, got " .. tostring(err)
+    "body gate fails loud, got " .. tostring(err)
   )
   T.check(outcome == nil, "no outcome on gate failure")
   T.check_equal(#store.soap_packets, 0, "no trigger for garbage")
+  T.check_equal(store.files["flologic_valve.c4z"], "OLD-DRIVER-BYTES", "installed package untouched")
+  T.check_equal(store.files["flologic_valve.c4z.new"], nil, "no candidate written")
   local trace = table.concat(warns, "\n")
   T.check(trace:find("update download: 20 bytes", 1, true) ~= nil, "download traced, got: " .. trace)
-  T.check(trace:find("magic check failed", 1, true) ~= nil, "gate traced")
+end)
+
+T.test("updates: install validates the candidate before replacing the package", function()
+  local timers = TestHelp.new_fake_timers()
+  local function run(mutator)
+    local releases, store, fakes = install_fixtures("2026090808")
+    local seen, warns = {}, {}
+    fakes.http_get = install_http(JSON.encode(releases), "PK\003\004NEW-DRIVER-BYTES", seen)
+    fakes.set_timeout = timers.set_timeout
+    fakes.force, fakes.current_version = false, "2026090705"
+    fakes.log_warn = function(msg)
+      warns[#warns + 1] = msg
+    end
+    local err, outcome = "unset", "unset"
+    fakes.on_result = function(e, o)
+      err, outcome = e, o
+    end
+    if mutator then
+      mutator(store)
+    end
+    FloUpdate.new_install(fakes).start()
+    return err, outcome, store, table.concat(warns, "\n")
+  end
+  -- Truncated candidate write: size gate fails, installed file intact.
+  local size_err, _, size_store = run(function(store)
+    store.corrupt_write = true
+  end)
+  T.check(size_err:find("size mismatch", 1, true) ~= nil, "candidate size gate fails loud")
+  T.check_equal(size_store.files["flologic_valve.c4z"], "OLD-DRIVER-BYTES", "failed write keeps old file")
+  T.check_equal(size_store.files["flologic_valve.c4z.new"], nil, "bad candidate cleaned up")
+  T.check_equal(#size_store.soap_packets, 0, "no trigger without a verified candidate")
+  -- Corrupt read-back: magic gate fails, same guarantees, traced.
+  local magic_err, _, magic_store, trace = run(function(store)
+    store.spoof_read = "XX"
+  end)
+  T.check(magic_err:find("not a driver archive", 1, true) ~= nil, "candidate magic gate fails loud")
+  T.check_equal(magic_store.files["flologic_valve.c4z"], "OLD-DRIVER-BYTES", "installed package untouched")
+  T.check_equal(magic_store.files["flologic_valve.c4z.new"], nil, "bad candidate cleaned up")
+  T.check(trace:find("magic check failed", 1, true) ~= nil, "gate traced, got: " .. trace)
+end)
+
+T.test("updates: install rejects a download short of its published size", function()
+  local timers = TestHelp.new_fake_timers()
+  local releases, store, fakes = install_fixtures("2026090808")
+  local body = "PK\003\004NEW-DRIVER-BYTES"
+  releases[1].assets[1].size = #body + 10
+  local seen = {}
+  fakes.http_get = install_http(JSON.encode(releases), body, seen)
+  fakes.set_timeout = timers.set_timeout
+  fakes.force, fakes.current_version = false, "2026090705"
+  local err, outcome = nil, nil
+  fakes.on_result = function(e, o)
+    err, outcome = e, o
+  end
+  FloUpdate.new_install(fakes).start()
+  T.check(err ~= nil and err:find("incomplete", 1, true) ~= nil, "truncation fails loud, got " .. tostring(err))
+  T.check(outcome == nil, "no outcome on truncation")
+  T.check_equal(store.files["flologic_valve.c4z"], "OLD-DRIVER-BYTES", "installed package untouched")
+  T.check_equal(store.files["flologic_valve.c4z.new"], nil, "no candidate written")
+  T.check_equal(#store.soap_packets, 0, "no trigger for a truncation")
 end)
 
 T.test("updates: install skips when current, force reinstalls anyway", function()

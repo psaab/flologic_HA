@@ -136,9 +136,12 @@ function SignalR.new_dispatcher(opts)
         if ok then
           handle_frame(frame)
         elseif self._on_error ~= nil then
-          -- Second arg carries a truncated copy for traced sessions; the
-          -- message string itself is unchanged for existing matchers.
-          self._on_error("undecodable SignalR frame", raw:sub(1, 160))
+          -- Second arg carries a truncated, single-line copy for traced
+          -- sessions; the message string itself is unchanged for
+          -- existing matchers. Control bytes are blanked so a hostile
+          -- frame cannot inject fake log lines.
+          local snippet = raw:sub(1, 160):gsub("[%c]", " ")
+          self._on_error("undecodable SignalR frame", snippet)
         end
       end
     end

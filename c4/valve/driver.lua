@@ -737,11 +737,19 @@ FloUpdate = {}
 FloUpdate.REPOSITORY = "psaab/flologic_HA"
 FloUpdate.ASSET = "flologic_valve.c4z"
 FloUpdate.API_URL = "https://api.github.com/repos/" .. FloUpdate.REPOSITORY .. "/releases?per_page=100"
+-- Split drivers set the whole lockstep family; a release missing a
+-- sibling package is not a valid update source. Drivers that set no
+-- family match their own asset only (legacy monolith behavior).
+FloUpdate.FAMILY_ASSETS = nil
 
 --- Ignore HA releases, drafts, prereleases, and releases without the C4 asset.
 function FloUpdate.select_release(releases)
   if type(releases) ~= "table" or releases.message ~= nil then
     return nil, "Invalid GitHub release response"
+  end
+  local family = FloUpdate.FAMILY_ASSETS
+  if type(family) ~= "table" or #family == 0 then
+    family = { FloUpdate.ASSET }
   end
   local best
   for _, release in ipairs(releases) do
@@ -749,18 +757,27 @@ function FloUpdate.select_release(releases)
       local tag = release.tag_name
       local version = type(tag) == "string" and tag:match("^c4%-v(%d%d%d%d%d%d%d%d%d%d)$")
       if version and type(release.assets) == "table" then
-        local expected = "https://github.com/"
-          .. FloUpdate.REPOSITORY
-          .. "/releases/download/"
-          .. tag
-          .. "/"
-          .. FloUpdate.ASSET
-        for _, asset in ipairs(release.assets) do
-          if type(asset) == "table" and asset.name == FloUpdate.ASSET and asset.browser_download_url == expected then
-            if not best or version > best.version then
-              best = { version = version, url = expected }
+        local urls, complete, our_size = {}, true, nil
+        for _, name in ipairs(family) do
+          local expected = "https://github.com/" .. FloUpdate.REPOSITORY .. "/releases/download/" .. tag .. "/" .. name
+          local found = false
+          for _, asset in ipairs(release.assets) do
+            if type(asset) == "table" and asset.name == name and asset.browser_download_url == expected then
+              found = true
+              if name == FloUpdate.ASSET and type(asset.size) == "number" then
+                our_size = asset.size
+              end
+              break
             end
           end
+          if not found then
+            complete = false
+            break
+          end
+          urls[name] = expected
+        end
+        if complete and urls[FloUpdate.ASSET] ~= nil and (not best or version > best.version) then
+          best = { version = version, url = urls[FloUpdate.ASSET], size = our_size }
         end
       end
     end
@@ -886,11 +903,12 @@ function FloUpdate.build_install_packet(filename)
 end
 
 --- A cancellable install operation; callbacks never run after cancel/reload.
---- Downloads the latest C4 asset, stages it in the C4Z file store (verified
---- by on-disk size plus a zip-magic read-back), and triggers Composer to
---- install it by name. force skips the version compare, so it can reinstall
---- the same build or even an older one; that is the intended recovery
---- semantic.
+--- Downloads the latest C4 asset (screened by exact byte size plus an
+--- archive-prefix check before any file is touched), stages it in the C4Z
+--- file store via a validated separate candidate (never deleting the
+--- installed package first), and triggers Composer to install it by name.
+--- force skips the version compare, so it can reinstall the same build or
+--- even an older one; that is the intended recovery semantic.
 --- opts.http_get(url, headers, cb) has cb(err, body, code, headers_or_nil)
 --- and returns a cancel function. opts.soap_send(packet, cb(err)) likewise.
 --- File callbacks: get_installed() -> bool, file_set_dir(alias) -> ok,
@@ -994,7 +1012,7 @@ function FloUpdate.new_install(opts)
     end
     track_http(cancel)
   end
-  local function download(url, redirects_left, cb)
+  local function download(url, redirects_left, expected_size, cb)
     arm(120000, "Download timed out")
     local ok, cancel = pcall(opts.http_get, url, {}, function(err, body, code, headers)
       if self.done then
@@ -1023,7 +1041,7 @@ function FloUpdate.new_install(opts)
           finish("Too many download redirects")
           return
         end
-        download(location, redirects_left - 1, cb)
+        download(location, redirects_left - 1, expected_size, cb)
         return
       end
       if code ~= 200 then
@@ -1039,6 +1057,23 @@ function FloUpdate.new_install(opts)
         return
       end
       log_warn("update download: " .. #body .. " bytes, HTTP " .. tostring(code))
+      -- The transport delivers exact bytes (field-verified byte counts),
+      -- so screen the body itself before any file is touched: a
+      -- truncated download or an error page must never reach the store.
+      if expected_size ~= nil and #body ~= expected_size then
+        finish(
+          "Downloaded package is incomplete ("
+            .. #body
+            .. " of "
+            .. expected_size
+            .. " bytes); installed driver left intact"
+        )
+        return
+      end
+      if body:sub(1, 2) ~= "PK" then
+        finish("Downloaded package is not a driver archive; installed driver left intact")
+        return
+      end
       cb(body)
     end)
     if not ok then
@@ -1049,38 +1084,67 @@ function FloUpdate.new_install(opts)
   end
   local function stage(filename, body, cb)
     arm(30000, "Install staging timed out")
-    -- Switch stores BEFORE deleting anything: on denial the installed file
-    -- stays intact and no install is triggered. Falling through would write
-    -- and verify against the wrong directory, then reinstall the unchanged
-    -- old build as a silent no-op.
+    -- Switch stores BEFORE touching anything: on denial the installed
+    -- file stays intact and no install is triggered.
     progress("Staging " .. filename .. " (" .. #body .. " bytes)")
     local switched = opts.file_set_dir(FloUpdate.C4Z_ROOT)
     if not switched then
       finish("File store " .. FloUpdate.C4Z_ROOT .. " denied; installed driver left intact")
       return
     end
+    -- Validate a SEPARATE candidate before replacing the installed
+    -- package: the installed file is deleted only after the candidate
+    -- verifies, so a failed write or invalid download can never strand
+    -- the controller without a known-good package. No rename API
+    -- exists, so the verified bytes are rewritten from memory — the
+    -- exact download, never a marshalling-mangled read-back. (The zip's
+    -- inner manifest cannot be checked on-Director: no unzip API, and
+    -- binary reads mangle bytes. Identity is established instead by the
+    -- exact asset URL + family match at selection, the exact byte size
+    -- at download, and the archive prefix + size round-trip here.)
+    local candidate = filename .. ".new"
+    if opts.file_exists(candidate) then
+      opts.file_delete(candidate)
+    end
+    opts.file_write(candidate, body)
+    -- Never trust the write call: verify by on-disk SIZE (a number), not
+    -- by re-reading the full binary that can false-mismatch through
+    -- string marshalling. Director strips the zip magic's control bytes
+    -- (\003\004 are illegal in XML), so gate on the ASCII "PK" prefix
+    -- that survives the read-back: with the exact size match this still
+    -- rejects error pages and truncations.
+    if opts.file_size(candidate) ~= #body then
+      opts.file_delete(candidate)
+      finish("Staged package size mismatch; installed driver left intact")
+      return
+    end
+    local head = opts.file_read(candidate, 4)
+    if type(head) ~= "string" or head:sub(1, 2) ~= "PK" then
+      log_warn("update stage: magic check failed for " .. candidate)
+      opts.file_delete(candidate)
+      finish("Staged package is not a driver archive; installed driver left intact")
+      return
+    end
+    log_warn("update stage: candidate verified (" .. #body .. " bytes, zip magic ok)")
+    -- Candidate verified: replace the installed package. The only
+    -- remaining failure window is this rewrite itself failing after an
+    -- identical write succeeded seconds ago.
     if opts.file_exists(filename) then
       opts.file_delete(filename)
     end
     opts.file_write(filename, body)
-    -- Never trust the write call: verify by on-disk SIZE (a number), not by
-    -- re-reading the full binary that can false-mismatch through string
-    -- marshalling. Director strips the zip magic's control bytes (\003\004
-    -- are illegal in XML), so gate on the ASCII "PK" prefix that survives
-    -- the read-back: with the exact size match above this still rejects
-    -- error pages and truncations.
     if opts.file_size(filename) ~= #body then
-      finish("Staged package size mismatch; stored package may be missing or incomplete; restore using Composer")
+      finish("Installed package rewrite failed; stored package may be missing or incomplete; restore using Composer")
       return
     end
-    local head = opts.file_read(filename, 4)
-    if type(head) ~= "string" or head:sub(1, 2) ~= "PK" then
-      log_warn("update stage: magic check failed for " .. filename)
+    local installed_head = opts.file_read(filename, 4)
+    if type(installed_head) ~= "string" or installed_head:sub(1, 2) ~= "PK" then
       finish(
-        "Staged package is not a driver archive; stored package may be missing or incomplete; restore using Composer"
+        "Installed package rewrite failed verification; stored package may be missing or incomplete; restore using Composer"
       )
       return
     end
+    opts.file_delete(candidate)
     log_warn("update stage: " .. filename .. " verified (" .. #body .. " bytes, zip magic ok)")
     cb()
   end
@@ -1099,7 +1163,7 @@ function FloUpdate.new_install(opts)
         return
       end
       progress("Downloading " .. release.version)
-      download(release.url, FloUpdate.MAX_REDIRECTS, function(body)
+      download(release.url, FloUpdate.MAX_REDIRECTS, release.size, function(body)
         stage(FloUpdate.ASSET, body, function()
           progress("Installing " .. release.version)
           arm(30000, "Install trigger timed out")
@@ -1160,7 +1224,9 @@ end
 --   FLOGIC_CMD   command correlation id for COMMAND / CMD_ACK / CMD_NACK
 --   FLOGIC_TRUNC "1" when a FLOGIC_STATE envelope carries a digest instead
 --                of the full body (see the digest-fallback note below)
---   FLOGIC_ERROR human-readable nack reason for FLOGIC_CMD_NACK
+--   FLOGIC_ERROR human-readable nack reason for FLOGIC_CMD_NACK, or the
+--                unavailability reason for FLOGIC_UNAVAILABLE (whose body
+--                is the raw valve id, like FLOGIC_IDENTITY)
 --
 -- Digest fallback: a full valve_state body always fits the budget in
 -- practice (see flologic_link.md for the measured worst case), but a
@@ -1186,6 +1252,7 @@ FloLogicLink.MSG_IDENTITY = "FLOGIC_IDENTITY"
 FloLogicLink.MSG_STATE = "FLOGIC_STATE"
 FloLogicLink.MSG_CMD_ACK = "FLOGIC_CMD_ACK"
 FloLogicLink.MSG_CMD_NACK = "FLOGIC_CMD_NACK"
+FloLogicLink.MSG_UNAVAILABLE = "FLOGIC_UNAVAILABLE"
 
 FloLogicLink.VALVE_TO_CLOUD = {
   FloLogicLink.MSG_HELLO,
@@ -1197,6 +1264,7 @@ FloLogicLink.CLOUD_TO_VALVE = {
   FloLogicLink.MSG_STATE,
   FloLogicLink.MSG_CMD_ACK,
   FloLogicLink.MSG_CMD_NACK,
+  FloLogicLink.MSG_UNAVAILABLE,
 }
 
 -- Wire keys (BindMessage params are flat string tables).
@@ -1236,6 +1304,7 @@ local KNOWN_MESSAGES = {
   [FloLogicLink.MSG_STATE] = true,
   [FloLogicLink.MSG_CMD_ACK] = true,
   [FloLogicLink.MSG_CMD_NACK] = true,
+  [FloLogicLink.MSG_UNAVAILABLE] = true,
 }
 
 local VALVE_TO_CLOUD = {
@@ -1249,6 +1318,7 @@ local CLOUD_TO_VALVE = {
   [FloLogicLink.MSG_STATE] = true,
   [FloLogicLink.MSG_CMD_ACK] = true,
   [FloLogicLink.MSG_CMD_NACK] = true,
+  [FloLogicLink.MSG_UNAVAILABLE] = true,
 }
 
 -- --- Small validators (all return true/false, never raise). ---
@@ -1548,6 +1618,14 @@ end
 -- scalars below; anything else rejected so a renamed cloud field fails
 -- loudly instead of silently dropping.
 
+-- Snapshot numerics with flag/enum semantics must be non-negative
+-- integers: only those carry the documented meaning. Floats would floor
+-- silently and negatives test every flag set under modulo arithmetic, so
+-- both fail the whole snapshot atomically instead of being interpreted.
+local function is_snapshot_int(value)
+  return is_finite_number(value) and value % 1 == 0 and value >= 0
+end
+
 local function check_state_fields(fields)
   if type(fields) ~= "table" then
     return nil, "state-not-table"
@@ -1562,7 +1640,7 @@ local function check_state_fields(fields)
   if not is_clean_text(id, FloLogicLink.MAX_VALVE_ID_LEN) then
     return nil, "bad-state-id"
   end
-  if not is_finite_number(fields.mode) then
+  if not is_snapshot_int(fields.mode) then
     return nil, "bad-state-mode"
   end
   if type(fields.online) ~= "boolean" then
@@ -1570,14 +1648,15 @@ local function check_state_fields(fields)
   end
   for name, cap in pairs(FloLogicLink.STATE_STRING_FIELDS) do
     local value = fields[name]
-    if value ~= nil then
-      if type(value) ~= "string" or #value > cap then
-        return nil, "bad-state-field:" .. name
-      end
+    if value ~= nil and not is_clean_text(value, cap) then
+      return nil, "bad-state-field:" .. name
     end
   end
+  if fields.flow_state ~= nil and not is_snapshot_int(fields.flow_state) then
+    return nil, "bad-state-field:flow_state"
+  end
   for name in pairs(FloLogicLink.STATE_NUMBER_FIELDS) do
-    if fields[name] ~= nil and not is_finite_number(fields[name]) then
+    if name ~= "flow_state" and fields[name] ~= nil and not is_finite_number(fields[name]) then
       return nil, "bad-state-field:" .. name
     end
   end
@@ -1757,6 +1836,23 @@ function FloLogicLink.build_ack(cmd_id)
   return env
 end
 
+-- Cloud->valve: the slot's valve left the account or failed identity
+-- verification. Carries the valve id plus a short reason; the companion
+-- stops claiming current knowledge until a new identity + slice arrive.
+function FloLogicLink.build_unavailable(valve_id, reason)
+  local id, err = check_valve_id(valve_id)
+  if id == nil then
+    return nil, err
+  end
+  if not is_clean_text(reason, FloLogicLink.MAX_ERROR_LEN) then
+    return nil, "bad-reason"
+  end
+  local env = base_envelope(FloLogicLink.MSG_UNAVAILABLE)
+  env[FloLogicLink.K_BODY] = id
+  env[FloLogicLink.K_ERROR] = reason
+  return env
+end
+
 -- Cloud->valve: negative acknowledgement echoing the command id plus a
 -- human-readable reason (authorization, queue, or cloud failure).
 function FloLogicLink.build_nack(cmd_id, reason)
@@ -1867,6 +1963,19 @@ function FloLogicLink.parse(params)
     out.fields = fields
     return out
   end
+  if msg == FloLogicLink.MSG_UNAVAILABLE then
+    local id, err = check_valve_id(body)
+    if id == nil then
+      return nil, err
+    end
+    local reason = params[FloLogicLink.K_ERROR]
+    if not is_clean_text(reason, FloLogicLink.MAX_ERROR_LEN) then
+      return nil, "bad-reason"
+    end
+    out.valve_id = id
+    out.error_reason = reason
+    return out
+  end
   -- MSG_STATE: digest-only envelopes carry the hash without the body.
   if params[FloLogicLink.K_TRUNC] == "1" then
     if type(out.hash) ~= "string" or #out.hash == 0 then
@@ -1927,7 +2036,7 @@ end
 -- C4 calls (safe to load in tests with a stub C4). Lua 5.1 safe.
 -- ============================================================================
 
-FLOVALVE_DRIVER_VERSION = "2026090809"
+FLOVALVE_DRIVER_VERSION = "2026090810"
 print("[flologic-valve] Lua loaded: " .. FLOVALVE_DRIVER_VERSION)
 
 -- Static link consumer (binds to one cloud-driver FLOGIC_VALVE slot) and
@@ -1942,6 +2051,23 @@ FLOVALVE_DIGEST_RETRY_S = 60
 -- Seconds a command may await its ack/nack before the valve settles it
 -- locally as lost (cloud restarted mid-command, reply dropped).
 FLOVALVE_ACK_TIMEOUT_S = 120
+
+-- Freshness watchdog: the companion must stop presenting state as
+-- current when snapshots stop arriving, even with the Composer link
+-- intact. The cloud's poll cadence is observed from slice spacing; the
+-- link goes stale after STALE_MULTIPLE x the observed cadence, never
+-- sooner than STALE_MIN_S (a slow poll interval must not false-positive).
+FLOVALVE_STALE_MIN_S = 300
+FLOVALVE_STALE_MULTIPLE = 3
+FLOVALVE_STALE_CHECK_S = 60
+
+-- Handshake recovery: a hello that earns no identity is retried on this
+-- cadence up to HELLO_ATTEMPTS times, then the link is marked failed
+-- instead of hanging in "Linking..." forever. The slow freshness tick
+-- restarts a burst after failure, so a late cloud still links without
+-- rebind; unbound links (no burst ever started) stay silent.
+FLOVALVE_HELLO_RETRY_S = 10
+FLOVALVE_HELLO_ATTEMPTS = 6
 
 -- Seven contact outputs (plan D5). 101/102 semantics are ported from
 -- c4/src/main.lua (attribution); 103-107 derive from the same mode flags
@@ -2015,9 +2141,14 @@ FLOVALVE_VALUE_ACTIONS = {
 }
 
 -- The shared updater defaults to the monolith asset (c4/src/update.lua is
--- read-only); each driver repoints it at its own package (plan D7).
+-- read-only); each driver repoints it at its own package (plan D7) and
+-- names the whole lockstep family a release must carry to be selectable.
+-- The split valve ships under its own asset name: it must never appear
+-- as flologic_valve.c4z again, or installed monoliths would offer the
+-- incompatible companion as an update.
 if FloUpdate ~= nil then
-  FloUpdate.ASSET = "flologic_valve.c4z"
+  FloUpdate.ASSET = "flologic_water_valve.c4z"
+  FloUpdate.FAMILY_ASSETS = { "flologic_cloud.c4z", "flologic_water_valve.c4z" }
 end
 
 -- Runs FIRST, before replacing module tables or Director callbacks on hot
@@ -2029,7 +2160,14 @@ function flovalve_retire_runtime()
     return
   end
   previous.initialized = false
-  for _, name in ipairs({ "debug_timer", "update_timer", "update_start_timer", "soap_grace" }) do
+  for _, name in ipairs({
+    "debug_timer",
+    "update_timer",
+    "update_start_timer",
+    "stale_timer",
+    "hello_timer",
+    "soap_grace",
+  }) do
     local timer = previous[name]
     previous[name] = nil
     if timer then
@@ -2061,7 +2199,15 @@ local function flovalve_fresh_state()
     link_bound = false,
     valve_id = nil,
     valve_id_persisted = flovalve_state and flovalve_state.valve_id_persisted or nil,
+    hint_valve_id = nil,
+    hello_attempts = 0,
+    hello_failed = false,
     last_state = nil,
+    unavailable = nil,
+    stale = false,
+    last_slice_at = nil,
+    prev_slice_at = nil,
+    last_slice_updated = nil,
     contact_states = nil,
     last_mode = nil,
     last_flowing = nil,
@@ -2211,11 +2357,16 @@ local function flovalve_is_water_off(fields)
   return fields ~= nil and FloModel.has_any_flag(fields.mode, FloModel.WATER_OFF_MODE_FLAGS)
 end
 
+-- Snapshot readers below use link-validated fields directly: the link
+-- validator is the single numeric conversion path (types and domains
+-- checked atomically at parse), so re-converting here would only add a
+-- second, weaker interpretation. Only flovalve_contact_values keeps its
+-- own checks — it doubles as a defensive helper for unvalidated input.
 local function flovalve_is_flowing(fields)
   if fields == nil or fields.online ~= true then
     return false
   end
-  local flow_state = tonumber(fields.flow_state)
+  local flow_state = fields.flow_state
   return flow_state ~= nil and flow_state ~= 1 and flow_state ~= 8
 end
 
@@ -2248,13 +2399,17 @@ end
 
 -- Provider discovery for the fallback leg. Returns an array of cloud
 -- driver device ids, or nil when Director cannot answer (the caller then
--- sends to nobody rather than guessing).
+-- sends to nobody rather than guessing). The plural API answers a map of
+-- device-ID keys to device-NAME values (decode by key); the singular API
+-- answers one scalar id.
 local function flovalve_bound_providers()
   local name = nil
+  local singular = false
   if C4.GetBoundProviderDevices ~= nil then
     name = "GetBoundProviderDevices"
   elseif C4.GetBoundProviderDevice ~= nil then
     name = "GetBoundProviderDevice"
+    singular = true
   end
   if name == nil then
     return nil
@@ -2262,18 +2417,19 @@ local function flovalve_bound_providers()
   local ok, found = pcall(function()
     return C4[name](C4, 0, FLOVALVE_LINK_ID)
   end)
-  if not ok then
+  if not ok or found == nil then
     return nil
   end
   local ids = {}
   if type(found) == "table" then
-    for _, id in pairs(found) do
-      if tonumber(id) ~= nil then
-        ids[#ids + 1] = id
+    for id in pairs(found) do
+      local num = tonumber(id)
+      if num ~= nil then
+        ids[#ids + 1] = num
       end
     end
-  elseif tonumber(found) ~= nil then
-    ids[#ids + 1] = found
+  elseif singular and tonumber(found) ~= nil then
+    ids[#ids + 1] = tonumber(found)
   end
   return ids
 end
@@ -2293,10 +2449,14 @@ function flovalve_send_to_cloud(envelope)
   for key, value in pairs(envelope) do
     hinted[key] = value
   end
-  -- Pre-handshake hellos carry no identity the cloud could attribute, so
-  -- the hint is attached only once the handshake has provided one.
-  if flovalve_state.valve_id_persisted ~= nil and flovalve_state.valve_id_persisted ~= "" then
-    hinted[FLOVALVE_K_FROM] = flovalve_state.valve_id_persisted
+  -- The fallback hint is learned from a LIVE handshake on the current
+  -- binding only: the persisted id survives rebinds, so attaching it
+  -- would route the new binding's traffic to the old valve's slot. A
+  -- hintless hello is unanswerable by the cloud (ExecuteCommand names no
+  -- sender) and dropped there; the proxy hello burst below is the
+  -- bootstrap, not the fallback.
+  if flovalve_state.hint_valve_id ~= nil and flovalve_state.hint_valve_id ~= "" then
+    hinted[FLOVALVE_K_FROM] = flovalve_state.hint_valve_id
   end
   for _, device_id in ipairs(providers) do
     pcall(function()
@@ -2310,9 +2470,52 @@ function flovalve_send_to_cloud(envelope)
   return "device"
 end
 
-local function flovalve_send_hello()
+-- Hello with a bounded retry burst: a non-throwing SendToProxy is not
+-- proof of delivery, so an unanswered hello is retried until the burst
+-- is spent, then the link is marked failed explicitly. Any identity
+-- cancels the burst. Sending never touches the display: callers own the
+-- Linking/failed text, so slow retries never flap it.
+local flovalve_send_hello -- forward: the timeout recurses into the send
+local function flovalve_hello_timeout()
+  local st = flovalve_state
+  st.hello_timer = nil
+  if st.valve_id ~= nil then
+    return
+  end
+  if st.hello_attempts >= FLOVALVE_HELLO_ATTEMPTS then
+    if not st.hello_failed then
+      st.hello_failed = true
+      flovalve_log_warn("link handshake failed: no cloud identity after " .. st.hello_attempts .. " hellos")
+      flovalve_set_prop(FLOVALVE_PROP_CONNECTION, "Link failed: no response from cloud")
+    end
+    return
+  end
+  flovalve_send_hello()
+end
+
+flovalve_send_hello = function()
+  local st = flovalve_state
   flovalve_log("link FLOGIC_HELLO")
   flovalve_send_to_cloud(FloLogicLink.build_hello())
+  if st.valve_id ~= nil then
+    return
+  end
+  st.hello_attempts = st.hello_attempts + 1
+  if st.hello_timer ~= nil then
+    st.hello_timer:Cancel()
+    st.hello_timer = nil
+  end
+  st.hello_timer = flovalve_set_timer(FLOVALVE_HELLO_RETRY_S * 1000, flovalve_hello_timeout, false)
+end
+
+local function flovalve_cancel_hello()
+  local st = flovalve_state
+  st.hello_attempts = 0
+  st.hello_failed = false
+  if st.hello_timer ~= nil then
+    st.hello_timer:Cancel()
+    st.hello_timer = nil
+  end
 end
 
 local function flovalve_send_get_state()
@@ -2331,17 +2534,35 @@ end
 -- Forward one validated link action. Returns true when sent; commands
 -- with no handshake identity are dropped locally (the cloud would drop
 -- them unattributed anyway) with a display note, never a crash.
+-- Settle one command whose reply never arrived: drop the pending entry,
+-- say so on the display, and reconcile the tile to the last observed
+-- level. Physical state (last_state) and requested state (pending plus
+-- the optimistic last_level) stay separate; with no reply there is no
+-- evidence either way, so the tile must not keep showing the request.
+local function flovalve_timeout_pending(cmd_id, pending)
+  local st = flovalve_state
+  st.pending_commands[cmd_id] = nil
+  if pending.timer ~= nil then
+    pending.timer:Cancel()
+    pending.timer = nil
+  end
+  flovalve_log_warn("command " .. pending.label .. " no response from cloud; reconciling tile")
+  if flovalve_prop("Last Command") == pending.label .. ": sent (awaiting cloud refresh)" then
+    flovalve_set_prop("Last Command", pending.label .. ": no response from cloud")
+  end
+  if st.last_state ~= nil then
+    flovalve_report_level(flovalve_level_for(st.last_state))
+  end
+end
+
 -- Pending entries with no ack/nack (lost reply, cloud restarted
--- mid-command) would stick "sent" on the display forever: expire them
--- lazily on the next activity instead of running a sweeper timer.
+-- mid-command) settle on their own deadline timer; the lazy sweep below
+-- is only a backstop for activity that arrives after a missed tick.
 local function flovalve_expire_pending(now)
   local st = flovalve_state
   for cmd_id, pending in pairs(st.pending_commands) do
     if now - (pending.sent_at or now) >= FLOVALVE_ACK_TIMEOUT_S then
-      st.pending_commands[cmd_id] = nil
-      if flovalve_prop("Last Command") == pending.label .. ": sent (awaiting cloud refresh)" then
-        flovalve_set_prop("Last Command", pending.label .. ": no response from cloud")
-      end
+      flovalve_timeout_pending(cmd_id, pending)
     end
   end
 end
@@ -2354,6 +2575,11 @@ function flovalve_send_command(action, params, label)
     flovalve_set_prop("Last Command", label .. ": not linked")
     return false
   end
+  if st.unavailable ~= nil then
+    flovalve_log_warn("command " .. label .. " dropped: valve unavailable (" .. st.unavailable .. ")")
+    flovalve_set_prop("Last Command", label .. ": not available")
+    return false
+  end
   flovalve_expire_pending(os.time())
   local cmd_id = flovalve_next_cmd_id()
   local envelope, err = FloLogicLink.build_command(cmd_id, action, params)
@@ -2362,7 +2588,8 @@ function flovalve_send_command(action, params, label)
     flovalve_set_prop("Last Command", label .. ": rejected (" .. tostring(err) .. ")")
     return false
   end
-  st.pending_commands[cmd_id] = { action = action, label = label, sent_at = os.time() }
+  local pending = { action = action, label = label, sent_at = os.time() }
+  st.pending_commands[cmd_id] = pending
   local route, route_err = flovalve_send_to_cloud(envelope)
   if route == nil then
     st.pending_commands[cmd_id] = nil
@@ -2372,6 +2599,15 @@ function flovalve_send_command(action, params, label)
   end
   flovalve_log("command " .. label .. " sent (" .. cmd_id .. " via " .. route .. ")")
   flovalve_set_prop("Last Command", label .. ": sent (awaiting cloud refresh)")
+  -- Real deadline: a lost reply settles on this timer even when the
+  -- driver is otherwise quiet. Ack/nack cancel it; unbind and identity
+  -- resets drop the entry, and the orphaned tick then no-ops.
+  pending.timer = flovalve_set_timer(FLOVALVE_ACK_TIMEOUT_S * 1000, function()
+    local still = st.pending_commands[cmd_id]
+    if still ~= nil then
+      flovalve_timeout_pending(cmd_id, still)
+    end
+  end, false)
   return true
 end
 
@@ -2389,7 +2625,7 @@ end
 local function flovalve_update_display(fields)
   flovalve_set_prop(FLOVALVE_PROP_VALVE_NAME, fields.name or ("Valve " .. tostring(fields.id)))
   flovalve_set_prop("Mode", FloModel.mode_status_name({ mode = fields.mode }))
-  local flow_state = tonumber(fields.flow_state)
+  local flow_state = fields.flow_state
   flovalve_set_prop("Flow State", FloModel.FLOW_STATE_NAMES[flow_state] or flovalve_num(fields.flow_state))
   if flovalve_is_flowing(fields) then
     flovalve_set_prop("Water Flowing", "Yes")
@@ -2399,7 +2635,9 @@ local function flovalve_update_display(fields)
   flovalve_set_prop("Home Limit", flovalve_num(fields.home_interval))
   flovalve_set_prop("Away Limit", flovalve_num(fields.away_interval))
   flovalve_set_prop("Bypass Time", flovalve_num(fields.bypass_time))
-  flovalve_set_prop(FLOVALVE_PROP_LAST_UPDATE, os.date("%Y-%m-%d %H:%M:%S"))
+  -- Last Link Update shows when the cloud observed this snapshot, not
+  -- when it arrived: receipt time cannot establish data freshness.
+  flovalve_set_prop(FLOVALVE_PROP_LAST_UPDATE, os.date("%Y-%m-%d %H:%M:%S", fields.updated or os.time()))
 end
 
 -- Per-valve edge events ported from c4/src/main.lua flogic_process_edges
@@ -2409,7 +2647,7 @@ local function flovalve_process_edges(fields)
   local st = flovalve_state
   local mode = FloModel.mode_status_name({ mode = fields.mode })
   local flowing = flovalve_is_flowing(fields)
-  local raw_mode = tonumber(fields.mode)
+  local raw_mode = fields.mode
   local water_off = raw_mode ~= nil and FloModel.has_any_flag(raw_mode, FloModel.WATER_OFF_MODE_FLAGS)
   local warning = raw_mode ~= nil and FloModel.has_any_flag(raw_mode, FloModel.WARNING_ALERT_MODE_FLAGS)
   local critical = raw_mode ~= nil and FloModel.has_any_flag(raw_mode, FloModel.CRITICAL_MODE_FLAGS)
@@ -2446,9 +2684,22 @@ end
 
 local function flovalve_apply_state(fields, body)
   local st = flovalve_state
+  local now = os.time()
+  -- Ordering runs on the cloud's observation time, not receipt time: a
+  -- delayed duplicate must never roll back a newer snapshot.
+  local observed = fields.updated or now
+  if st.last_slice_updated ~= nil and observed < st.last_slice_updated then
+    flovalve_log("link state older than the applied snapshot; dropped")
+    return
+  end
+  st.prev_slice_at, st.last_slice_at = st.last_slice_at, now
+  st.last_slice_updated = observed
+  -- A fresh full snapshot clears any unavailability/staleness marking:
+  -- the valve is back and the data is current again.
+  st.unavailable, st.stale = nil, false
   st.last_state = fields
   st.digest_retry_at = nil
-  flovalve_expire_pending(os.time())
+  flovalve_expire_pending(now)
   C4:PersistSetValue(FLOVALVE_PERSIST_STATE, body, true)
   flovalve_track_restore(fields)
   flovalve_update_display(fields)
@@ -2460,16 +2711,132 @@ local function flovalve_apply_state(fields, body)
   flovalve_set_connection(true)
 end
 
+-- Drop everything learned from the previous valve: its restore target,
+-- contact baselines, edge-event baselines, live state, and in-flight
+-- commands. The next push from the new valve then establishes a fresh
+-- quiet baseline (STATE_* sync, no transitions) instead of comparing new
+-- observations against old history or restoring another valve's mode.
+local function flovalve_reset_valve_history()
+  local st = flovalve_state
+  st.restore_action = FLOVALVE_RESTORE_DEFAULT
+  st.contact_states = nil
+  st.last_state = nil
+  st.hint_valve_id = nil
+  st.unavailable = nil
+  st.stale = false
+  st.last_slice_at = nil
+  st.prev_slice_at = nil
+  st.last_slice_updated = nil
+  st.last_mode, st.last_flowing = nil, nil
+  st.last_water_off, st.last_warning = nil, nil
+  st.last_critical = nil
+  st.digest_retry_at = nil
+  for cmd_id in pairs(st.pending_commands) do
+    st.pending_commands[cmd_id] = nil
+  end
+end
+
 local function flovalve_on_identity(valve_id)
   local st = flovalve_state
+  -- Unbind clears the authoritative id but keeps the persisted one, so
+  -- compare against whichever names the previous valve: a genuinely new
+  -- identity resets control history, while a same-valve re-link keeps
+  -- its baselines (a flap must not swallow real transitions either).
+  local previous = st.valve_id
+  if previous == nil then
+    previous = st.valve_id_persisted
+  end
+  if previous ~= nil and tostring(previous) ~= tostring(valve_id) then
+    flovalve_log_warn(
+      "link identity changed from valve "
+        .. tostring(previous)
+        .. " to "
+        .. tostring(valve_id)
+        .. "; resetting control history"
+    )
+    flovalve_reset_valve_history()
+  end
   st.valve_id = valve_id
   st.valve_id_persisted = valve_id
+  -- The live handshake authorizes the fallback hint for this binding;
+  -- any identity (same or new) also cancels the hello burst.
+  st.hint_valve_id = valve_id
+  flovalve_cancel_hello()
   C4:PersistSetValue(FLOVALVE_PERSIST_ID, valve_id, true)
   flovalve_set_prop(FLOVALVE_PROP_VALVE_ID, valve_id)
   flovalve_log("link bound to valve " .. valve_id)
   -- The cloud already pushes its latest slice on hello, but a GET_STATE
   -- covers the race where it had nothing cached yet.
   flovalve_send_get_state()
+end
+
+local function flovalve_on_unavailable(valve_id, reason)
+  local st = flovalve_state
+  -- Attribute strictly once an identity is known: another valve's
+  -- notice (fallback cross-talk) must never mark this link.
+  if st.valve_id ~= nil and tostring(st.valve_id) ~= tostring(valve_id) then
+    flovalve_log_warn(
+      "unavailable notice for valve "
+        .. tostring(valve_id)
+        .. " does not match "
+        .. tostring(st.valve_id)
+        .. "; ignored"
+    )
+    return false
+  end
+  reason = reason or "unavailable"
+  if st.unavailable == reason then
+    return true
+  end
+  st.unavailable = reason
+  st.stale = false
+  -- Historical contacts and display stay put (deliberate retention
+  -- policy); only the freshness claim changes, once per reason.
+  flovalve_set_connection(false, "not available (" .. reason .. ")")
+  local last = flovalve_prop(FLOVALVE_PROP_LAST_UPDATE)
+  if last ~= "" then
+    last = " (last update " .. last .. ")"
+  end
+  flovalve_set_prop(FLOVALVE_PROP_CONNECTION, "Not available: " .. reason .. last)
+  flovalve_log_warn("valve " .. tostring(valve_id) .. " unavailable: " .. reason)
+  return true
+end
+
+-- Freshness watchdog: with a known identity and at least one snapshot,
+-- silence longer than 3x the observed cloud cadence (never sooner than
+-- the floor) means the data is no longer current — even with the
+-- Composer link itself intact. Unavailable links are already marked and
+-- skip the check.
+function flovalve_check_freshness()
+  local st = flovalve_state
+  if not st.initialized then
+    return
+  end
+  if st.valve_id == nil then
+    -- Slow handshake recovery: a burst that already failed restarts here
+    -- so a late cloud still links without rebind. Links that never
+    -- started a burst (truly unbound) stay silent.
+    if st.hello_failed and st.hello_timer == nil then
+      st.hello_attempts = 0
+      st.hello_failed = false
+      flovalve_send_hello()
+    end
+    return
+  end
+  if st.unavailable ~= nil or st.stale or st.last_slice_at == nil then
+    return
+  end
+  local limit = FLOVALVE_STALE_MIN_S
+  if st.prev_slice_at ~= nil and st.last_slice_at > st.prev_slice_at then
+    limit = math.max(limit, (st.last_slice_at - st.prev_slice_at) * FLOVALVE_STALE_MULTIPLE)
+  end
+  local silent_for = os.time() - st.last_slice_at
+  if silent_for > limit then
+    st.stale = true
+    flovalve_set_connection(false, "no cloud data for " .. silent_for .. "s")
+    flovalve_set_prop(FLOVALVE_PROP_CONNECTION, "Stale: no cloud data for " .. silent_for .. "s")
+    flovalve_log_warn("link stale: no cloud snapshot for " .. silent_for .. "s")
+  end
 end
 
 local function flovalve_on_state(env)
@@ -2507,6 +2874,7 @@ local function flovalve_on_state(env)
         .. "; re-handshaking"
     )
     st.valve_id = nil
+    st.hint_valve_id = nil
     flovalve_send_hello()
     return false
   end
@@ -2522,6 +2890,10 @@ local function flovalve_on_ack(cmd_id, acked, reason)
     return false
   end
   st.pending_commands[cmd_id] = nil
+  if pending.timer ~= nil then
+    pending.timer:Cancel()
+    pending.timer = nil
+  end
   if acked then
     flovalve_log("command " .. pending.label .. " acknowledged")
     flovalve_set_prop("Last Command", pending.label .. ": acknowledged; awaiting refresh")
@@ -2558,6 +2930,8 @@ function flovalve_handle_link(strCommand, params)
     return true
   elseif env.msg == FloLogicLink.MSG_STATE then
     return flovalve_on_state(env)
+  elseif env.msg == FloLogicLink.MSG_UNAVAILABLE then
+    return flovalve_on_unavailable(env.valve_id, env.error_reason)
   elseif env.msg == FloLogicLink.MSG_CMD_ACK then
     return flovalve_on_ack(env.cmd_id, true)
   elseif env.msg == FloLogicLink.MSG_CMD_NACK then
@@ -2582,6 +2956,10 @@ local function flovalve_on_link_unbound()
   local st = flovalve_state
   st.link_bound = false
   st.valve_id = nil
+  -- The binding that produced the handshake is gone: its hint must not
+  -- route the next binding's traffic, and the burst stops with the link.
+  st.hint_valve_id = nil
+  flovalve_cancel_hello()
   local dropped = 0
   for cmd_id in pairs(st.pending_commands) do
     st.pending_commands[cmd_id] = nil
@@ -3004,7 +3382,10 @@ local function flovalve_ensure_soap_binding()
   return id
 end
 
-local function flovalve_soap_send(packet, cb)
+-- Global so the lifecycle tests can drive the real adapter (bind +
+-- entry-point dispatch) instead of only the shared updater's injected
+-- soap_send fake.
+function flovalve_soap_send(packet, cb)
   local settled = false
   local owner = flovalve_state
   local binding, err = flovalve_ensure_soap_binding()
@@ -3067,6 +3448,29 @@ local function flovalve_soap_send(packet, cb)
   end
 end
 
+-- Network dispatch for the transient SOAP binding above: without these
+-- entry points Director has no way to invoke the stored install-packet
+-- callbacks, and the grace timer would report success with nothing ever
+-- transmitted. Binding, port, and live-callback checks fence every event
+-- to the current load's in-flight send; anything else is ignored.
+function ReceivedFromNetwork(idBinding, nPort, strData)
+  local st = flovalve_state
+  if st.soap_binding == idBinding and st.soap_port == nPort and st.soap_callbacks ~= nil then
+    st.soap_callbacks.on_data(strData)
+  end
+end
+
+function OnConnectionStatusChanged(idBinding, nPort, strStatus)
+  local st = flovalve_state
+  if st.soap_binding == idBinding and st.soap_port == nPort and st.soap_callbacks ~= nil then
+    if strStatus == "ONLINE" then
+      st.soap_callbacks.on_open()
+    elseif strStatus == "OFFLINE" then
+      st.soap_callbacks.on_close()
+    end
+  end
+end
+
 local function flovalve_install_update(force)
   local st = flovalve_state
   if not st.initialized then
@@ -3091,9 +3495,17 @@ local function flovalve_install_update(force)
     end,
     -- Try the .c4i proxy name first, then the bare proxy name, then the
     -- package filename, so no single wrong guess can disable installs.
-    -- Confirm which key matches on a live Director.
+    -- The pre-rename flologic_valve.* keys stay so instances updated
+    -- across the asset rename still match; new installs match the new
+    -- keys first. Confirm which key matches on a live Director.
     get_installed = function()
-      for _, key in ipairs({ "flologic_valve.c4i", "flologic_valve", FloUpdate.ASSET }) do
+      for _, key in ipairs({
+        "flologic_water_valve.c4i",
+        "flologic_water_valve",
+        "flologic_valve.c4i",
+        "flologic_valve",
+        FloUpdate.ASSET,
+      }) do
         if flovalve_get_installed(key) then
           flovalve_log_warn("update installed lookup matched: " .. key)
           return true
@@ -3246,6 +3658,7 @@ function OnDriverLateInit(driver_init_type)
   flovalve_state.initialized = true
   OnPropertyChanged(FLOVALVE_PROP_DEBUG)
   flovalve_schedule_update_checks()
+  flovalve_state.stale_timer = flovalve_set_timer(FLOVALVE_STALE_CHECK_S * 1000, flovalve_check_freshness, true)
   -- Restart-restored Composer connections may not re-fire bind events
   -- (plan D3), so hello once at startup too: an unbound link drops the
   -- send silently inside pcall, a bound one answers with our identity.

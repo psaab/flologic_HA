@@ -21,11 +21,15 @@ local function valve_env()
     timers = timers,
     proxy_sends = {},
     device_sends = {},
-    providers = { 77 },
+    providers = { [77] = "FloLogic Cloud" },
     provider_lookup = true,
     saved = {},
     events = {},
     proxy_fail_link = false,
+    net_connections = {},
+    net_connects = {},
+    net_disconnects = {},
+    net_sends = {},
   }
   Properties = {
     ["Debug Mode"] = "Off",
@@ -95,6 +99,19 @@ local function valve_env()
   end
   function C4:GetBindingAddress(_id)
     return ""
+  end
+  function C4:CreateNetworkConnection(id, host, kind)
+    env.net_connections[#env.net_connections + 1] = { id = id, host = host, kind = kind }
+  end
+  function C4:NetPortOptions(_id, _port, _kind, _opts) end
+  function C4:NetConnect(id, port)
+    env.net_connects[#env.net_connects + 1] = { id = id, port = port }
+  end
+  function C4:NetDisconnect(id, port)
+    env.net_disconnects[#env.net_disconnects + 1] = { id = id, port = port }
+  end
+  function C4:SendToNetwork(id, port, data)
+    env.net_sends[#env.net_sends + 1] = { id = id, port = port, data = data }
   end
   return env
 end
@@ -188,9 +205,11 @@ end
 
 T.test("valve: version, link pin, updater asset, no selector (VALVE-U4)", function()
   valve_env()
-  T.check_equal(FLOVALVE_DRIVER_VERSION, "2026090809", "valve version lockstep with cloud")
+  T.check_equal(FLOVALVE_DRIVER_VERSION, "2026090810", "valve version lockstep with cloud")
   T.check_equal(FLOGIC_LINK_VERSION, 1, "protocol version is 1")
-  T.check_equal(FloUpdate.ASSET, "flologic_valve.c4z", "updater tracks the valve package")
+  T.check_equal(FloUpdate.ASSET, "flologic_water_valve.c4z", "updater tracks the valve package")
+  T.check_equal(FloUpdate.FAMILY_ASSETS[1], "flologic_cloud.c4z", "updater requires the cloud sibling")
+  T.check_equal(FloUpdate.FAMILY_ASSETS[2], "flologic_water_valve.c4z", "updater requires its own package")
   T.check_equal(FLOVALVE_LINK_ID, 600, "static link id")
   T.check_equal(FLOVALVE_LIGHT_ID, 5001, "light proxy id")
   T.check_equal(FLOVALVE_LINK_CLASS, "FLOGIC_VALVE", "link class matches cloud slots")
@@ -370,6 +389,62 @@ T.test("valve: open restores the last non-shutoff mode from pushes", function()
   T.check_equal(flovalve_state.restore_action, "mode_away", "restore target tracked")
 end)
 
+T.test("valve: rebinding to a different valve resets control history", function()
+  local env = boot(valve_env())
+  handshake(env, "11")
+  push_state(env, base_state({ mode = 2 }))
+  T.check_equal(flovalve_state.restore_action, "mode_away", "restore target tracked")
+  push_state(env, base_state({ mode = 8 }))
+  T.check(flovalve_state.last_water_off, "water-off baseline latched")
+  ReceivedFromProxy(LIGHT, "DYNAMIC_OFF", {})
+  T.check(next(flovalve_state.pending_commands) ~= nil, "command in flight")
+  -- Mid-life slot rebinding: another valve's state arrives, the link
+  -- re-handshakes, and the new identity must not inherit history.
+  push_state(env, base_state({ id = "22", mode = 1 }))
+  T.check(flovalve_state.valve_id == nil, "mismatch clears the authoritative id")
+  handshake(env, "22")
+  T.check_equal(flovalve_state.restore_action, "mode_home", "restore target reset to the safe default")
+  T.check(flovalve_state.contact_states == nil, "contact baselines cleared")
+  T.check(flovalve_state.last_mode == nil, "edge baselines cleared")
+  T.check(flovalve_state.last_state == nil, "prior live state invalidated")
+  T.check(next(flovalve_state.pending_commands) == nil, "old valve's pending dropped")
+  -- The new valve is already shut off: its first push is a quiet
+  -- baseline, and Open selects the default — never the old valve's mode.
+  env.events = {}
+  env.proxy_sends = {}
+  push_state(env, base_state({ id = "22", mode = 8 }))
+  T.check_equal(#env.events, 0, "first push of the new valve fires no edges")
+  local sends101 = contact_sends(env, 101)
+  T.check_equal(sends101[#sends101], "STATE_CLOSED", "first push syncs contacts quietly")
+  ReceivedFromProxy(LIGHT, "DYNAMIC_ON", {})
+  local body = Link.parse(commands_sent(env)[#commands_sent(env)].params)
+  T.check_equal(body.fields.action, "mode_home", "open uses the safe default, not the old valve's mode")
+end)
+
+T.test("valve: same-valve re-link keeps baselines across a flap", function()
+  local env = boot(valve_env())
+  handshake(env, "11")
+  push_state(env, base_state({ mode = 2 }))
+  OnBindingChanged(LINK, "CONTROL", false)
+  OnBindingChanged(LINK, "CONTROL", true)
+  handshake(env, "11")
+  T.check_equal(flovalve_state.restore_action, "mode_away", "restore target survives a same-valve flap")
+  T.check(flovalve_state.last_mode ~= nil, "edge baselines survive a same-valve flap")
+  -- A genuine transition across the flap still fires (not swallowed by
+  -- a spurious fresh baseline).
+  env.events = {}
+  push_state(env, base_state({ mode = 8 }))
+  local sends101 = contact_sends(env, 101)
+  T.check_equal(sends101[#sends101], "CLOSED", "transition (not silent sync) after same-valve re-link")
+  local saw_off = false
+  for _, name in ipairs(env.events) do
+    if name == "Water Off Detected" then
+      saw_off = true
+    end
+  end
+  T.check(saw_off, "genuine transition across the flap still fires")
+end)
+
 T.test("valve: programming commands forward validated link actions", function()
   local env = boot(valve_env())
   handshake(env, "11")
@@ -455,6 +530,37 @@ T.test("valve: SendToDevice fallback both directions", function()
   T.check_equal(flovalve_handle_link("FLOGIC_STATE", { nope = 1 }), false, "malformed envelope dropped")
   T.check_equal(flovalve_handle_link("FLOGIC_HELLO", Link.build_hello()), false, "misrouted message dropped")
   ExecuteCommand("Bogus", { nope = 1 })
+end)
+
+T.test("valve: provider discovery decodes Director maps and singular scalars", function()
+  local env = valve_env()
+  env.proxy_fail_link = true
+  env.providers = { [77] = "1234" }
+  boot(env)
+  handshake(env, "11")
+  push_state(env, base_state())
+  ReceivedFromProxy(LIGHT, "DYNAMIC_OFF", {})
+  local fallback = device_commands(env)
+  T.check_equal(#fallback, 1, "fallback routes with a numeric name")
+  T.check_equal(fallback[1].id, 77, "provider key used, never the name")
+  -- The singular provider API answers one scalar id.
+  C4.GetBoundProviderDevices = nil
+  function C4:GetBoundProviderDevice()
+    return 78
+  end
+  env.device_sends = {}
+  ReceivedFromProxy(LIGHT, "DYNAMIC_ON", {})
+  fallback = device_commands(env)
+  T.check_equal(#fallback, 1, "singular scalar routes")
+  T.check_equal(fallback[1].id, 78, "singular scalar is the id")
+  -- A failed lookup sends to nobody rather than guessing.
+  function C4:GetBoundProviderDevice()
+    error("no discovery")
+  end
+  env.device_sends = {}
+  ReceivedFromProxy(LIGHT, "DYNAMIC_OFF", {})
+  T.check_equal(#device_commands(env), 0, "failed lookup sends to nobody")
+  T.check(Properties["Last Command"]:find("no link route", 1, true) ~= nil, "route failure displayed")
 end)
 
 T.test("valve: link loss marks stale, keeps state, and blocks commands", function()
@@ -624,6 +730,229 @@ T.test("valve: pending commands expire without an ack (V1)", function()
   push_state(env, base_state())
   T.check(flovalve_state.pending_commands[cmd_id] == nil, "stale pending expired")
   T.check(Properties["Last Command"]:find("no response from cloud") ~= nil, "expiry is displayed")
+end)
+
+T.test("valve: unavailable notice marks, blocks commands, clears on recovery", function()
+  local env = boot(valve_env())
+  handshake(env, "11")
+  push_state(env, base_state())
+  T.check_equal(Properties["Connection"], "Online", "online before the notice")
+  from_cloud(env, Link.build_unavailable("11", "left-account"))
+  T.check(Properties["Connection"]:find("Not available", 1, true) ~= nil, "unavailable marked")
+  T.check(Properties["Connection"]:find("left-account", 1, true) ~= nil, "reason shown")
+  T.check(Properties["Connection"]:find("last update", 1, true) ~= nil, "last observation kept")
+  T.check(flovalve_state.contact_states ~= nil, "contacts retained while unavailable")
+  -- Another valve's notice is cross-talk: ignored.
+  from_cloud(env, Link.build_unavailable("22", "left-account"))
+  T.check(Properties["Connection"]:find("left-account", 1, true) ~= nil, "cross-talk ignored")
+  -- Commands block locally instead of moving the tile for a gone valve.
+  local before = #commands_sent(env)
+  ReceivedFromProxy(LIGHT, "DYNAMIC_OFF", {})
+  T.check_equal(#commands_sent(env), before, "no command while unavailable")
+  T.check(Properties["Last Command"]:find("not available", 1, true) ~= nil, "block displayed")
+  -- Recovery on the next slice.
+  push_state(env, base_state())
+  T.check_equal(Properties["Connection"], "Online", "slice clears unavailable")
+  ReceivedFromProxy(LIGHT, "DYNAMIC_OFF", {})
+  T.check_equal(#commands_sent(env), before + 1, "commands resume after recovery")
+end)
+
+T.test("valve: display shows observation time and drops out-of-order snapshots", function()
+  local env = boot(valve_env())
+  handshake(env, "11")
+  local t1 = os.time() - 100
+  push_state(env, base_state({ updated = t1 }))
+  T.check_equal(Properties["Last Link Update"], os.date("%Y-%m-%d %H:%M:%S", t1), "display shows observation time")
+  push_state(env, base_state({ updated = t1 + 50, mode = 8 }))
+  T.check_equal(Properties["Mode"], "shutoff", "newer snapshot applied")
+  push_state(env, base_state({ updated = t1 + 10, mode = 1 }))
+  T.check_equal(Properties["Mode"], "shutoff", "older snapshot dropped")
+  T.check_equal(
+    Properties["Last Link Update"],
+    os.date("%Y-%m-%d %H:%M:%S", t1 + 50),
+    "display keeps the newer observation"
+  )
+end)
+
+T.test("valve: watchdog marks stale silence and recovers on the next slice", function()
+  local env = boot(valve_env())
+  handshake(env, "11")
+  push_state(env, base_state())
+  push_state(env, base_state())
+  flovalve_check_freshness()
+  T.check_equal(Properties["Connection"], "Online", "fresh data stays online")
+  -- Simulate a cloud outage: the last snapshot ages past the limit.
+  flovalve_state.last_slice_at = os.time() - FLOVALVE_STALE_MIN_S - 1
+  flovalve_state.prev_slice_at = os.time() - FLOVALVE_STALE_MIN_S - 61
+  flovalve_check_freshness()
+  T.check(Properties["Connection"]:find("Stale", 1, true) ~= nil, "silence marked stale")
+  local saw_lost = false
+  for _, name in ipairs(env.events) do
+    if name == "Connection Lost" then
+      saw_lost = true
+    end
+  end
+  T.check(saw_lost, "stale fires Connection Lost")
+  -- Repeat checks don't re-fire; contacts stay put.
+  local events_before = #env.events
+  flovalve_check_freshness()
+  T.check_equal(#env.events, events_before, "stale fires once")
+  T.check(flovalve_state.contact_states ~= nil, "contacts retained while stale")
+  -- Recovery on the next slice.
+  push_state(env, base_state())
+  T.check_equal(Properties["Connection"], "Online", "slice clears staleness")
+  T.check(env.events[#env.events] == "Connection Restored", "recovery fires Connection Restored")
+end)
+
+T.test("valve: unanswered commands settle on a real deadline and reconcile the tile", function()
+  local env = boot(valve_env())
+  handshake(env, "11")
+  push_state(env, base_state())
+  ReceivedFromProxy(LIGHT, "DYNAMIC_OFF", {})
+  check_list_equal(light_levels(env), { 100, 0 }, "off click reports 0 immediately")
+  -- No reply from the cloud: the deadline timer settles the command and
+  -- reconciles the tile to the last observed level — never stuck off.
+  env.timers.advance(FLOVALVE_ACK_TIMEOUT_S * 1000 + 5000)
+  T.check(Properties["Last Command"]:find("no response from cloud", 1, true) ~= nil, "timeout is displayed")
+  check_list_equal(light_levels(env), { 100, 0, 100 }, "tile reconciled to last observed")
+  T.check(next(flovalve_state.pending_commands) == nil, "pending settled by the timer")
+  -- A subsequent toggle decides from the reconciled level, not the lost request.
+  ReceivedFromProxy(LIGHT, "TOGGLE", {})
+  local body = Link.parse(commands_sent(env)[#commands_sent(env)].params)
+  T.check_equal(body.fields.action, "mode_shutoff", "toggle closes from reconciled on")
+end)
+
+T.test("valve: ack cancels the command deadline timer", function()
+  local env = boot(valve_env())
+  handshake(env, "11")
+  push_state(env, base_state())
+  ReceivedFromProxy(LIGHT, "DYNAMIC_OFF", {})
+  local first = Link.parse(commands_sent(env)[#commands_sent(env)].params)
+  from_cloud(env, Link.build_ack(first.cmd_id))
+  env.timers.advance(FLOVALVE_ACK_TIMEOUT_S * 1000 + 5000)
+  check_list_equal(light_levels(env), { 100, 0 }, "acked command never reconciles away")
+  T.check(Properties["Last Command"]:find("acknowledged", 1, true) ~= nil, "ack display survives the deadline")
+end)
+
+T.test("valve: update socket dispatches through lifecycle entry points", function()
+  local env = boot(valve_env())
+  local packet = FloUpdate.build_install_packet("flologic_water_valve.c4z")
+  local err_seen, calls = "unset", 0
+  flovalve_soap_send(packet, function(err)
+    calls = calls + 1
+    err_seen = err
+  end)
+  local binding = flovalve_state.soap_binding
+  T.check(binding ~= nil, "soap binding allocated")
+  T.check_equal(#env.net_connects, 1, "connect attempted")
+  -- Foreign binding/port traffic is ignored.
+  ReceivedFromNetwork(binding + 1, FloUpdate.SOAP_PORT, "x")
+  OnConnectionStatusChanged(binding + 1, FloUpdate.SOAP_PORT, "ONLINE")
+  OnConnectionStatusChanged(binding, FloUpdate.SOAP_PORT + 1, "ONLINE")
+  T.check_equal(#env.net_sends, 0, "foreign traffic ignored")
+  T.check_equal(calls, 0, "foreign traffic settles nothing")
+  -- ONLINE transmits the packet; a reply settles success.
+  OnConnectionStatusChanged(binding, FloUpdate.SOAP_PORT, "ONLINE")
+  T.check_equal(#env.net_sends, 1, "packet transmitted on open")
+  T.check_equal(env.net_sends[1].data, packet, "install packet sent")
+  ReceivedFromNetwork(binding, FloUpdate.SOAP_PORT, "HTTP/1.1 200 OK")
+  T.check_equal(calls, 1, "reply settles the send")
+  T.check(err_seen == nil, "reply is success, got " .. tostring(err_seen))
+end)
+
+T.test("valve: update socket reports connection failure distinctly", function()
+  local env = boot(valve_env())
+  local err_seen, calls = "unset", 0
+  flovalve_soap_send("packet", function(err)
+    calls = calls + 1
+    err_seen = err
+  end)
+  local binding = flovalve_state.soap_binding
+  -- OFFLINE before any ONLINE: connection failure, not success.
+  OnConnectionStatusChanged(binding, FloUpdate.SOAP_PORT, "OFFLINE")
+  T.check_equal(calls, 1, "close settles the send")
+  T.check_equal(err_seen, "cannot reach Composer endpoint", "connection failure distinguished")
+  T.check_equal(#env.net_sends, 0, "nothing transmitted without a connection")
+end)
+
+T.test("valve: fallback hint follows the live handshake, never a stale binding", function()
+  local env = valve_env()
+  env.proxy_fail_link = true
+  boot(env)
+  local function fallback_hellos()
+    local found = {}
+    for _, send in ipairs(env.device_sends) do
+      if send.command == "FLOGIC_HELLO" then
+        found[#found + 1] = send
+      end
+    end
+    return found
+  end
+  -- Empty identity: the first hello carries no hint (the cloud cannot
+  -- attribute it and drops it; the proxy burst is the bootstrap).
+  local hellos = fallback_hellos()
+  T.check_equal(#hellos, 1, "first hello falls back")
+  T.check(hellos[1].params["FLOGIC_FROM"] == nil, "no hint before any handshake")
+  -- A live handshake authorizes the hint from here on.
+  handshake(env, "11")
+  push_state(env, base_state())
+  ReceivedFromProxy(LIGHT, "DYNAMIC_OFF", {})
+  local fallback = device_commands(env)
+  T.check_equal(fallback[#fallback].params["FLOGIC_FROM"], "11", "hint follows the live handshake")
+  -- Rebind: the old hint must not route the new binding's traffic.
+  OnBindingChanged(LINK, "CONTROL", false)
+  OnBindingChanged(LINK, "CONTROL", true)
+  hellos = fallback_hellos()
+  T.check(hellos[#hellos].params["FLOGIC_FROM"] == nil, "rebind hello carries no stale hint")
+  handshake(env, "22")
+  ReceivedFromProxy(LIGHT, "DYNAMIC_ON", {})
+  fallback = device_commands(env)
+  T.check_equal(fallback[#fallback].params["FLOGIC_FROM"], "22", "new handshake re-authorizes the hint")
+end)
+
+T.test("valve: handshake retries are bounded, explicit, and recover slowly", function()
+  local env = boot(valve_env())
+  T.check_equal(#hellos(env), 1, "startup hello")
+  T.check_equal(Properties["Connection"], "Linking...", "linking shown")
+  -- Silence: the burst retries on cadence, then fails explicitly. Steps
+  -- stay small because one big advance only fires one timer generation.
+  for _ = 1, FLOVALVE_HELLO_ATTEMPTS do
+    env.timers.advance(FLOVALVE_HELLO_RETRY_S * 1000)
+  end
+  T.check_equal(#hellos(env), FLOVALVE_HELLO_ATTEMPTS, "bounded retries")
+  T.check(Properties["Connection"]:find("Link failed", 1, true) ~= nil, "failure is explicit")
+  T.check(flovalve_state.hello_failed, "failed flag set")
+  -- Slow recovery restarts one burst; identity ends it.
+  for _ = 1, 6 do
+    env.timers.advance(FLOVALVE_HELLO_RETRY_S * 1000)
+  end
+  T.check_equal(#hellos(env), FLOVALVE_HELLO_ATTEMPTS + 1, "slow retry re-hellos once")
+  handshake(env, "11")
+  T.check(not flovalve_state.hello_failed, "identity clears the failure")
+  local count = #hellos(env)
+  env.timers.advance(120000)
+  T.check_equal(#hellos(env), count, "no more hellos once linked")
+end)
+
+T.test("valve: snapshots outside the numeric domains are rejected atomically", function()
+  local env = boot(valve_env())
+  handshake(env, "11")
+  push_state(env, base_state())
+  T.check_equal(Properties["Mode"], "home", "baseline applied")
+  local function raw_state(body)
+    return { [Link.K_VERSION] = "1", [Link.K_MSG] = Link.MSG_STATE, [Link.K_BODY] = body }
+  end
+  -- Fractional mode: dropped before any property, contact, edge, or restore update.
+  local bad_mode = Link.encode_fields({ id = "11", mode = 2.5, online = true })
+  T.check_equal(flovalve_handle_link("FLOGIC_STATE", raw_state(bad_mode)), false, "fractional mode rejected")
+  T.check_equal(Properties["Mode"], "home", "nothing applied")
+  -- Negative flow state and control-char name: same atomicity.
+  local bad_flow = Link.encode_fields({ id = "11", mode = 1, online = true, flow_state = -4 })
+  T.check_equal(flovalve_handle_link("FLOGIC_STATE", raw_state(bad_flow)), false, "negative flow rejected")
+  local bad_name = Link.encode_fields({ id = "11", mode = 1, online = true, name = "A\001B" })
+  T.check_equal(flovalve_handle_link("FLOGIC_STATE", raw_state(bad_name)), false, "control-char name rejected")
+  T.check_equal(Properties["Mode"], "home", "still nothing applied")
+  T.check_equal(#env.events, 0, "no edges from rejected snapshots")
 end)
 
 T.test("valve: Refresh is guarded while unlinked (V2)", function()

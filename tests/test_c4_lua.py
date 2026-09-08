@@ -119,9 +119,11 @@ def test_file_handles_close_on_errors() -> None:
 def test_monolith_manifest_matches_reviewed_sources() -> None:
     """The legacy monolith manifest must agree with its reviewed sources.
 
-    The monolith is no longer packaged (flologic_valve.c4z is now the split
-    valve driver, covered by tests/test_c4_packaging.py), but its manifest
-    and Lua must stay consistent while the sources ship in the repo.
+    The monolith is no longer packaged (the split valve ships as
+    flologic_water_valve.c4z, covered by tests/test_c4_packaging.py, and
+    must never reuse the legacy flologic_valve.c4z filename), but its
+    manifest and Lua must stay consistent while the sources ship in the
+    repo.
     """
     manifest = ElementTree.parse(C4_DIR / "driver.xml").getroot()
     version = manifest.findtext("version")

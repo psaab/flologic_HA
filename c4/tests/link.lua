@@ -63,14 +63,15 @@ L.test("link: version pinned and message sets disjoint", function()
     Link.MSG_STATE,
     Link.MSG_CMD_ACK,
     Link.MSG_CMD_NACK,
+    Link.MSG_UNAVAILABLE,
   }) do
     L.check(type(name) == "string", "message name is a string")
     L.check(seen[name] == nil, "distinct names, dup " .. tostring(name))
     seen[name], count = true, count + 1
   end
-  L.check_equal(count, 7, "seven messages")
+  L.check_equal(count, 8, "eight messages")
   L.check_equal(#Link.VALVE_TO_CLOUD, 3, "three valve->cloud messages")
-  L.check_equal(#Link.CLOUD_TO_VALVE, 4, "four cloud->valve messages")
+  L.check_equal(#Link.CLOUD_TO_VALVE, 5, "five cloud->valve messages")
   for _, name in ipairs(Link.VALVE_TO_CLOUD) do
     L.check(Link.is_valve_to_cloud(name), name .. " routes valve->cloud")
     L.check(not Link.is_cloud_to_valve(name), name .. " never routes cloud->valve")
@@ -88,6 +89,27 @@ L.test("link: digest vectors and canonical field order", function()
   L.check_equal(Link.encode_fields({ b = 1, a = 2 }), '{"a":2,"b":1}', "keys sorted")
   local ok, err = Link.digest(nil)
   L.check(ok == nil and err == "digest-needs-string", "digest rejects non-string")
+end)
+
+L.test("link: unavailable round-trip and rejection", function()
+  local env = Link.build_unavailable("11", "left-account")
+  L.check_equal(env[Link.K_MSG], Link.MSG_UNAVAILABLE, "unavailable name")
+  L.check_equal(env[Link.K_BODY], "11", "valve id in body")
+  L.check_equal(env[Link.K_ERROR], "left-account", "reason in error key")
+  local msg, err = Link.parse(env)
+  L.check(msg ~= nil, "parses, got " .. tostring(err))
+  L.check_equal(msg.valve_id, "11", "valve id decoded")
+  L.check_equal(msg.error_reason, "left-account", "reason decoded")
+  L.check(Link.is_cloud_to_valve(msg.msg), "routes cloud->valve")
+  L.check(not Link.is_valve_to_cloud(msg.msg), "never routes valve->cloud")
+  local bad_id, bad_id_err = Link.build_unavailable("", "left-account")
+  L.check(bad_id == nil and bad_id_err == "bad-valve-id", "empty id rejected")
+  local bad_reason, bad_reason_err = Link.build_unavailable("11", "")
+  L.check(bad_reason == nil and bad_reason_err == "bad-reason", "empty reason rejected")
+  local no_reason = Link.build_unavailable("11", "left-account")
+  no_reason[Link.K_ERROR] = nil
+  local parsed, parse_err = Link.parse(no_reason)
+  L.check(parsed == nil and parse_err == "bad-reason", "missing reason rejected")
 end)
 
 L.test("link: hello and get_state round-trip", function()
@@ -254,6 +276,37 @@ L.test("link: validation rejects malformed envelopes", function()
   local non_string_body = Link.build_hello()
   non_string_body[Link.K_BODY] = 42
   rejects(non_string_body, "non-string body")
+end)
+
+L.test("link: snapshot domains fail atomically on build and parse", function()
+  -- Fractional and negative modes carry no flag semantics: rejected.
+  for _, mode in ipairs({ 2.5, -1, "8" }) do
+    local built, build_err = Link.build_state(full_state({ mode = mode }))
+    L.check(built == nil and build_err == "bad-state-mode", "build rejects mode " .. tostring(mode))
+  end
+  -- Same for a negative flow state and a control-char name.
+  local built, build_err = Link.build_state(full_state({ flow_state = -4 }))
+  L.check(built == nil and build_err == "bad-state-field:flow_state", "build rejects negative flow_state")
+  local named, named_err = Link.build_state(full_state({ name = "A\001B" }))
+  L.check(named == nil and named_err == "bad-state-field:name", "build rejects control-char name")
+  -- Parse enforces the same domains: craft around the builder.
+  local function state_with(body)
+    local env = Link.build_state(full_state())
+    env[Link.K_BODY] = body
+    env[Link.K_HASH] = Link.digest(body)
+    return env
+  end
+  local frac, frac_err = Link.parse(state_with('{"id":"11","mode":2.5,"online":true}'))
+  L.check(frac == nil and frac_err == "bad-state-mode", "parse rejects fractional mode")
+  local neg, neg_err = Link.parse(state_with('{"id":"11","mode":1,"online":true,"flow_state":-4}'))
+  L.check(neg == nil and neg_err == "bad-state-field:flow_state", "parse rejects negative flow_state")
+  local dirty, dirty_err = Link.parse(state_with('{"id":"11","mode":1,"online":true,"name":"A\\u0001B"}'))
+  L.check(dirty == nil and dirty_err == "bad-state-field:name", "parse rejects control-char name")
+  -- Boundary-valid snapshots still pass on both paths.
+  local edge = Link.build_state(full_state({ mode = 0, flow_state = 0 }))
+  L.check(edge ~= nil, "zero mode/flow_state build")
+  local back, back_err = Link.parse(edge)
+  L.check(back ~= nil, "zero mode/flow_state parse, got " .. tostring(back_err))
 end)
 
 L.test("link: version mismatch fails closed", function()

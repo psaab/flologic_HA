@@ -24,6 +24,7 @@ local function cloud_env()
     proxy_fail = false,
     fetch_calls = {},
     send_calls = {},
+    binding_clears = {},
   }
   Properties = {
     Email = "u@example.com",
@@ -53,7 +54,16 @@ local function cloud_env()
     env.device_sends[#env.device_sends + 1] = { id = id, command = command, params = params }
   end
   function C4:GetBoundConsumerDevices(_, binding)
+    if env.consumers_fail then
+      error("no discovery")
+    end
     return env.consumers[binding]
+  end
+  function C4:SetBindingAddress(id, address)
+    if env.binding_clear_fail then
+      error("clear failed")
+    end
+    env.binding_clears[#env.binding_clears + 1] = { id = id, address = address }
   end
   function C4:FireEvent(name)
     env.events[#env.events + 1] = name
@@ -157,9 +167,11 @@ local function discover(env, devices, accesses)
 end
 
 T.test("cloud: version, link pin, updater asset, no picker (CLOUD-U6)", function()
-  T.check_equal(FLOCLOUD_DRIVER_VERSION, "2026090809", "cloud version")
+  T.check_equal(FLOCLOUD_DRIVER_VERSION, "2026090810", "cloud version")
   T.check_equal(FLOGIC_LINK_VERSION, 1, "protocol version is 1")
   T.check_equal(FloUpdate.ASSET, "flologic_cloud.c4z", "updater tracks the cloud package")
+  T.check_equal(FloUpdate.FAMILY_ASSETS[1], "flologic_cloud.c4z", "updater requires its own package")
+  T.check_equal(FloUpdate.FAMILY_ASSETS[2], "flologic_water_valve.c4z", "updater requires the valve sibling")
   T.check(flocloud_selection == nil, "no single-valve selection helper")
   T.check(FLOCLOUD_PROP_PICKER == nil, "no picker property constant")
   T.check(FLOCLOUD_PROP_OVERRIDE == nil, "no override property constant")
@@ -173,23 +185,29 @@ T.test("cloud: version, link pin, updater asset, no picker (CLOUD-U6)", function
           name = "flologic_cloud.c4z",
           browser_download_url = "https://github.com/psaab/flologic_HA/releases/download/c4-v2026090809/flologic_cloud.c4z",
         },
+        {
+          name = "flologic_water_valve.c4z",
+          browser_download_url = "https://github.com/psaab/flologic_HA/releases/download/c4-v2026090809/flologic_water_valve.c4z",
+        },
       },
     },
     {
-      tag_name = "c4-v2026090809",
+      -- Newer tag but missing the valve sibling: not a valid lockstep
+      -- release, so the older complete release wins.
+      tag_name = "c4-v2026090810",
       draft = false,
       prerelease = false,
       assets = {
         {
-          name = "flologic_valve.c4z",
-          browser_download_url = "https://github.com/psaab/flologic_HA/releases/download/c4-v2026090809/flologic_valve.c4z",
+          name = "flologic_cloud.c4z",
+          browser_download_url = "https://github.com/psaab/flologic_HA/releases/download/c4-v2026090810/flologic_cloud.c4z",
         },
       },
     },
   })
   local release = FloUpdate.select_release(JSON.decode(body))
   T.check(release ~= nil, "cloud asset selected")
-  T.check_equal(release.version, "2026090809", "cloud release version")
+  T.check_equal(release.version, "2026090809", "incomplete newer release skipped")
   T.check(release.url:find("flologic_cloud.c4z", 1, true) ~= nil, "cloud asset url")
 end)
 
@@ -350,7 +368,7 @@ T.test("cloud: provider SendToDevice fallback both directions", function()
   local env = boot(cloud_env())
   discover(env, { make_valve() }, {})
   env.proxy_fail = true
-  env.consumers[2001] = { 55 }
+  env.consumers[2001] = { [55] = "Upstairs Valve" }
   env.proxy_sends = {}
   env.device_sends = {}
   ReceivedFromProxy(2001, "FLOGIC_HELLO", Link.build_hello())
@@ -371,6 +389,34 @@ T.test("cloud: provider SendToDevice fallback both directions", function()
   T.check_equal(#env.device_sends, count, "hintless fallback dropped")
   ExecuteCommand("Bogus Programming Command", {})
   T.check_equal(#env.device_sends, count, "unknown commands still ignored")
+  env.proxy_fail = false
+  OnDriverDestroyed()
+end)
+
+T.test("cloud: consumer discovery decodes Director id-name maps", function()
+  local env = boot(cloud_env())
+  discover(env, { make_valve() }, {})
+  env.proxy_fail = true
+  -- A numeric device NAME must never become a device id: decode by key.
+  env.consumers[2001] = { [55] = "1234" }
+  env.device_sends = {}
+  ReceivedFromProxy(2001, "FLOGIC_HELLO", Link.build_hello())
+  T.check(#env.device_sends >= 1, "fallback still routes with a numeric name")
+  T.check_equal(env.device_sends[1].id, 55, "fallback targets the key, never the name")
+  -- An empty map is an observed-unbound binding, not a lookup failure.
+  env.consumers[2001] = {}
+  env.device_sends = {}
+  ReceivedFromProxy(2001, "FLOGIC_HELLO", Link.build_hello())
+  T.check_equal(#env.device_sends, 0, "empty map sends to nobody")
+  OnBindingChanged(2001, "FLOGIC_VALVE", true)
+  flocloud_reconcile_bindings()
+  T.check_equal(flocloud_state.slots[2001].bound, false, "empty map marks unbound")
+  -- A failed lookup keeps the previous flag rather than flapping.
+  OnBindingChanged(2001, "FLOGIC_VALVE", true)
+  env.consumers_fail = true
+  flocloud_reconcile_bindings()
+  T.check_equal(flocloud_state.slots[2001].bound, true, "failed lookup keeps the flag")
+  env.consumers_fail = false
   env.proxy_fail = false
   OnDriverDestroyed()
 end)
@@ -589,6 +635,8 @@ T.test("cloud: departed slot is reused only after explicit unbind (M1)", functio
   -- new valve's name (Director has no rename API).
   OnBindingChanged(2001, "FLOGIC_VALVE", false)
   T.check_equal(flocloud_find_free_slot(), 2001, "unbound slot offered for reuse")
+  -- The live re-check must observe zero consumers before reuse proceeds.
+  env.consumers[2001] = {}
   local newcomer = make_valve({ id = 200, uuid = "uuid-new", valveFriendlyName = "New" })
   local with_newcomer = { newcomer }
   for _, valve in ipairs(remaining) do
@@ -646,6 +694,8 @@ T.test("cloud: failed re-add after remove leaves the old entry for retry", funct
   script_account(env, remaining, {})
   flocloud_poll_now()
   OnBindingChanged(2001, "FLOGIC_VALVE", false)
+  -- Explicit empty map: the live re-check observes zero consumers.
+  env.consumers[2001] = {}
   local newcomer = make_valve({ id = 200, uuid = "uuid-new", valveFriendlyName = "New" })
   local real_add = C4.AddDynamicBinding
   function C4:AddDynamicBinding(_id)
@@ -670,7 +720,7 @@ T.test("cloud: failed re-add after remove leaves the old entry for retry", funct
   OnDriverDestroyed()
 end)
 
-T.test("cloud: reuse skips remove when the slot rebound live", function()
+T.test("cloud: reuse vetoed when the slot rebound live", function()
   local env = boot(cloud_env())
   local valves = fill_all_slots(env)
   local remaining = {}
@@ -681,13 +731,9 @@ T.test("cloud: reuse skips remove when the slot rebound live", function()
   flocloud_poll_now()
   OnBindingChanged(2001, "FLOGIC_VALVE", false)
   -- The flag says unbound, but a live consumer is bound: the flag is
-  -- stale, so keep the binding (and its old name) rather than drop a
-  -- live link for cosmetics.
-  env.consumers[2001] = { 55 }
-  local real_add = C4.AddDynamicBinding
-  function C4:AddDynamicBinding(_id)
-    error("exists")
-  end
+  -- stale, so the slot is vetoed — the old identity is preserved and
+  -- the newcomer is never mapped onto a live Composer link.
+  env.consumers[2001] = { [55] = "Upstairs Valve" }
   local newcomer = make_valve({ id = 200, uuid = "uuid-new", valveFriendlyName = "New" })
   local arrived = { newcomer }
   for _, valve in ipairs(remaining) do
@@ -695,9 +741,417 @@ T.test("cloud: reuse skips remove when the slot rebound live", function()
   end
   script_account(env, arrived, {})
   flocloud_poll_now()
-  C4.AddDynamicBinding = real_add
   T.check_equal(#env.removed, 0, "live binding never removed")
-  T.check_equal(flocloud_state.valve_slots["200"], 2001, "newcomer mapped despite stale name")
+  T.check_equal(flocloud_state.valve_slots["200"], nil, "newcomer never mapped onto a live link")
+  T.check_equal(flocloud_state.slots[2001].valve_id, "101", "old identity preserved")
+  T.check_equal(flocloud_state.slots[2001].bound, true, "stale flag refreshed to bound")
+  OnDriverDestroyed()
+end)
+
+T.test("cloud: reuse vetoed when the binding lookup fails", function()
+  local env = boot(cloud_env())
+  local valves = fill_all_slots(env)
+  local remaining = {}
+  for i = 2, 16 do
+    remaining[#remaining + 1] = valves[i]
+  end
+  script_account(env, remaining, {})
+  flocloud_poll_now()
+  OnBindingChanged(2001, "FLOGIC_VALVE", false)
+  -- No live observation available: the slot is not reused.
+  env.consumers_fail = true
+  local newcomer = make_valve({ id = 200, uuid = "uuid-new", valveFriendlyName = "New" })
+  local arrived = { newcomer }
+  for _, valve in ipairs(remaining) do
+    arrived[#arrived + 1] = valve
+  end
+  script_account(env, arrived, {})
+  flocloud_poll_now()
+  T.check_equal(flocloud_state.valve_slots["200"], nil, "newcomer not mapped without a live check")
+  T.check_equal(flocloud_state.slots[2001].valve_id, "101", "old entry kept")
+  T.check_equal(#env.removed, 0, "nothing removed without a live check")
+  -- A later poll with a working lookup proceeds normally.
+  env.consumers_fail = false
+  env.consumers[2001] = {}
+  script_account(env, arrived, {})
+  flocloud_poll_now()
+  T.check_equal(flocloud_state.valve_slots["200"], 2001, "retry maps once observed")
+  OnDriverDestroyed()
+end)
+
+T.test("cloud: vetoed slot is skipped for the next safe candidate", function()
+  local env = boot(cloud_env())
+  local valves = fill_all_slots(env)
+  local remaining = {}
+  for i = 3, 16 do
+    remaining[#remaining + 1] = valves[i]
+  end
+  script_account(env, remaining, {})
+  flocloud_poll_now()
+  OnBindingChanged(2001, "FLOGIC_VALVE", false)
+  OnBindingChanged(2002, "FLOGIC_VALVE", false)
+  -- 2001 rebound live (stale flag); 2002 is genuinely free.
+  env.consumers[2001] = { [55] = "Upstairs Valve" }
+  env.consumers[2002] = {}
+  local newcomer = make_valve({ id = 200, uuid = "uuid-new", valveFriendlyName = "New" })
+  local arrived = { newcomer }
+  for _, valve in ipairs(remaining) do
+    arrived[#arrived + 1] = valve
+  end
+  script_account(env, arrived, {})
+  flocloud_poll_now()
+  T.check_equal(flocloud_state.slots[2001].valve_id, "101", "vetoed slot keeps its valve")
+  T.check_equal(flocloud_state.slots[2001].bound, true, "vetoed slot flag refreshed")
+  T.check_equal(flocloud_state.valve_slots["200"], 2002, "newcomer takes the next safe slot")
+  T.check_equal(#env.removed, 1, "only the safe slot rebound")
+  T.check_equal(env.removed[1], 2002, "vetoed binding untouched")
+  OnDriverDestroyed()
+end)
+
+T.test("cloud: uuid change quarantines the slot and re-places the valve", function()
+  local env = boot(cloud_env())
+  discover(env, { make_valve() }, {})
+  T.check_equal(flocloud_state.valve_slots["11"], 2001, "valve placed")
+  -- Same numeric id, different immutable identity: a different valve.
+  script_account(env, { make_valve({ uuid = "uuid-replacement" }) }, {})
+  flocloud_poll_now()
+  T.check_equal(flocloud_state.slots[2001].available, false, "conflicted slot quarantined")
+  T.check_equal(flocloud_state.slots[2001].valve_id, "11", "quarantine keeps the old valve id")
+  local slot = flocloud_state.valve_slots["11"]
+  T.check(slot ~= nil and slot ~= 2001, "replacement re-placed on a new slot")
+  T.check_equal(flocloud_state.slots[slot].available, true, "new slot available")
+  T.check(flocloud_verify_slot(slot), "new slot verifies")
+  T.check(not flocloud_verify_slot(2001), "quarantined slot never verifies")
+  -- The old slot's commands fail; nothing executes for the wrong valve.
+  env.proxy_sends = {}
+  ReceivedFromProxy(2001, "FLOGIC_COMMAND", Link.build_command("c-old", "mode_home"))
+  T.check_equal(#sends_to(env, 2001, Link.MSG_CMD_NACK), 1, "quarantined slot nacks")
+  T.check_equal(#flocloud_state.command_queue, 0, "quarantined command never queued")
+  -- Next poll: stable, no duplicate placement.
+  script_account(env, { make_valve({ uuid = "uuid-replacement" }) }, {})
+  flocloud_poll_now()
+  T.check_equal(flocloud_state.valve_slots["11"], slot, "mapping stable across polls")
+  T.check_equal(flocloud_state.slots[2001].available, false, "quarantine persists")
+  OnDriverDestroyed()
+end)
+
+T.test("cloud: restored map links but never writes before verification", function()
+  local env = boot(cloud_env())
+  discover(env, { make_valve() }, {})
+  OnDriverDestroyed()
+  OnDriverLateInit("test")
+  -- Restored map, no poll since restart: hello links, commands wait.
+  flocloud_state.last_devices = nil
+  env.proxy_sends = {}
+  ReceivedFromProxy(2001, "FLOGIC_HELLO", Link.build_hello())
+  T.check_equal(#sends_to(env, 2001, Link.MSG_IDENTITY), 1, "restored slot still answers hello")
+  ReceivedFromProxy(2001, "FLOGIC_COMMAND", Link.build_command("c-early", "mode_home"))
+  local nacks = sends_to(env, 2001, Link.MSG_CMD_NACK)
+  T.check_equal(#nacks, 1, "unverified command nacked")
+  T.check_equal(Link.parse(nacks[1].params).error_reason, "verifying", "nack names verification")
+  T.check_equal(#flocloud_state.command_queue, 0, "no cloud write from an unverified map")
+  -- The verifying poll authorizes the slot normally.
+  script_account(env, { make_valve() }, {})
+  flocloud_poll_now()
+  T.check(flocloud_verify_slot(2001), "slot verified after poll")
+  OnDriverDestroyed()
+end)
+
+T.test("cloud: account change drops cached authorization until re-verified", function()
+  local env = boot(cloud_env())
+  discover(env, { make_valve() }, {})
+  T.check(flocloud_verify_slot(2001), "slot verified before the change")
+  Properties.Email = "someone@else.com"
+  OnPropertyChanged("Email")
+  T.check(flocloud_state.last_devices == nil, "cached inventory dropped")
+  T.check(flocloud_state.last_slices[2001] == nil, "cached slice dropped")
+  env.proxy_sends = {}
+  ReceivedFromProxy(2001, "FLOGIC_COMMAND", Link.build_command("c-stale", "mode_home"))
+  local nacks = sends_to(env, 2001, Link.MSG_CMD_NACK)
+  T.check_equal(#nacks, 1, "stale-account command nacked")
+  T.check_equal(Link.parse(nacks[1].params).error_reason, "verifying", "nack names verification")
+  -- Same physical valves on the new account keep their slots...
+  script_account(env, { make_valve() }, {})
+  flocloud_poll_now()
+  T.check(flocloud_verify_slot(2001), "same uuid re-verifies in place")
+  -- ...while a uuid change quarantines instead of adopting.
+  script_account(env, { make_valve({ uuid = "uuid-other-account" }) }, {})
+  flocloud_poll_now()
+  T.check_equal(flocloud_state.slots[2001].available, false, "changed uuid quarantined")
+  OnDriverDestroyed()
+end)
+
+T.test("cloud: valve removal publishes unavailable to the bound slot", function()
+  local env = boot(cloud_env())
+  local v1 = make_valve()
+  local v2 = make_valve({ id = 22, uuid = "uuid-2", valveFriendlyName = "Garden" })
+  discover(env, { v1, v2 }, {})
+  OnBindingChanged(2001, "FLOGIC_VALVE", true)
+  OnBindingChanged(2002, "FLOGIC_VALVE", true)
+  env.proxy_sends = {}
+  script_account(env, { v2 }, {})
+  flocloud_poll_now()
+  local unav = sends_to(env, 2001, Link.MSG_UNAVAILABLE)
+  T.check_equal(#unav, 1, "removal publishes unavailable")
+  T.check_equal(Link.parse(unav[1].params).valve_id, "11", "notice names the valve")
+  T.check_equal(Link.parse(unav[1].params).error_reason, "left-account", "notice names the reason")
+  T.check_equal(#sends_to(env, 2002, Link.MSG_UNAVAILABLE), 0, "healthy slot untouched")
+  -- Transition published once, not every poll.
+  env.proxy_sends = {}
+  script_account(env, { v2 }, {})
+  flocloud_poll_now()
+  T.check_equal(#sends_to(env, 2001, Link.MSG_UNAVAILABLE), 0, "unavailable published once")
+  -- Explicitly unbound slots have no listener and are skipped.
+  OnBindingChanged(2002, "FLOGIC_VALVE", false)
+  env.proxy_sends = {}
+  script_account(env, {}, {})
+  flocloud_poll_now()
+  T.check_equal(#sends_to(env, 2002, Link.MSG_UNAVAILABLE), 0, "unbound slot skipped")
+  OnDriverDestroyed()
+end)
+
+T.test("cloud: identity conflict publishes unavailable once", function()
+  local env = boot(cloud_env())
+  discover(env, { make_valve() }, {})
+  OnBindingChanged(2001, "FLOGIC_VALVE", true)
+  env.proxy_sends = {}
+  script_account(env, { make_valve({ uuid = "uuid-new" }) }, {})
+  flocloud_poll_now()
+  local unav = sends_to(env, 2001, Link.MSG_UNAVAILABLE)
+  T.check_equal(#unav, 1, "conflict publishes unavailable")
+  T.check_equal(Link.parse(unav[1].params).error_reason, "identity-conflict", "reason names the conflict")
+  OnDriverDestroyed()
+end)
+
+T.test("cloud: hello on a stale slot notifies the peer", function()
+  local env = boot(cloud_env())
+  discover(env, { make_valve() }, {})
+  script_account(env, {}, {})
+  flocloud_poll_now()
+  env.proxy_sends = {}
+  ReceivedFromProxy(2001, "FLOGIC_HELLO", Link.build_hello())
+  local unav = sends_to(env, 2001, Link.MSG_UNAVAILABLE)
+  T.check_equal(#unav, 1, "stale hello answered with unavailable")
+  T.check_equal(#sends_to(env, 2001, Link.MSG_IDENTITY), 0, "no identity for a stale slot")
+  OnDriverDestroyed()
+end)
+
+T.test("cloud: refresh replays cache and hurries one coalesced poll", function()
+  local env = boot(cloud_env())
+  discover(env, { make_valve() }, {})
+  local calls = #env.fetch_calls
+  env.proxy_sends = {}
+  ReceivedFromProxy(2001, "FLOGIC_GET_STATE", Link.build_get_state())
+  T.check_equal(#sends_to(env, 2001, Link.MSG_STATE), 1, "cache replayed immediately")
+  env.timers.advance(1500)
+  T.check_equal(#env.fetch_calls, calls + 1, "one coalesced poll hurried")
+  -- A second refresh inside the window replays cache but polls nothing new.
+  ReceivedFromProxy(2001, "FLOGIC_GET_STATE", Link.build_get_state())
+  env.timers.advance(1500)
+  T.check_equal(#env.fetch_calls, calls + 1, "window coalesces refresh polls")
+  -- After the window, refresh polls again.
+  flocloud_state.refresh_poll_at = os.time() - FLOCLOUD_REFRESH_POLL_MIN_S - 1
+  ReceivedFromProxy(2001, "FLOGIC_GET_STATE", Link.build_get_state())
+  env.timers.advance(1500)
+  T.check_equal(#env.fetch_calls, calls + 2, "poll resumes after the window")
+  OnDriverDestroyed()
+end)
+
+T.test("cloud: queued commands expire before transmit past the deadline", function()
+  local env = boot(cloud_env())
+  discover(env, { make_valve() }, {})
+  local held = nil
+  flocloud_command_send = function(job, settled)
+    env.send_calls[#env.send_calls + 1] = job
+    held = settled
+  end
+  env.proxy_sends = {}
+  ReceivedFromProxy(2001, "FLOGIC_COMMAND", Link.build_command("run-1", "mode_home"))
+  ReceivedFromProxy(2001, "FLOGIC_COMMAND", Link.build_command("run-2", "mode_away"))
+  T.check_equal(#flocloud_state.command_queue, 1, "second command queued")
+  -- Age the queued job past the transmit deadline, then settle the first.
+  flocloud_state.command_queue[1].enqueued_at = os.time() - FLOCLOUD_COMMAND_DEADLINE_S - 1
+  held()
+  local nacks = sends_to(env, 2001, Link.MSG_CMD_NACK)
+  T.check_equal(#nacks, 1, "stale job nacked")
+  T.check_equal(Link.parse(nacks[1].params).error_reason, "expired", "expiry reason")
+  T.check_equal(#env.send_calls, 1, "expired job never transmitted")
+  T.check_equal(#sends_to(env, 2001, Link.MSG_CMD_ACK), 1, "live job acked")
+  T.check(flocloud_state.pending_commands[2001]["run-2"] == nil, "expired pending cleared")
+  OnDriverDestroyed()
+end)
+
+T.test("cloud: a poll due during a command runs before the next command", function()
+  local env = boot(cloud_env())
+  discover(env, { make_valve() }, {})
+  local settlers = {}
+  flocloud_command_send = function(job, settled)
+    env.send_calls[#env.send_calls + 1] = job
+    settlers[#settlers + 1] = settled
+  end
+  ReceivedFromProxy(2001, "FLOGIC_COMMAND", Link.build_command("run-1", "mode_home"))
+  ReceivedFromProxy(2001, "FLOGIC_COMMAND", Link.build_command("run-2", "mode_away"))
+  local calls = #env.fetch_calls
+  -- A poll comes due while the first command executes: remembered, not dropped.
+  flocloud_poll_now()
+  T.check(flocloud_state.poll_overdue, "due poll remembered")
+  T.check_equal(#env.fetch_calls, calls, "no poll while busy")
+  -- Hold the due poll open to prove ordering: poll first, command after.
+  local release_poll = nil
+  flocloud_account_fetch = function(hub, cb)
+    env.fetch_calls[#env.fetch_calls + 1] = { hub = hub }
+    release_poll = function()
+      cb(nil, { user = { id = 7 }, devices = { make_valve() }, accesses = {} })
+    end
+  end
+  settlers[1]()
+  T.check_equal(#env.fetch_calls, calls + 1, "due poll started first")
+  T.check_equal(#env.send_calls, 1, "second command waits while the poll runs")
+  release_poll()
+  T.check_equal(#env.send_calls, 2, "queued command runs after the poll settles")
+  OnDriverDestroyed()
+end)
+
+T.test("cloud: open breaker rejects commands at admission", function()
+  local env = boot(cloud_env())
+  discover(env, { make_valve() }, {})
+  flocloud_state.cb_open_until = os.time() + 300
+  env.proxy_sends = {}
+  ReceivedFromProxy(2001, "FLOGIC_COMMAND", Link.build_command("run-1", "mode_home"))
+  local nacks = sends_to(env, 2001, Link.MSG_CMD_NACK)
+  T.check_equal(#nacks, 1, "cooling-down command nacked")
+  T.check_equal(Link.parse(nacks[1].params).error_reason, "cooling-down", "explicit status")
+  T.check_equal(#flocloud_state.command_queue, 0, "nothing queued during cooldown")
+  T.check_equal(#env.send_calls, 0, "no session during cooldown")
+  -- After cooldown, admission resumes.
+  flocloud_state.cb_open_until = 0
+  script_send(env, nil)
+  ReceivedFromProxy(2001, "FLOGIC_COMMAND", Link.build_command("run-2", "mode_home"))
+  T.check_equal(#env.send_calls, 1, "admission resumes after cooldown")
+  OnDriverDestroyed()
+end)
+
+T.test("cloud: breaker opening fails already-queued commands fast", function()
+  local env = boot(cloud_env())
+  discover(env, { make_valve() }, {})
+  local held = nil
+  flocloud_command_send = function(job, settled)
+    env.send_calls[#env.send_calls + 1] = job
+    held = settled
+  end
+  ReceivedFromProxy(2001, "FLOGIC_COMMAND", Link.build_command("run-1", "mode_home"))
+  ReceivedFromProxy(2001, "FLOGIC_COMMAND", Link.build_command("run-2", "mode_away"))
+  flocloud_state.cb_failures = 4
+  env.proxy_sends = {}
+  held("transport-99")
+  T.check(flocloud_breaker_open(), "breaker opened")
+  local nacks = sends_to(env, 2001, Link.MSG_CMD_NACK)
+  T.check_equal(#nacks, 2, "both jobs settled")
+  T.check_equal(Link.parse(nacks[2].params).error_reason, "cooling-down", "queued job failed fast")
+  T.check_equal(#env.send_calls, 1, "queued job never transmitted during cooldown")
+  T.check_equal(#flocloud_state.command_queue, 0, "queue drained")
+  OnDriverDestroyed()
+end)
+
+T.test("cloud: credential change resets the breaker for the new regime", function()
+  local env = boot(cloud_env())
+  discover(env, { make_valve() }, {})
+  flocloud_state.cb_failures = 5
+  flocloud_state.cb_open_until = os.time() + 300
+  T.check(flocloud_breaker_open(), "breaker open before the change")
+  Properties.Email = "fixed@example.com"
+  OnPropertyChanged("Email")
+  T.check_equal(flocloud_state.cb_failures, 0, "failure count reset")
+  T.check(not flocloud_breaker_open(), "cooldown cleared for new credentials")
+  script_account(env, { make_valve() }, {})
+  flocloud_poll_now()
+  script_send(env, nil)
+  ReceivedFromProxy(2001, "FLOGIC_COMMAND", Link.build_command("run-1", "mode_home"))
+  T.check_equal(#env.send_calls, 1, "commands admit under the new credentials")
+  OnDriverDestroyed()
+end)
+
+T.test("cloud: corrupt valve mode skips the slice without sinking the poll", function()
+  local env = boot(cloud_env())
+  local bad = make_valve()
+  bad.mode = -1
+  discover(env, { bad }, {})
+  T.check_equal(flocloud_state.valve_slots["11"], 2001, "valve still placed")
+  T.check_equal(#sends_to(env, 2001, Link.MSG_STATE), 0, "no slice for a corrupt mode")
+  T.check_equal(flocloud_state.last_slices[2001], nil, "nothing cached")
+  -- Recovery when the cloud reports a sane mode again.
+  script_account(env, { make_valve() }, {})
+  flocloud_poll_now()
+  T.check_equal(#sends_to(env, 2001, Link.MSG_STATE), 1, "slice resumes")
+  OnDriverDestroyed()
+end)
+
+T.test("cloud: slice builder scrubs cosmetic strings and omits bad flow state", function()
+  local env = boot(cloud_env())
+  local slice = flocloud_build_slice({ id = 11, mode = 1, valveFriendlyName = "A\001B", flowState = -2 }, nil)
+  T.check(slice ~= nil, "snapshot survives cosmetic garbage")
+  T.check_equal(slice.name, "AB", "control chars stripped")
+  T.check_equal(slice.flow_state, nil, "bad flow state omitted, not fatal")
+  T.check(flocloud_build_slice({ id = 11, mode = 2.5 }, nil) == nil, "fractional mode fails the slice")
+  T.check(flocloud_build_slice({ id = 11, mode = -1 }, nil) == nil, "negative mode fails the slice")
+  OnDriverDestroyed()
+end)
+
+T.test("cloud: relog tokens harvest from any settled session", function()
+  local env = boot(cloud_env())
+  -- A rotated token persists even when the session later fails: login
+  -- succeeded, so the rotation is real and must not be lost.
+  flocloud_note_session_end({ relog_token = "fresh-token" }, "timeout:session")
+  T.check_equal(flocloud_state.relog_token, "fresh-token", "rotation kept on failure")
+  T.check_equal(env.saved.flocloud_relog, "fresh-token", "rotation persisted")
+  -- Empty, missing, and unchanged harvests are no-ops.
+  flocloud_note_session_end({ relog_token = "" }, "timeout:session")
+  flocloud_note_session_end(nil, "timeout:session")
+  flocloud_note_session_end({ relog_token = "fresh-token" }, nil)
+  T.check_equal(flocloud_state.relog_token, "fresh-token", "no-op harvests keep the token")
+  -- Auth failure drops the persisted token: it may be the rejected
+  -- credential, and the next session must log in fully.
+  flocloud_note_session_end({ relog_token = "fresh-token" }, "auth")
+  T.check_equal(flocloud_state.relog_token, "", "suspect token dropped")
+  T.check_equal(env.saved.flocloud_relog, "", "drop persisted")
+  OnDriverDestroyed()
+end)
+
+T.test("cloud: retired bindings drain on OFFLINE and survive clear failures", function()
+  local env = boot(cloud_env())
+  flocloud_state.retired_bindings = {}
+  flocloud_state.retired_bindings[6100] = 443
+  OnConnectionStatusChanged(6100, 443, "OFFLINE")
+  T.check_equal(flocloud_state.retired_bindings[6100], nil, "drained id released")
+  T.check_equal(#env.binding_clears, 1, "address cleared")
+  -- A failing clear must not raise out of the entry point or wedge the map.
+  flocloud_state.retired_bindings[6101] = 443
+  env.binding_clear_fail = true
+  OnConnectionStatusChanged(6101, 443, "OFFLINE")
+  T.check_equal(flocloud_state.retired_bindings[6101], nil, "map clears despite failure")
+  env.binding_clear_fail = false
+  -- Wrong port or foreign events never drain.
+  flocloud_state.retired_bindings[6102] = 443
+  OnConnectionStatusChanged(6102, 444, "OFFLINE")
+  OnConnectionStatusChanged(6102, 443, "ONLINE")
+  T.check_equal(flocloud_state.retired_bindings[6102], 443, "mismatched events ignored")
+  OnDriverDestroyed()
+end)
+
+T.test("cloud: pool exhaustion reclaims one undrained binding", function()
+  local env = boot(cloud_env())
+  flocloud_state.retired_bindings = {}
+  T.check_equal(flocloud_reclaim_retired_binding(), nil, "nothing to reclaim")
+  flocloud_state.retired_bindings[6100] = 443
+  flocloud_state.retired_bindings[6101] = 443
+  local freed = flocloud_reclaim_retired_binding()
+  T.check(freed == 6100 or freed == 6101, "one id freed")
+  T.check_equal(#env.binding_clears, 1, "freed address cleared")
+  local left = 0
+  for _ in pairs(flocloud_state.retired_bindings) do
+    left = left + 1
+  end
+  T.check_equal(left, 1, "only one reclaimed per call")
   OnDriverDestroyed()
 end)
 

@@ -5,9 +5,11 @@
 > [SPLIT_README.md](SPLIT_README.md) (version 2026090808). Below
 > documents the legacy single-driver monolith (`FloLogic Valve`,
 > version **2026090709**), which still works but is no longer packaged
-> or published; see the split guide for manual migration. Do NOT install
-> any post-split `flologic_valve.c4z` on a monolith instance — that
-> filename is now the split valve driver, not a monolith upgrade.
+> or published; see the split guide for manual migration. Tags
+> `c4-v2026090801`–`c4-v2026090809` carry the split valve driver under
+> the `flologic_valve.c4z` filename — do NOT install those over a
+> monolith instance. Newer tags renamed the split valve, so monoliths
+> no longer see split releases as updates at all.
 
 Control4 DriverWorks driver for FloLogic Connect valves, based on the
 [Home Assistant integration](../README.md). Version **2026090709**, targeting
@@ -34,10 +36,11 @@ A command already transmitted to the cloud cannot be recalled.
 
 In Composer Pro, use **Driver → Add or Update Driver…** with the new
 `flologic_valve.c4z`, keeping the existing project instances — but only
-with monolith-era builds (`c4-v2026090709` and older). Post-split
-`flologic_valve.c4z` files are the split valve driver and must never be
-installed over a monolith instance. Confirm **Driver Version** on each
-instance. The package filename, self-proxy name,
+with monolith-era builds (`c4-v2026090709` and older). Tags
+`c4-v2026090801`–`c4-v2026090809` carry the split valve driver under that
+same filename and must never be installed over a monolith instance;
+newer tags renamed the split valve instead. Confirm **Driver Version**
+on each instance. The package filename, self-proxy name,
 and existing command/event identities remain stable so programming references
 can remain attached to those instances.
 
@@ -82,9 +85,11 @@ of the previous stored package. A write failure can leave that file incomplete
 or missing. Use Composer installation until those remaining issues are addressed.
 
 C4 releases use `c4-vYYYYMMDDNN` tags. Monolith-era tags carried the
-monolith as the exactly named `flologic_valve.c4z` asset; current tags
-carry the split valve driver under that same filename instead, so a
-monolith will report it as an available update — do not install it.
+monolith as the exactly named `flologic_valve.c4z` asset; tags
+`c4-v2026090801`–`c4-v2026090809` carried the split valve driver under
+that same filename instead, so a monolith reports those as an available
+update — do not install them. Newer tags renamed the split valve, so
+monoliths report no eligible C4 asset rather than an update.
 Drafts, prereleases, and Home Assistant releases are
 ignored. A build newer than GitHub is reported explicitly. A repository with
 no eligible C4 asset is reported as such, rather than as up to date.

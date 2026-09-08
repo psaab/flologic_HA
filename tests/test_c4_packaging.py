@@ -3,11 +3,12 @@
 Unit 4 release-infra self-test: both c4z files must build reproducibly from
 c4/cloud/ and c4/valve/ (+ shared), carry the same lockstep version, and
 contain the reviewed sources. Composer identities (name/model/proxy) stay
-distinct from the monolith driver, but the valve asset intentionally reuses
-the legacy monolith filename flologic_valve.c4z: installed monoliths will
-offer it as an update, so monolith owners must migrate manually and never
-install it over a monolith instance. CI runs this file via the full pytest
-suite (check.yml) and the release workflow (release-c4.yml).
+distinct from the monolith driver, and the split valve ships under its own
+asset name flologic_water_valve.c4z: it must never reuse the legacy
+monolith filename flologic_valve.c4z, or installed monoliths would offer
+the incompatible companion as an update. Monolith owners migrate manually
+(delete monolith, add cloud + valves). CI runs this file via the full
+pytest suite (check.yml) and the release workflow (release-c4.yml).
 """
 
 from __future__ import annotations
@@ -26,7 +27,8 @@ CLOUD_DIR = C4_DIR / "cloud"
 VALVE_DIR = C4_DIR / "valve"
 
 CLOUD_C4Z = C4_DIR / "flologic_cloud.c4z"
-VALVE_C4Z = C4_DIR / "flologic_valve.c4z"
+VALVE_C4Z = C4_DIR / "flologic_water_valve.c4z"
+LEGACY_C4Z = C4_DIR / "flologic_valve.c4z"
 CLOUD_FILES = ("driver.xml", "driver.lua", "ca-bundle.pem", "CA-LICENSE")
 VALVE_FILES = ("driver.xml", "driver.lua")
 
@@ -47,7 +49,9 @@ def built_packages() -> dict[str, Path]:
             f"{script} failed:\n{completed.stdout}\n{completed.stderr}"
         )
     assert CLOUD_C4Z.is_file(), "package-cloud.sh did not write flologic_cloud.c4z"
-    assert VALVE_C4Z.is_file(), "package-valve.sh did not write flologic_valve.c4z"
+    assert VALVE_C4Z.is_file(), (
+        "package-valve.sh did not write flologic_water_valve.c4z"
+    )
     assert CLOUD_C4Z.stat().st_size > 0
     assert VALVE_C4Z.stat().st_size > 0
     return {"cloud": CLOUD_C4Z, "valve": VALVE_C4Z}
@@ -100,14 +104,14 @@ def test_version_lockstep(built_packages: dict[str, Path]) -> None:
             assert version.encode() in package.read("driver.xml")
 
 
-def test_composer_identities_distinct_valve_reuses_legacy_asset() -> None:
-    """Names, models, and proxies are distinct from the monolith.
+def test_composer_identities_distinct_valve_asset_never_collides() -> None:
+    """Names, models, proxies, and asset filenames stay off the monolith.
 
     Composer matches drivers by name/model/proxy identity, and those stay
-    fully distinct. The valve updater asset intentionally reuses the legacy
-    monolith filename, so this test pins that deliberate sharing: installed
-    monoliths will offer the valve package as an update and must migrate
-    manually instead of installing it.
+    fully distinct. The split valve asset must never reuse the legacy
+    monolith filename: this test pins the distinct name, the family both
+    split updaters require, and the absence of any stale legacy-named
+    package that a release could upload by mistake.
     """
     monolith = _manifest(C4_DIR / "driver.xml")
     cloud = _manifest(CLOUD_DIR / "driver.xml")
@@ -134,4 +138,12 @@ def test_composer_identities_distinct_valve_reuses_legacy_asset() -> None:
     cloud_lua = (CLOUD_DIR / "cloud.lua").read_text(encoding="utf-8")
     valve_lua = (VALVE_DIR / "valve.lua").read_text(encoding="utf-8")
     assert 'FloUpdate.ASSET = "flologic_cloud.c4z"' in cloud_lua
-    assert 'FloUpdate.ASSET = "flologic_valve.c4z"' in valve_lua
+    assert 'FloUpdate.ASSET = "flologic_water_valve.c4z"' in valve_lua
+    family = 'FloUpdate.FAMILY_ASSETS = { "flologic_cloud.c4z", "flologic_water_valve.c4z" }'
+    assert family in cloud_lua
+    assert family in valve_lua
+    # The installed-lookup keys may keep pre-rename flologic_valve.c4i /
+    # flologic_valve fallbacks, and comments may name the legacy file, but
+    # no code value may reference the legacy .c4z filename as an asset.
+    assert '"flologic_valve.c4z"' not in valve_lua
+    assert not LEGACY_C4Z.is_file(), "stale legacy-named package must not exist"

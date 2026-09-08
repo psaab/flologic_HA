@@ -19,6 +19,16 @@ local function pct_encode(text)
   end)
 end
 
+-- Scrub hub-supplied text for logs: single-line and bounded, so a
+-- hostile frame cannot inject fake log lines or flood the log.
+local function scrub_log_text(value, max_len)
+  local text = tostring(value or ""):gsub("[%c]", " ")
+  if #text > max_len then
+    text = text:sub(1, max_len) .. "..."
+  end
+  return text
+end
+
 -- Split an https:// hub URL into host, port, and signalr base path.
 function FloLogic.parse_hub_url(hub_url)
   if type(hub_url) ~= "string" or hub_url:find("[%s?#@]") then
@@ -479,7 +489,7 @@ function FloLogic.new_session(opts)
         -- frames; only transport-level failures abort the session.
         if msg == "undecodable SignalR frame" or msg == "bad-event" then
           if self._trace_events and detail ~= nil then
-            self._log_warn("undecodable hub frame: " .. tostring(detail))
+            self._log_warn("undecodable hub frame: " .. scrub_log_text(detail, 160))
           else
             self._log_debug("ignoring " .. msg)
           end

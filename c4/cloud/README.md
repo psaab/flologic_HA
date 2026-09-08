@@ -17,7 +17,7 @@ Protocol contract: [`../shared/flologic_link.md`](../shared/flologic_link.md)
 3. Wait one poll (`Poll Interval`, default 60 s) or run the `Refresh`
    command. `Valve Count` / `Available Valves` list the account inventory.
 4. Add one `FloLogic Water Valve` driver per valve (from
-   `flologic_valve.c4z`).
+   `flologic_water_valve.c4z`).
 5. In Connections view, bind each valve driver's link input to the named
    cloud slot for that valve. The valve handshakes (`FLOGIC_HELLO` →
    `FLOGIC_IDENTITY`) and starts receiving state.
@@ -104,10 +104,12 @@ and programming all differ):
 
 Do not install the monolith `.c4z` and the new `.c4z` files as if they
 were upgrades of each other. Composer identities (names, models,
-proxies) are fully distinct, but the valve package intentionally reuses
-the legacy `flologic_valve.c4z` asset filename — so monolith updaters
-will offer it, and installing it over a monolith instance is
-unsupported. Migrate manually instead.
+proxies) are fully distinct, and the valve package ships under its own
+`flologic_water_valve.c4z` asset filename — never the legacy
+`flologic_valve.c4z` filename, so monolith updaters no longer see split
+releases at all. (Tags `c4-v2026090801`–`c4-v2026090809` predate the
+rename and do reuse the legacy filename: installing those over a
+monolith instance is unsupported. Migrate manually instead.)
 
 ## Link action set (valve → cloud `FLOGIC_COMMAND` bodies)
 

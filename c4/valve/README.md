@@ -46,7 +46,7 @@ handshake re-learns the identity.
   limits, bypass time, auto away, temp alert/shutoff, pre-alert,
   no-flow notice, flow sensitivity), Refresh (ask the cloud for state
   now), plus the report-only Check for Update and the Composer install
-  commands tracking the `flologic_valve.c4z` asset.
+  commands tracking the `flologic_water_valve.c4z` asset.
 - **Link problems.** `Connection` shows `Not linked` (with the last
   update time) when the binding drops and `Degraded` when the cloud sends
   a digest-only snapshot. Last-known contacts and display stay put —
