@@ -673,6 +673,7 @@ local function flogic_new_session()
     random_mask = flogic_random_mask,
     relog_token = flogic_state.relog_token,
     log = flogic_log,
+    log_warn = flogic_log_warn,
   })
 end
 

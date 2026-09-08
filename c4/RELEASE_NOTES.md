@@ -1,5 +1,22 @@
 Control4 DriverWorks package for FloLogic Connect valves (OS 3.3.0+).
 
+Version **2026090805** fixes commands timing out despite being applied
+plus link naming in Connections view. The hub applies `RequestStateChange`
+immediately but the `StateChangeResult` event is unreliable (slow/offline
+valves may never produce it), and the driver treated the event as the
+only success signal. Commands now race the event against inventory
+verification — any post-command state showing the requested fields
+counts as success — and the hub event stream is traced to the Lua log
+during commands so the exchange stays diagnosable. Failed commands also
+trigger a refresh so the tile converges to the true state. The fix lives
+in the shared protocol stack the split drivers build from (the frozen
+monolith line stays on its last published build). Naming: Director has
+no binding-rename API and the static link's name is manifest-fixed, so
+the static slot now fills LAST as honestly-named overflow (`Valve Link
+16`) while dynamic slots 2002–2016 fill first carrying their valve
+names; reused slots are removed + re-added so the new valve's name
+shows. (0804 was superseded before release; its command fix ships here.)
+
 Version **2026090803** completes the Composer-discovery fix: the cloud
 manifest now declares `combo` plus a `Utility` composer category,
 mirroring the proven proxy-less coordinator form (and restoring the

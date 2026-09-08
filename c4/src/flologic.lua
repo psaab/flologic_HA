@@ -87,6 +87,7 @@ function FloLogic.new_session(opts)
     _b64encode = opts.b64encode,
     _random_mask = opts.random_mask,
     _log = opts.log or function() end,
+    _log_warn = opts.log_warn or function() end,
     _tcp = nil,
     _dispatcher = nil,
     _ws_parser = nil,
@@ -434,6 +435,9 @@ function FloLogic.new_session(opts)
     end
     self._dispatcher = SignalR.new_dispatcher({
       on_event = function(target, args)
+        if self._trace_events then
+          self._log_warn("hub event: " .. tostring(target))
+        end
         if target == "ErrorOccured" then
           -- The Home Assistant client logs this and continues; a cloud
           -- error notice must not abort a fetch that is otherwise healthy.
@@ -445,6 +449,9 @@ function FloLogic.new_session(opts)
             return
           end
           self._devices = devices
+          if self._confirm_check ~= nil then
+            self._confirm_check()
+          end
         elseif target == "ValveSent" and type(args[1]) == "table" and self._devices then
           -- Merge, mirroring the Home Assistant cache: replace the matching
           -- valve, or add a pushed valve the array has not listed yet.
@@ -461,14 +468,21 @@ function FloLogic.new_session(opts)
             if not merged then
               self._devices[#self._devices + 1] = incoming
             end
+            if self._confirm_check ~= nil then
+              self._confirm_check()
+            end
           end
         end
       end,
-      on_error = function(msg)
+      on_error = function(msg, detail)
         -- The Home Assistant client ignores undecodable and malformed
         -- frames; only transport-level failures abort the session.
         if msg == "undecodable SignalR frame" or msg == "bad-event" then
-          self._log_debug("ignoring " .. msg)
+          if self._trace_events and detail ~= nil then
+            self._log_warn("undecodable hub frame: " .. tostring(detail))
+          else
+            self._log_debug("ignoring " .. msg)
+          end
           return
         end
         on_fail("signalr:" .. msg)
@@ -588,6 +602,12 @@ function FloLogic.new_session(opts)
   end
 
   -- Send one state-change command. fields is a flat table of cloud values.
+  -- The hub applies RequestStateChange immediately, but the
+  -- StateChangeResult event is unreliable: slow or offline valves may
+  -- produce it late or never, while the cloud-side state already changed.
+  -- So the event is only the fast path: inventory verification races it,
+  -- and any post-invoke row showing the requested fields counts as
+  -- success. Failure needs BOTH the event timeout AND no confirmation.
   function self.send_command(hub_url, selected, fields, cb)
     local function fail(err)
       self._finish(err, nil, cb)
@@ -596,6 +616,7 @@ function FloLogic.new_session(opts)
       fail("select-valve")
       return
     end
+    self._trace_events = true
     self._connect(hub_url, function(user, devices)
       self._ensure_valve(user, devices, selected, function(valve)
         local command = {
@@ -611,6 +632,82 @@ function FloLogic.new_session(opts)
           end
           command[k] = v
         end
+        local function row_matches(row)
+          if type(row) ~= "table" then
+            return false
+          end
+          for key, want in pairs(fields) do
+            if key == "mode" then
+              -- Inventory mode is a flag combo; the requested bit set is
+              -- what counts (mirrors the mode-name flag fallbacks).
+              local have = tonumber(row.mode)
+              local want_num = tonumber(want)
+              if have == nil or want_num == nil or not FloModel.has_flag(have, want_num) then
+                return false
+              end
+            else
+              local have_num, want_num = tonumber(row[key]), tonumber(want)
+              if have_num ~= nil and want_num ~= nil then
+                if have_num ~= want_num then
+                  return false
+                end
+              elseif row[key] ~= want then
+                return false
+              end
+            end
+          end
+          return true
+        end
+        local function find_row()
+          if type(self._devices) ~= "table" then
+            return nil
+          end
+          for _, row in ipairs(self._devices) do
+            if type(row) == "table" then
+              if tostring(row.id) == tostring(valve.id) then
+                return row
+              end
+              if valve.uuid ~= nil and row.uuid == valve.uuid then
+                return row
+              end
+            end
+          end
+          return nil
+        end
+        local function try_confirm(source)
+          if self._done then
+            return
+          end
+          local row = find_row()
+          if row ~= nil and row_matches(row) then
+            self._log_warn("command confirmed by " .. source)
+            self._finish(nil, { valve = row }, cb)
+          end
+        end
+        -- Push fast path: _connect merges ValveArraySent/ValveSent rows and
+        -- runs this hook after every merge.
+        self._confirm_check = function()
+          try_confirm("push")
+        end
+        -- Scheduled explicit verifies for the no-push case. Verify errors
+        -- never fail the command; the event timeout still owns failure.
+        for _, delay_ms in ipairs({ 10000, 22000, 34000 }) do
+          self._after(delay_ms, function()
+            if self._done then
+              return
+            end
+            try_confirm("cache")
+            if self._done then
+              return
+            end
+            self._log_warn("command verify refresh (no confirmation yet)")
+            -- The merge hook above confirms from this reply; the waiter
+            -- only needs to consume it.
+            self._refresh_valve_array(user, function(refreshed)
+              self._devices = refreshed
+            end, function() end)
+          end)
+        end
         self._wait_for("StateChangeResult", 45000, function(args)
           local result = args[1]
           if result == false or (type(result) == "table" and (result.ok == false or result.success == false)) then
@@ -621,8 +718,14 @@ function FloLogic.new_session(opts)
         end, function(err)
           self._finish(err, nil, cb)
         end)
+        self._log_warn("invoke RequestStateChange")
         if not self._invoke("RequestStateChange", { user, valve, command }) then
           self._finish("ws:send-failed", nil, cb)
+        else
+          -- Idempotent fast path: the just-fetched inventory may already
+          -- show the requested state (the invoke above still flew, so hub
+          -- side effects are preserved).
+          try_confirm("cache")
         end
       end, fail)
     end, fail)

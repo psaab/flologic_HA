@@ -450,6 +450,169 @@ T.test("session: sends commands with the cloud envelope", function()
   T.check(server._tcp_closed, "connection closed after command")
 end)
 
+T.test("session: command confirms on inventory push without StateChangeResult", function()
+  -- Live finding: the hub applies RequestStateChange but the
+  -- StateChangeResult event may never arrive (slow/offline valve). A
+  -- post-invoke push showing the requested mode must succeed anyway.
+  local timers = TestHelp.new_fake_timers()
+  local user = test_user()
+  local before = make_valve()
+  local server = TestHelp.new_fake_server({
+    {
+      expect_target = "Login",
+      replies = {
+        { target = "LoggedIn", args = { user } },
+        { target = "ValveSent", args = { before } },
+      },
+    },
+    { expect_target = "RefreshValveArray", reply_target = "ValveArraySent", reply_args = { { before } } },
+    { expect_target = "RequestStateChange", replies = {} },
+  })
+  local session = new_test_session(server, timers)
+  local err, res = nil, nil
+  session.send_command(HUB_URL, "uuid-1", { mode = 8 }, function(e, r)
+    err, res = e, r
+  end)
+  T.check(err == nil and res == nil, "no fast event, still pending")
+  local applied = make_valve({ mode = 8 })
+  server._emit(JSON.encode({ type = 1, target = "ValveArraySent", arguments = { { applied } } }) .. SignalR.RECORD_SEPARATOR)
+  T.check(err == nil, "push confirms, got " .. tostring(err))
+  T.check(res ~= nil and res.valve.mode == 8, "fresh row returned")
+  T.check(server._tcp_closed, "connection closed after confirm")
+end)
+
+T.test("session: command confirms on scheduled verify refresh", function()
+  local timers = TestHelp.new_fake_timers()
+  local user = test_user()
+  local warns = {}
+  local server = TestHelp.new_fake_server({
+    { expect_target = "Login", reply_target = "LoggedIn", reply_args = { user } },
+    {
+      expect_target = "RefreshValveArray",
+      reply_target = "ValveArraySent",
+      reply_args = { { make_valve() } },
+    },
+    { expect_target = "RequestStateChange", replies = {} },
+    {
+      expect_target = "RefreshValveArray",
+      reply_target = "ValveArraySent",
+      reply_args = { { make_valve({ mode = 8 }) } },
+    },
+  })
+  local session = new_test_session(server, timers, {
+    log_warn = function(msg)
+      warns[#warns + 1] = msg
+    end,
+  })
+  local err, res = nil, nil
+  session.send_command(HUB_URL, "uuid-1", { mode = 8 }, function(e, r)
+    err, res = e, r
+  end)
+  T.check(err == nil and res == nil, "no fast event, still pending")
+  timers.advance(10000)
+  T.check(err == nil, "refresh confirms, got " .. tostring(err))
+  T.check(res ~= nil and res.valve.mode == 8, "refreshed row returned")
+  local seen = table.concat(warns, "\n")
+  T.check(seen:find("invoke RequestStateChange", 1, true) ~= nil, "invoke traced")
+  T.check(seen:find("hub event: ValveArraySent", 1, true) ~= nil, "events traced")
+  T.check(seen:find("command confirmed by push", 1, true) ~= nil, "confirm source traced")
+  T.check(server._tcp_closed, "connection closed after confirm")
+end)
+
+T.test("session: idempotent command confirms instantly, invoke still sent", function()
+  local timers = TestHelp.new_fake_timers()
+  local user = test_user()
+  local invoked = false
+  local server = TestHelp.new_fake_server({
+    { expect_target = "Login", reply_target = "LoggedIn", reply_args = { user } },
+    {
+      expect_target = "RefreshValveArray",
+      reply_target = "ValveArraySent",
+      reply_args = { { make_valve() } },
+    },
+    {
+      expect_target = "RequestStateChange",
+      capture = function()
+        invoked = true
+      end,
+      replies = {},
+    },
+  })
+  local session = new_test_session(server, timers)
+  local err, res = nil, nil
+  session.send_command(HUB_URL, "uuid-1", { mode = 1 }, function(e, r)
+    err, res = e, r
+  end)
+  T.check(invoked, "invoke flew before confirm")
+  T.check(err == nil, "already-applied succeeds, got " .. tostring(err))
+  T.check(res ~= nil and res.valve.mode == 1, "matching row returned")
+end)
+
+T.test("session: command still times out when refresh shows no change", function()
+  local timers = TestHelp.new_fake_timers()
+  local user = test_user()
+  local script = {
+    { expect_target = "Login", reply_target = "LoggedIn", reply_args = { user } },
+    {
+      expect_target = "RefreshValveArray",
+      reply_target = "ValveArraySent",
+      reply_args = { { make_valve() } },
+    },
+    { expect_target = "RequestStateChange", replies = {} },
+  }
+  -- Three scheduled verifies each re-query the array; the mode never moves.
+  for _ = 1, 3 do
+    script[#script + 1] = {
+      expect_target = "RefreshValveArray",
+      reply_target = "ValveArraySent",
+      reply_args = { { make_valve() } },
+    }
+  end
+  local server = TestHelp.new_fake_server(script)
+  local session = new_test_session(server, timers)
+  local err, done = nil, false
+  session.send_command(HUB_URL, "uuid-1", { mode = 8 }, function(e)
+    err, done = e, true
+  end)
+  timers.advance(10000)
+  T.check(not done, "first verify cannot confirm")
+  timers.advance(12000)
+  T.check(not done, "second verify cannot confirm")
+  timers.advance(12000)
+  T.check(not done, "third verify cannot confirm")
+  timers.advance(12000)
+  T.check(done, "event timeout settles")
+  T.check_equal(err, "timeout:StateChangeResult", "timeout reason unchanged")
+  T.check(server._tcp_closed, "connection closed after timeout")
+end)
+
+T.test("session: value commands confirm by field equality", function()
+  local timers = TestHelp.new_fake_timers()
+  local user = test_user()
+  local server = TestHelp.new_fake_server({
+    { expect_target = "Login", reply_target = "LoggedIn", reply_args = { user } },
+    {
+      expect_target = "RefreshValveArray",
+      reply_target = "ValveArraySent",
+      reply_args = { { make_valve() } },
+    },
+    { expect_target = "RequestStateChange", replies = {} },
+    {
+      expect_target = "RefreshValveArray",
+      reply_target = "ValveArraySent",
+      reply_args = { { make_valve({ homeIntervalTime = 20 }) } },
+    },
+  })
+  local session = new_test_session(server, timers)
+  local err, res = nil, nil
+  session.send_command(HUB_URL, "uuid-1", { homeIntervalTime = 20 }, function(e, r)
+    err, res = e, r
+  end)
+  timers.advance(10000)
+  T.check(err == nil, "value confirm, got " .. tostring(err))
+  T.check(res ~= nil and res.valve.homeIntervalTime == 20, "refreshed value returned")
+end)
+
 T.test("session: auth, timeout, and missing-valve errors", function()
   local timers = TestHelp.new_fake_timers()
   local user = test_user()
@@ -952,7 +1115,7 @@ end
 
 T.test("updates: install downloads, stages, and triggers on newer release", function()
   local timers = TestHelp.new_fake_timers()
-  local releases, store, fakes = install_fixtures("2026090803")
+  local releases, store, fakes = install_fixtures("2026090805")
   local seen, progress, err, outcome = {}, {}, nil, nil
   fakes.http_get = install_http(JSON.encode(releases), "NEW-DRIVER-BYTES", seen)
   fakes.set_timeout = timers.set_timeout
@@ -966,7 +1129,7 @@ T.test("updates: install downloads, stages, and triggers on newer release", func
   local op = FloUpdate.new_install(fakes)
   op.start()
   T.check(err == nil, "no error, got " .. tostring(err))
-  T.check_equal(outcome.attempted, "2026090803", "attempted version")
+  T.check_equal(outcome.attempted, "2026090805", "attempted version")
   T.check_equal(store.files["flologic_valve.c4z"], "NEW-DRIVER-BYTES", "staged bytes")
   T.check_equal(store.set_dir_calls[1], "C4Z_ROOT", "staged to the install root")
   T.check_equal(#store.soap_packets, 1, "one install trigger")
@@ -1005,7 +1168,7 @@ end)
 T.test("updates: install failures leave the old driver intact", function()
   local timers = TestHelp.new_fake_timers()
   local function run(mutator, current)
-    local releases, store, fakes = install_fixtures("2026090803")
+    local releases, store, fakes = install_fixtures("2026090805")
     local seen = {}
     fakes.http_get = install_http(JSON.encode(releases), "NEW-DRIVER-BYTES", seen)
     fakes.set_timeout = timers.set_timeout
@@ -1049,7 +1212,7 @@ end)
 
 T.test("updates: install follows asset redirects with headers", function()
   local timers = TestHelp.new_fake_timers()
-  local releases, _, fakes = install_fixtures("2026090803")
+  local releases, _, fakes = install_fixtures("2026090805")
   local hops = {}
   fakes.http_get = function(url, _, cb)
     hops[#hops + 1] = url
@@ -1070,13 +1233,13 @@ T.test("updates: install follows asset redirects with headers", function()
   end
   FloUpdate.new_install(fakes).start()
   T.check(err == nil, "redirect followed, got " .. tostring(err))
-  T.check_equal(outcome.attempted, "2026090803", "attempted after redirect")
+  T.check_equal(outcome.attempted, "2026090805", "attempted after redirect")
   T.check_equal(hops[3], "https://objects.example.invalid/asset", "followed Location")
 end)
 
 T.test("updates: install rejects bare redirects and cancel wins races", function()
   local timers = TestHelp.new_fake_timers()
-  local releases, _, fakes = install_fixtures("2026090803")
+  local releases, _, fakes = install_fixtures("2026090805")
   fakes.http_get = function(url, _, cb)
     if url:find("api.github.com", 1, true) then
       cb(nil, JSON.encode(releases), 200, nil)

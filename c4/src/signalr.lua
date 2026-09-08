@@ -136,7 +136,9 @@ function SignalR.new_dispatcher(opts)
         if ok then
           handle_frame(frame)
         elseif self._on_error ~= nil then
-          self._on_error("undecodable SignalR frame")
+          -- Second arg carries a truncated copy for traced sessions; the
+          -- message string itself is unchanged for existing matchers.
+          self._on_error("undecodable SignalR frame", raw:sub(1, 160))
         end
       end
     end

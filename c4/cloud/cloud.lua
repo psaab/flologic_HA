@@ -10,7 +10,7 @@
 -- favor of the slot->valve identity map below. Lua 5.1 safe.
 -- ============================================================================
 
-FLOCLOUD_DRIVER_VERSION = "2026090803"
+FLOCLOUD_DRIVER_VERSION = "2026090805"
 print("[flologic-cloud] Lua loaded: " .. FLOCLOUD_DRIVER_VERSION)
 
 FLOCLOUD_DEFAULT_HUB = "https://hub-cloudapps-prod.azurewebsites.net"
@@ -24,9 +24,10 @@ FLOCLOUD_CB_FAILURES = 5
 FLOCLOUD_CB_COOLDOWN_S = 300
 FLOCLOUD_QUEUE_MAX = 8
 
--- CONTROL provider slots (plan D2): one per valve, lowest free id
--- reused, 16-valve cap. SLOT_FIRST is the static manifest provider
--- ("Valve Link 1"); the rest are created with C4:AddDynamicBinding.
+-- CONTROL provider slots (plan D2): one per valve, 16-valve cap. The
+-- dynamic slots fill in id order; SLOT_FIRST is the static manifest
+-- provider ("Valve Link 16") and fills LAST as overflow, because Director
+-- has no binding-rename API and a static name can never show a valve name.
 FLOCLOUD_SLOT_FIRST = 2001
 FLOCLOUD_SLOT_LAST = 2016
 FLOCLOUD_LINK_CLASS = "FLOGIC_VALVE"
@@ -767,6 +768,7 @@ local function flocloud_new_session()
     random_mask = flocloud_random_mask,
     relog_token = flocloud_state.relog_token,
     log = flocloud_log,
+    log_warn = flocloud_log_warn,
   })
 end
 
@@ -816,8 +818,20 @@ local function flocloud_sorted_slots()
   return ids
 end
 
+-- Fill order: dynamic slots in id order, static SLOT_FIRST last as
+-- overflow (its manifest name is permanent, so it must never take a valve
+-- while a nameable slot is free).
+local function flocloud_slot_order()
+  local ids = {}
+  for slot = FLOCLOUD_SLOT_FIRST + 1, FLOCLOUD_SLOT_LAST do
+    ids[#ids + 1] = slot
+  end
+  ids[#ids + 1] = FLOCLOUD_SLOT_FIRST
+  return ids
+end
+
 function flocloud_find_free_slot()
-  for slot = FLOCLOUD_SLOT_FIRST, FLOCLOUD_SLOT_LAST do
+  for _, slot in ipairs(flocloud_slot_order()) do
     if flocloud_state.slots[slot] == nil then
       return slot
     end
@@ -827,7 +841,7 @@ function flocloud_find_free_slot()
   -- live (bound) link, and never a never-observed one (e.g. post-restart,
   -- where a binding may still exist): the valve there would silently
   -- adopt a stranger's identity on its next hello.
-  for slot = FLOCLOUD_SLOT_FIRST, FLOCLOUD_SLOT_LAST do
+  for _, slot in ipairs(flocloud_slot_order()) do
     local entry = flocloud_state.slots[slot]
     if entry ~= nil and not entry.available and entry.bound == false then
       return slot
@@ -916,10 +930,11 @@ end
 
 local function flocloud_add_binding(slot, name)
   if slot == FLOCLOUD_SLOT_FIRST then
-    -- Slot 2001 is the static manifest provider ("Valve Link 1"): it
-    -- exists from install, so there is nothing to create. Composer
-    -- requires at least one proxy or connection to index a driver, and
-    -- this static primary link is what keeps the cloud searchable.
+    -- Slot 2001 is the static manifest provider ("Valve Link 16",
+    -- overflow-last): it exists from install, so there is nothing to
+    -- create. Composer requires at least one proxy or connection to
+    -- index a driver, and this static link is what keeps the cloud
+    -- searchable.
     flocloud_log("static binding ready: id=" .. tostring(slot) .. " class=" .. FLOCLOUD_LINK_CLASS)
     return
   end
@@ -1063,11 +1078,37 @@ function flocloud_reconcile_inventory(devices)
       )
     else
       local name = flocloud_display_name(valve)
+      local previous = st.slots[slot]
+      local renamed = false
+      if previous ~= nil and previous.valve_id ~= id and slot ~= FLOCLOUD_SLOT_FIRST then
+        -- Slot reuse with a new valve: the Director binding still shows
+        -- the departed valve's name, and Director has no binding-rename
+        -- API. Reuse requires observed-unbound (M1), so remove + re-add is
+        -- safe — re-verified live first, since the flag may be stale. The
+        -- static overflow slot never needs this (its generic name is
+        -- always accurate).
+        local consumers = flocloud_bound_consumers(slot)
+        if consumers ~= nil and #consumers == 0 then
+          local rok = pcall(function()
+            C4:RemoveDynamicBinding(slot)
+          end)
+          if rok then
+            renamed = true
+            flocloud_log("slot " .. tostring(slot) .. " binding removed for rename to " .. name)
+          end
+        elseif consumers == nil then
+          flocloud_log_warn("slot " .. tostring(slot) .. " reuse without live check; keeping old binding name")
+        else
+          flocloud_log_warn("slot " .. tostring(slot) .. " rebound since observe; keeping old binding name")
+        end
+      end
       local ok, add_err = pcall(flocloud_add_binding, slot, name)
-      -- A reused slot keeps its existing Director binding, so a failed
-      -- re-add is not fatal there; only a never-mapped slot needs the
-      -- add to succeed before the valve can be registered.
-      if ok or st.slots[slot] ~= nil then
+      -- A reused slot normally keeps its existing Director binding, so a
+      -- failed re-add is not fatal there — except right after a rename
+      -- remove, where the binding is gone and the add must succeed. On
+      -- that failure the old (unavailable) entry stays, so the next
+      -- discovery retries the whole remove + add.
+      if ok or (previous ~= nil and not renamed) then
         flocloud_remember_slot(slot, id, name, type(valve.uuid) == "string" and valve.uuid or nil, true)
         added = added + 1
       else
@@ -1610,6 +1651,12 @@ function flocloud_run_next()
       flocloud_set_prop("Last Command", job.name .. ": failed (" .. flocloud_describe_error(err) .. ")")
       flocloud_nack(job.slot, job.cmd_id, flocloud_describe_error(err))
       flocloud_note_result(false, err)
+      -- Converge the tile even when confirmation failed: the hub may have
+      -- applied the change without confirming it (slow/offline valve), in
+      -- which case the refresh shows the true state within seconds instead
+      -- of at the next poll. Poll_now honors the breaker, so a genuinely
+      -- dead session does not spin here.
+      flocloud_poll_soon(5000)
     else
       flocloud_log("command " .. job.name .. " ok; refreshing")
       flocloud_set_prop("Last Command", job.name .. ": acknowledged; awaiting refresh")

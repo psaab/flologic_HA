@@ -870,7 +870,9 @@ function SignalR.new_dispatcher(opts)
         if ok then
           handle_frame(frame)
         elseif self._on_error ~= nil then
-          self._on_error("undecodable SignalR frame")
+          -- Second arg carries a truncated copy for traced sessions; the
+          -- message string itself is unchanged for existing matchers.
+          self._on_error("undecodable SignalR frame", raw:sub(1, 160))
         end
       end
     end
@@ -1285,6 +1287,7 @@ function FloLogic.new_session(opts)
     _b64encode = opts.b64encode,
     _random_mask = opts.random_mask,
     _log = opts.log or function() end,
+    _log_warn = opts.log_warn or function() end,
     _tcp = nil,
     _dispatcher = nil,
     _ws_parser = nil,
@@ -1632,6 +1635,9 @@ function FloLogic.new_session(opts)
     end
     self._dispatcher = SignalR.new_dispatcher({
       on_event = function(target, args)
+        if self._trace_events then
+          self._log_warn("hub event: " .. tostring(target))
+        end
         if target == "ErrorOccured" then
           -- The Home Assistant client logs this and continues; a cloud
           -- error notice must not abort a fetch that is otherwise healthy.
@@ -1643,6 +1649,9 @@ function FloLogic.new_session(opts)
             return
           end
           self._devices = devices
+          if self._confirm_check ~= nil then
+            self._confirm_check()
+          end
         elseif target == "ValveSent" and type(args[1]) == "table" and self._devices then
           -- Merge, mirroring the Home Assistant cache: replace the matching
           -- valve, or add a pushed valve the array has not listed yet.
@@ -1659,14 +1668,21 @@ function FloLogic.new_session(opts)
             if not merged then
               self._devices[#self._devices + 1] = incoming
             end
+            if self._confirm_check ~= nil then
+              self._confirm_check()
+            end
           end
         end
       end,
-      on_error = function(msg)
+      on_error = function(msg, detail)
         -- The Home Assistant client ignores undecodable and malformed
         -- frames; only transport-level failures abort the session.
         if msg == "undecodable SignalR frame" or msg == "bad-event" then
-          self._log_debug("ignoring " .. msg)
+          if self._trace_events and detail ~= nil then
+            self._log_warn("undecodable hub frame: " .. tostring(detail))
+          else
+            self._log_debug("ignoring " .. msg)
+          end
           return
         end
         on_fail("signalr:" .. msg)
@@ -1786,6 +1802,12 @@ function FloLogic.new_session(opts)
   end
 
   -- Send one state-change command. fields is a flat table of cloud values.
+  -- The hub applies RequestStateChange immediately, but the
+  -- StateChangeResult event is unreliable: slow or offline valves may
+  -- produce it late or never, while the cloud-side state already changed.
+  -- So the event is only the fast path: inventory verification races it,
+  -- and any post-invoke row showing the requested fields counts as
+  -- success. Failure needs BOTH the event timeout AND no confirmation.
   function self.send_command(hub_url, selected, fields, cb)
     local function fail(err)
       self._finish(err, nil, cb)
@@ -1794,6 +1816,7 @@ function FloLogic.new_session(opts)
       fail("select-valve")
       return
     end
+    self._trace_events = true
     self._connect(hub_url, function(user, devices)
       self._ensure_valve(user, devices, selected, function(valve)
         local command = {
@@ -1809,6 +1832,82 @@ function FloLogic.new_session(opts)
           end
           command[k] = v
         end
+        local function row_matches(row)
+          if type(row) ~= "table" then
+            return false
+          end
+          for key, want in pairs(fields) do
+            if key == "mode" then
+              -- Inventory mode is a flag combo; the requested bit set is
+              -- what counts (mirrors the mode-name flag fallbacks).
+              local have = tonumber(row.mode)
+              local want_num = tonumber(want)
+              if have == nil or want_num == nil or not FloModel.has_flag(have, want_num) then
+                return false
+              end
+            else
+              local have_num, want_num = tonumber(row[key]), tonumber(want)
+              if have_num ~= nil and want_num ~= nil then
+                if have_num ~= want_num then
+                  return false
+                end
+              elseif row[key] ~= want then
+                return false
+              end
+            end
+          end
+          return true
+        end
+        local function find_row()
+          if type(self._devices) ~= "table" then
+            return nil
+          end
+          for _, row in ipairs(self._devices) do
+            if type(row) == "table" then
+              if tostring(row.id) == tostring(valve.id) then
+                return row
+              end
+              if valve.uuid ~= nil and row.uuid == valve.uuid then
+                return row
+              end
+            end
+          end
+          return nil
+        end
+        local function try_confirm(source)
+          if self._done then
+            return
+          end
+          local row = find_row()
+          if row ~= nil and row_matches(row) then
+            self._log_warn("command confirmed by " .. source)
+            self._finish(nil, { valve = row }, cb)
+          end
+        end
+        -- Push fast path: _connect merges ValveArraySent/ValveSent rows and
+        -- runs this hook after every merge.
+        self._confirm_check = function()
+          try_confirm("push")
+        end
+        -- Scheduled explicit verifies for the no-push case. Verify errors
+        -- never fail the command; the event timeout still owns failure.
+        for _, delay_ms in ipairs({ 10000, 22000, 34000 }) do
+          self._after(delay_ms, function()
+            if self._done then
+              return
+            end
+            try_confirm("cache")
+            if self._done then
+              return
+            end
+            self._log_warn("command verify refresh (no confirmation yet)")
+            -- The merge hook above confirms from this reply; the waiter
+            -- only needs to consume it.
+            self._refresh_valve_array(user, function(refreshed)
+              self._devices = refreshed
+            end, function() end)
+          end)
+        end
         self._wait_for("StateChangeResult", 45000, function(args)
           local result = args[1]
           if result == false or (type(result) == "table" and (result.ok == false or result.success == false)) then
@@ -1819,8 +1918,14 @@ function FloLogic.new_session(opts)
         end, function(err)
           self._finish(err, nil, cb)
         end)
+        self._log_warn("invoke RequestStateChange")
         if not self._invoke("RequestStateChange", { user, valve, command }) then
           self._finish("ws:send-failed", nil, cb)
+        else
+          -- Idempotent fast path: the just-fetched inventory may already
+          -- show the requested state (the invoke above still flew, so hub
+          -- side effects are preserved).
+          try_confirm("cache")
         end
       end, fail)
     end, fail)
@@ -2990,7 +3095,7 @@ end
 -- favor of the slot->valve identity map below. Lua 5.1 safe.
 -- ============================================================================
 
-FLOCLOUD_DRIVER_VERSION = "2026090803"
+FLOCLOUD_DRIVER_VERSION = "2026090805"
 print("[flologic-cloud] Lua loaded: " .. FLOCLOUD_DRIVER_VERSION)
 
 FLOCLOUD_DEFAULT_HUB = "https://hub-cloudapps-prod.azurewebsites.net"
@@ -3004,9 +3109,10 @@ FLOCLOUD_CB_FAILURES = 5
 FLOCLOUD_CB_COOLDOWN_S = 300
 FLOCLOUD_QUEUE_MAX = 8
 
--- CONTROL provider slots (plan D2): one per valve, lowest free id
--- reused, 16-valve cap. SLOT_FIRST is the static manifest provider
--- ("Valve Link 1"); the rest are created with C4:AddDynamicBinding.
+-- CONTROL provider slots (plan D2): one per valve, 16-valve cap. The
+-- dynamic slots fill in id order; SLOT_FIRST is the static manifest
+-- provider ("Valve Link 16") and fills LAST as overflow, because Director
+-- has no binding-rename API and a static name can never show a valve name.
 FLOCLOUD_SLOT_FIRST = 2001
 FLOCLOUD_SLOT_LAST = 2016
 FLOCLOUD_LINK_CLASS = "FLOGIC_VALVE"
@@ -3747,6 +3853,7 @@ local function flocloud_new_session()
     random_mask = flocloud_random_mask,
     relog_token = flocloud_state.relog_token,
     log = flocloud_log,
+    log_warn = flocloud_log_warn,
   })
 end
 
@@ -3796,8 +3903,20 @@ local function flocloud_sorted_slots()
   return ids
 end
 
+-- Fill order: dynamic slots in id order, static SLOT_FIRST last as
+-- overflow (its manifest name is permanent, so it must never take a valve
+-- while a nameable slot is free).
+local function flocloud_slot_order()
+  local ids = {}
+  for slot = FLOCLOUD_SLOT_FIRST + 1, FLOCLOUD_SLOT_LAST do
+    ids[#ids + 1] = slot
+  end
+  ids[#ids + 1] = FLOCLOUD_SLOT_FIRST
+  return ids
+end
+
 function flocloud_find_free_slot()
-  for slot = FLOCLOUD_SLOT_FIRST, FLOCLOUD_SLOT_LAST do
+  for _, slot in ipairs(flocloud_slot_order()) do
     if flocloud_state.slots[slot] == nil then
       return slot
     end
@@ -3807,7 +3926,7 @@ function flocloud_find_free_slot()
   -- live (bound) link, and never a never-observed one (e.g. post-restart,
   -- where a binding may still exist): the valve there would silently
   -- adopt a stranger's identity on its next hello.
-  for slot = FLOCLOUD_SLOT_FIRST, FLOCLOUD_SLOT_LAST do
+  for _, slot in ipairs(flocloud_slot_order()) do
     local entry = flocloud_state.slots[slot]
     if entry ~= nil and not entry.available and entry.bound == false then
       return slot
@@ -3896,10 +4015,11 @@ end
 
 local function flocloud_add_binding(slot, name)
   if slot == FLOCLOUD_SLOT_FIRST then
-    -- Slot 2001 is the static manifest provider ("Valve Link 1"): it
-    -- exists from install, so there is nothing to create. Composer
-    -- requires at least one proxy or connection to index a driver, and
-    -- this static primary link is what keeps the cloud searchable.
+    -- Slot 2001 is the static manifest provider ("Valve Link 16",
+    -- overflow-last): it exists from install, so there is nothing to
+    -- create. Composer requires at least one proxy or connection to
+    -- index a driver, and this static link is what keeps the cloud
+    -- searchable.
     flocloud_log("static binding ready: id=" .. tostring(slot) .. " class=" .. FLOCLOUD_LINK_CLASS)
     return
   end
@@ -4043,11 +4163,37 @@ function flocloud_reconcile_inventory(devices)
       )
     else
       local name = flocloud_display_name(valve)
+      local previous = st.slots[slot]
+      local renamed = false
+      if previous ~= nil and previous.valve_id ~= id and slot ~= FLOCLOUD_SLOT_FIRST then
+        -- Slot reuse with a new valve: the Director binding still shows
+        -- the departed valve's name, and Director has no binding-rename
+        -- API. Reuse requires observed-unbound (M1), so remove + re-add is
+        -- safe — re-verified live first, since the flag may be stale. The
+        -- static overflow slot never needs this (its generic name is
+        -- always accurate).
+        local consumers = flocloud_bound_consumers(slot)
+        if consumers ~= nil and #consumers == 0 then
+          local rok = pcall(function()
+            C4:RemoveDynamicBinding(slot)
+          end)
+          if rok then
+            renamed = true
+            flocloud_log("slot " .. tostring(slot) .. " binding removed for rename to " .. name)
+          end
+        elseif consumers == nil then
+          flocloud_log_warn("slot " .. tostring(slot) .. " reuse without live check; keeping old binding name")
+        else
+          flocloud_log_warn("slot " .. tostring(slot) .. " rebound since observe; keeping old binding name")
+        end
+      end
       local ok, add_err = pcall(flocloud_add_binding, slot, name)
-      -- A reused slot keeps its existing Director binding, so a failed
-      -- re-add is not fatal there; only a never-mapped slot needs the
-      -- add to succeed before the valve can be registered.
-      if ok or st.slots[slot] ~= nil then
+      -- A reused slot normally keeps its existing Director binding, so a
+      -- failed re-add is not fatal there — except right after a rename
+      -- remove, where the binding is gone and the add must succeed. On
+      -- that failure the old (unavailable) entry stays, so the next
+      -- discovery retries the whole remove + add.
+      if ok or (previous ~= nil and not renamed) then
         flocloud_remember_slot(slot, id, name, type(valve.uuid) == "string" and valve.uuid or nil, true)
         added = added + 1
       else
@@ -4590,6 +4736,12 @@ function flocloud_run_next()
       flocloud_set_prop("Last Command", job.name .. ": failed (" .. flocloud_describe_error(err) .. ")")
       flocloud_nack(job.slot, job.cmd_id, flocloud_describe_error(err))
       flocloud_note_result(false, err)
+      -- Converge the tile even when confirmation failed: the hub may have
+      -- applied the change without confirming it (slow/offline valve), in
+      -- which case the refresh shows the true state within seconds instead
+      -- of at the next poll. Poll_now honors the breaker, so a genuinely
+      -- dead session does not spin here.
+      flocloud_poll_soon(5000)
     else
       flocloud_log("command " .. job.name .. " ok; refreshing")
       flocloud_set_prop("Last Command", job.name .. ": acknowledged; awaiting refresh")

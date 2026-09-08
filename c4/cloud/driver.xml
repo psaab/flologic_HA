@@ -8,7 +8,7 @@
   <manufacturer>FloLogic</manufacturer>
   <driver>DriverWorks</driver>
   <control>lua_gen</control>
-  <version>2026090803</version>
+  <version>2026090805</version>
   <minimum_os_version>3.3.0</minimum_os_version>
   <created>09/08/2026 12:00 PM</created>
   <modified>09/08/2026 12:00 PM</modified>
@@ -49,7 +49,7 @@
       <property>
         <name>Driver Version</name>
         <type>STRING</type>
-        <default>2026090803</default>
+        <default>2026090805</default>
         <readonly>true</readonly>
       </property>
       <property>
@@ -186,15 +186,18 @@
     <category>Utility</category>
   </composer_categories>
   <!-- No proxies: the cloud driver owns no display, contacts, or app
-       tile. Slot 2001 is a static CONTROL provider binding and the honest
-       primary valve link; slots 2002-2016 are created at runtime with
-       C4:AddDynamicBinding (plan D2), all class FLOGIC_VALVE. -->
+       tile. Slot 2001 is a static CONTROL provider binding; Director has
+       no binding-rename API, so its manifest name is permanent and it
+       fills LAST (overflow): slots 2002-2016 are created at runtime with
+       C4:AddDynamicBinding (plan D2) and carry their valve names, all
+       class FLOGIC_VALVE. Bind the named links; Valve Link 16 only binds
+       on a 16-valve account. -->
   <proxies/>
   <connections>
     <connection>
       <id>2001</id>
       <facing>6</facing>
-      <connectionname>Valve Link 1</connectionname>
+      <connectionname>Valve Link 16</connectionname>
       <type>1</type>
       <consumer>False</consumer>
       <audiosource>False</audiosource>
