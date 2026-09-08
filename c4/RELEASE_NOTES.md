@@ -1,5 +1,10 @@
 Control4 DriverWorks package for FloLogic Connect valves (OS 3.3.0+).
 
+Version **2026090818** is a version bump only (no functional change
+from 0817) as a further self-update target: run Check for Update /
+Install Latest Release from 0816+ and confirm the reload lands on
+0818 with `update file store: C4Z_ROOT` in the log.
+
 Version **2026090817** is a version bump only (no functional change
 from 0816) to prove the fixed updater end to end: install 0816
 manually, then run Check for Update / Install Latest Release and
