@@ -258,7 +258,7 @@ end
 
 T.test("valve: version, link pin, updater asset, no selector (VALVE-U4)", function()
   valve_env()
-  T.check_equal(FLOVALVE_DRIVER_VERSION, "2026090824", "valve version lockstep with cloud")
+  T.check_equal(FLOVALVE_DRIVER_VERSION, "2026090825", "valve version lockstep with cloud")
   T.check_equal(FLOGIC_LINK_VERSION, 1, "protocol version is 1")
   T.check_equal(FloUpdate.ASSET, "flologic_water_valve.c4z", "updater tracks the valve package")
   T.check_equal(FloUpdate.FAMILY_ASSETS[1], "flologic_cloud.c4z", "updater requires the cloud sibling")
@@ -474,6 +474,27 @@ T.test("valve: plain ON/OFF, BUTTON_ACTION, and RAMP_TO_LEVEL route to open/clos
   local ramp80 = Link.parse(commands_sent(env)[#commands_sent(env)].params)
   T.check_equal(ramp80.fields.action, "mode_home", "ramp target > 0 opens")
   check_list_equal(light_levels(env), { 100, 0, 100, 0, 100, 0, 100 }, "each tap reports optimistically")
+end)
+
+T.test("valve: Identify Tile flashes the proxy without moving the valve", function()
+  local env = boot(valve_env())
+  handshake(env, "11")
+  push_state(env, base_state())
+  local before = #commands_sent(env)
+  ExecuteCommand("Identify Tile", {})
+  env.timers.advance(3000)
+  check_list_equal(light_levels(env), { 100, 0, 100, 0, 100, 100 }, "flash 0/100 twice then restore")
+  T.check_equal(#commands_sent(env), before, "identify sends no valve commands")
+  T.check_equal(Properties["Last Command"], "Identify Tile: done", "identify stamps last command")
+end)
+
+T.test("valve: proxy bind state is exposed for tile diagnosis", function()
+  local env = boot(valve_env())
+  handshake(env, "11")
+  OnBindingChanged(LIGHT, "LIGHT_V2", true)
+  T.check_equal(Properties["Proxy Bound"], "Bound", "bind stamps bound")
+  OnBindingChanged(LIGHT, "LIGHT_V2", false)
+  T.check_equal(Properties["Proxy Bound"], "Unbound", "unbind stamps unbound")
 end)
 
 T.test("valve: tile off means closed, on means everything else", function()
@@ -909,7 +930,10 @@ T.test("valve: program table actions resolve", function()
     elseif spec.kind == "action" then
       T.check(type(spec.action) == "string", name .. " carries a link action")
     else
-      T.check(spec.kind == "open" or spec.kind == "close" or spec.kind == "toggle", name .. " kind known")
+      T.check(
+        spec.kind == "open" or spec.kind == "close" or spec.kind == "toggle" or spec.kind == "identify",
+        name .. " kind known"
+      )
     end
   end
 end)

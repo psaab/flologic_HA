@@ -8,7 +8,7 @@
   <manufacturer>FloLogic</manufacturer>
   <driver>DriverWorks</driver>
   <control>lua_gen</control>
-  <version>2026090824</version>
+  <version>2026090825</version>
   <!-- Navigator clicks arrive as DYNAMIC_ON/DYNAMIC_OFF (OS 3.3.2+). -->
   <minimum_os_version>3.3.2</minimum_os_version>
   <created>09/08/2026 12:00 PM</created>
@@ -55,7 +55,7 @@
       <property>
         <name>Driver Version</name>
         <type>STRING</type>
-        <default>2026090824</default>
+        <default>2026090825</default>
         <readonly>true</readonly>
       </property>
       <property>
@@ -138,6 +138,13 @@
         <default>Off</default>
         <readonly>false</readonly>
       </property>
+      <property>
+        <name>Proxy Bound</name>
+        <type>STRING</type>
+        <default>Unknown</default>
+        <readonly>true</readonly>
+        <description>Whether the light proxy (5001) is bound: Bound, Unbound, or Unknown (no bind event yet this load). Unbound explains taps that never arrive (orphaned tile): bind it in Connections.</description>
+      </property>
     </properties>
     <commands>
       <command>
@@ -167,6 +174,10 @@
       <command>
         <name>Toggle</name>
         <description>Close the valve when open, open it when closed.</description>
+      </command>
+      <command>
+        <name>Identify Tile</name>
+        <description>Flash the bound Navigator tile 0/100 twice to tell the live tile apart from orphaned proxies. Moves no water.</description>
       </command>
       <command>
         <name>Set Mode Home</name>
@@ -325,6 +336,10 @@
       <action>
         <name>Toggle</name>
         <command>Toggle</command>
+      </action>
+      <action>
+        <name>Identify Tile (Flash)</name>
+        <command>Identify Tile</command>
       </action>
       <action>
         <name>Set Mode Home</name>

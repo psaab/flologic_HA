@@ -1,5 +1,17 @@
 Control4 DriverWorks package for FloLogic Connect valves (OS 3.3.0+).
 
+Version **2026090825** answers the orphan-tile trap: after a delete +
+re-add the old proxy can linger next to the live one, and the two tiles
+look identical while only the bound one works. New "Identify Tile"
+action flashes the bound tile 0/100 twice (pure display: no valve
+commands, true level restored after), so the field can tell the live
+tile apart without Composer archaeology — a tile that stays static
+during Identify is not bound to this driver. New read-only "Proxy
+Bound" property (Bound/Unbound/Unknown) exposes the 5001 bind state for
+the same diagnosis. Lua-only (no manifest structural change): plain
+update, no re-add needed — except installs coming from 0822 or older
+still need the remove + re-add + re-pair from the 0823 notes.
+
 Version **2026090824** is a Lua-only diagnostic follow-up to 0823 (no
 manifest change, so no re-add is needed for 0823 installs — but installs
 coming from 0822 or older still need the remove + re-add + re-pair from

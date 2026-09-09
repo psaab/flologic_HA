@@ -26,7 +26,7 @@
 -- C4 calls (safe to load in tests with a stub C4). Lua 5.1 safe.
 -- ============================================================================
 
-FLOVALVE_DRIVER_VERSION = "2026090824"
+FLOVALVE_DRIVER_VERSION = "2026090825"
 print("[flologic-valve] Lua loaded: " .. FLOVALVE_DRIVER_VERSION)
 
 -- Static link consumer (binds to one cloud-driver FLOGIC_VALVE slot) and
@@ -116,6 +116,7 @@ FLOVALVE_PROP_VALVE_ID = "Valve ID"
 FLOVALVE_PROP_VALVE_NAME = "Valve Name"
 FLOVALVE_PROP_CONNECTION = "Connection"
 FLOVALVE_PROP_LAST_UPDATE = "Last Link Update"
+FLOVALVE_PROP_PROXY_BOUND = "Proxy Bound"
 
 -- Event names (must match c4/valve/driver.xml). Advance Shutoff Warning
 -- is intentionally absent: the link slice carries no lastNewFlow or
@@ -1344,6 +1345,41 @@ local function flovalve_toggle_valve(label)
   return flovalve_open_valve(label or "Toggle")
 end
 
+-- Raw proxy flash that deliberately bypasses flovalve_report_level: the
+-- identify pattern must not rewrite last_level (it is not a real state).
+local function flovalve_flash_proxy_level(level)
+  C4:SendToProxy(FLOVALVE_LIGHT_ID, "LIGHT_BRIGHTNESS_CHANGED", { LIGHT_BRIGHTNESS_CURRENT = level }, "NOTIFY")
+end
+
+-- Identify Tile action: flash the bound tile 0/100 twice so the field can
+-- tell the live tile apart from orphaned proxies (which stay static).
+-- Pure display: sends no valve commands and preserves last_level (the
+-- final step re-serves it). Restart-safe: a new run supersedes an older
+-- one via identify_seq, so no stuck flag can wedge it.
+local function flovalve_identify_tile()
+  local st = flovalve_state
+  st.identify_seq = (st.identify_seq or 0) + 1
+  local seq = st.identify_seq
+  flovalve_log("identify tile: flashing proxy level 0/100")
+  flovalve_set_prop("Last Command", "Identify Tile: flashing")
+  local steps = { 0, 100, 0, 100 }
+  for i, level in ipairs(steps) do
+    flovalve_set_timer((i - 1) * 600, function()
+      if flovalve_state ~= st or st.identify_seq ~= seq then
+        return
+      end
+      flovalve_flash_proxy_level(level)
+    end)
+  end
+  flovalve_set_timer(#steps * 600, function()
+    if flovalve_state ~= st or st.identify_seq ~= seq then
+      return
+    end
+    flovalve_report_level(st.last_level)
+    flovalve_set_prop("Last Command", "Identify Tile: done")
+  end)
+end
+
 -- Param shape follows the supports_target capability, which this switch
 -- leaves unset: targets-enabled proxies send LIGHT_BRIGHTNESS_TARGET,
 -- legacy ones send LEVEL (or LIGHT on the oldest API). Accept all
@@ -1459,6 +1495,10 @@ function OnBindingChanged(idBinding, strClass, bIsBound)
     return
   end
   if idBinding == FLOVALVE_LIGHT_ID then
+    -- Expose the bind state for tile diagnosis: an Unbound proxy explains
+    -- taps that never arrive (orphaned tile). Unknown means no bind event
+    -- has fired yet this load.
+    flovalve_set_prop(FLOVALVE_PROP_PROXY_BOUND, bIsBound and "Bound" or "Unbound")
     -- A freshly bound tile (new Navigator session) would otherwise sit
     -- dark until the next cloud push: always serve the best-known level
     -- (0 default). The v2 protocol has no "unknown" — missing data
@@ -1497,6 +1537,7 @@ FLOVALVE_PROGRAM_COMMANDS = {
   ["Set Pre-Alert"] = { kind = "value", action = "pre_alert" },
   ["Set No-Flow Notice"] = { kind = "value", action = "noflow_notice" },
   ["Set Flow Sensitivity"] = { kind = "value", action = "flow_sensitivity" },
+  ["Identify Tile"] = { kind = "identify" },
 }
 
 local function flovalve_param_number(params, name, minimum, maximum, fractional)
@@ -1519,6 +1560,8 @@ local function flovalve_run_program_command(strCommand, tParams)
     flovalve_close_valve(strCommand)
   elseif spec.kind == "toggle" then
     flovalve_toggle_valve(strCommand)
+  elseif spec.kind == "identify" then
+    flovalve_identify_tile()
   elseif spec.kind == "action" then
     flovalve_send_command(spec.action, nil, strCommand)
   else
