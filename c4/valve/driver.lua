@@ -2239,7 +2239,7 @@ end
 -- C4 calls (safe to load in tests with a stub C4). Lua 5.1 safe.
 -- ============================================================================
 
-FLOVALVE_DRIVER_VERSION = "2026090827"
+FLOVALVE_DRIVER_VERSION = "2026090828"
 print("[flologic-valve] Lua loaded: " .. FLOVALVE_DRIVER_VERSION)
 
 -- Static link consumer (binds to one cloud-driver FLOGIC_VALVE slot) and
@@ -3566,37 +3566,17 @@ local function flovalve_flash_proxy_level(level)
   C4:SendToProxy(FLOVALVE_LIGHT_ID, "LIGHT_BRIGHTNESS_CHANGED", { LIGHT_BRIGHTNESS_CURRENT = level }, "NOTIFY")
 end
 
--- Identify Tile action: flash the bound tile 0/100 twice so the field can
--- tell the live tile apart from orphaned proxies (which stay static).
--- Pure display: sends no valve commands and preserves last_level (the
--- final step re-serves it). Restart-safe: a new run supersedes an older
--- one via identify_seq, so no stuck flag can wedge it.
+-- Identify Tile action: latch a persistent 50% on the bound tile so the
+-- field can tell the live tile apart from orphaned proxies at leisure
+-- (a timed flash is too easy to miss across rooms). 50 never occurs
+-- naturally — the switch reports only 0/100 — so the tile showing 50%
+-- is the bound one and static tiles are orphans. Pure display: sends no
+-- valve commands and preserves last_level (raw notify only; the next
+-- real push or report restores the true level).
 local function flovalve_identify_tile()
-  local st = flovalve_state
-  st.identify_seq = (st.identify_seq or 0) + 1
-  local seq = st.identify_seq
-  flovalve_log("identify tile: flashing proxy level 0/100")
-  flovalve_set_prop("Last Command", "Identify Tile: flashing")
-  -- Director rejects 0ms timers ("Invalid argument value"), so the first
-  -- step fires immediately and the rest are scheduled from 600ms.
-  local steps = { 0, 100, 0, 100 }
-  flovalve_flash_proxy_level(steps[1])
-  for i = 2, #steps do
-    local level = steps[i]
-    flovalve_set_timer((i - 1) * 600, function()
-      if flovalve_state ~= st or st.identify_seq ~= seq then
-        return
-      end
-      flovalve_flash_proxy_level(level)
-    end, false)
-  end
-  flovalve_set_timer(#steps * 600, function()
-    if flovalve_state ~= st or st.identify_seq ~= seq then
-      return
-    end
-    flovalve_report_level(st.last_level)
-    flovalve_set_prop("Last Command", "Identify Tile: done")
-  end, false)
+  flovalve_log("identify tile: marking proxy level 50")
+  flovalve_flash_proxy_level(50)
+  flovalve_set_prop("Last Command", "Identify Tile: marked (50)")
 end
 
 -- Param shape follows the supports_target capability, which this switch

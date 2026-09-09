@@ -8,7 +8,7 @@
   <manufacturer>FloLogic</manufacturer>
   <driver>DriverWorks</driver>
   <control>lua_gen</control>
-  <version>2026090827</version>
+  <version>2026090828</version>
   <!-- Navigator clicks arrive as DYNAMIC_ON/DYNAMIC_OFF (OS 3.3.2+). -->
   <minimum_os_version>3.3.2</minimum_os_version>
   <created>09/08/2026 12:00 PM</created>
@@ -55,7 +55,7 @@
       <property>
         <name>Driver Version</name>
         <type>STRING</type>
-        <default>2026090827</default>
+        <default>2026090828</default>
         <readonly>true</readonly>
       </property>
       <property>
@@ -177,7 +177,7 @@
       </command>
       <command>
         <name>Identify Tile</name>
-        <description>Flash the bound Navigator tile 0/100 twice to tell the live tile apart from orphaned proxies. Moves no water.</description>
+        <description>Show 50% on the bound Navigator tile until the next real update, to tell the live tile apart from orphaned proxies. Moves no water.</description>
       </command>
       <command>
         <name>Set Mode Home</name>
@@ -338,7 +338,7 @@
         <command>Toggle</command>
       </action>
       <action>
-        <name>Identify Tile (Flash)</name>
+        <name>Identify Tile (Mark 50%)</name>
         <command>Identify Tile</command>
       </action>
       <action>

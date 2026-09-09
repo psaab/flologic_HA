@@ -1,5 +1,13 @@
 Control4 DriverWorks package for FloLogic Connect valves (OS 3.3.0+).
 
+Version **2026090828** replaces the Identify flash with a latching
+mark: a 3-second blink is too easy to miss across rooms, so Identify
+Tile now shows a persistent 50% on the bound tile (50 never occurs
+naturally — the switch reports only 0/100) until the next real
+update. Browse rooms at leisure: the tile showing 50% is the live
+one, static tiles are orphans. Lua-only: plain update, no re-add
+needed.
+
 Version **2026090827** fixes the follow-on Identify crash ("Invalid
 argument value"): Director also rejects 0ms timers, and the first
 flash step scheduled one. The first step now fires immediately with
