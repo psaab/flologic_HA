@@ -1,5 +1,12 @@
 Control4 DriverWorks package for FloLogic Connect valves (OS 3.3.0+).
 
+Version **2026090830** fixes the Identify mark masking the true tile
+state: duplicate pushes skip the tile report, so on a steady-state
+valve the 50% mark never cleared and the tile never showed the real
+open/closed level. The mark now self-restores the true level after 60
+seconds (taps, novel pushes, and queries restore it sooner). Lua-only:
+plain update, no re-add needed.
+
 Version **2026090829** fixes dead tile buttons on the bound tile: the
 50% mark proved taps arrive, so the release-only `BUTTON_ACTION`
 check was swallowing press-style button taps silently. The handler

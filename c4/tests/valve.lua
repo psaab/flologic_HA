@@ -263,7 +263,7 @@ end
 
 T.test("valve: version, link pin, updater asset, no selector (VALVE-U4)", function()
   valve_env()
-  T.check_equal(FLOVALVE_DRIVER_VERSION, "2026090829", "valve version lockstep with cloud")
+  T.check_equal(FLOVALVE_DRIVER_VERSION, "2026090830", "valve version lockstep with cloud")
   T.check_equal(FLOGIC_LINK_VERSION, 1, "protocol version is 1")
   T.check_equal(FloUpdate.ASSET, "flologic_water_valve.c4z", "updater tracks the valve package")
   T.check_equal(FloUpdate.FAMILY_ASSETS[1], "flologic_cloud.c4z", "updater requires the cloud sibling")
@@ -513,6 +513,12 @@ T.test("valve: Identify Tile marks the proxy without moving the valve", function
   T.check_equal(#commands_sent(env), before, "identify sends no valve commands")
   T.check_equal(flovalve_state.last_level, 100, "mark preserves the true level")
   T.check_equal(Properties["Last Command"], "Identify Tile: marked (50)", "identify stamps last command")
+  -- Self-restore: duplicate pushes skip the tile report, so the mark
+  -- must clear itself or it masks the true level indefinitely.
+  env.timers.advance(FLOVALVE_IDENTIFY_RESTORE_S * 1000 + 500)
+  check_list_equal(light_levels(env), { 100, 50, 100 }, "mark restores the true level")
+  T.check_equal(#commands_sent(env), before, "restore sends no valve commands")
+  T.check_equal(Properties["Last Command"], "Identify Tile: restored", "restore stamps last command")
 end)
 
 T.test("valve: proxy bind state is exposed for tile diagnosis", function()

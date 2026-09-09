@@ -198,7 +198,7 @@ local function discover(env, devices, accesses)
 end
 
 T.test("cloud: version, link pin, updater asset, no picker (CLOUD-U6)", function()
-  T.check_equal(FLOCLOUD_DRIVER_VERSION, "2026090829", "cloud version")
+  T.check_equal(FLOCLOUD_DRIVER_VERSION, "2026090830", "cloud version")
   T.check_equal(FLOGIC_LINK_VERSION, 1, "protocol version is 1")
   T.check_equal(FloUpdate.ASSET, "flologic_cloud.c4z", "updater tracks the cloud package")
   T.check_equal(FloUpdate.FAMILY_ASSETS[1], "flologic_cloud.c4z", "updater requires its own package")

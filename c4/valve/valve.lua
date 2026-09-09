@@ -26,7 +26,7 @@
 -- C4 calls (safe to load in tests with a stub C4). Lua 5.1 safe.
 -- ============================================================================
 
-FLOVALVE_DRIVER_VERSION = "2026090829"
+FLOVALVE_DRIVER_VERSION = "2026090830"
 print("[flologic-valve] Lua loaded: " .. FLOVALVE_DRIVER_VERSION)
 
 -- Static link consumer (binds to one cloud-driver FLOGIC_VALVE slot) and
@@ -77,6 +77,12 @@ FLOVALVE_OBSERVATION_TIMEOUT_S = 120
 -- while press-only senders (Navigator on/off buttons) still act, so
 -- repeats of the same button inside this window are eaten.
 FLOVALVE_BUTTON_DEBOUNCE_S = 0.75
+
+-- Identify mark lifetime: duplicate pushes skip the tile report, so a
+-- mark with no self-restore would mask the true level indefinitely on a
+-- steady-state valve. Restore is idempotent (re-serve last_level), so
+-- overlapping marks are harmless.
+FLOVALVE_IDENTIFY_RESTORE_S = 60
 
 -- First-state wait: identity alone does not establish a usable link.
 -- After the handshake a usable snapshot must arrive within the timeout
@@ -1360,17 +1366,22 @@ local function flovalve_flash_proxy_level(level)
   C4:SendToProxy(FLOVALVE_LIGHT_ID, "LIGHT_BRIGHTNESS_CHANGED", { LIGHT_BRIGHTNESS_CURRENT = level }, "NOTIFY")
 end
 
--- Identify Tile action: latch a persistent 50% on the bound tile so the
--- field can tell the live tile apart from orphaned proxies at leisure
--- (a timed flash is too easy to miss across rooms). 50 never occurs
--- naturally — the switch reports only 0/100 — so the tile showing 50%
--- is the bound one and static tiles are orphans. Pure display: sends no
--- valve commands and preserves last_level (raw notify only; the next
--- real push or report restores the true level).
+-- Identify Tile action: latch 50% on the bound tile so the field can
+-- tell the live tile apart from orphaned proxies at leisure (a timed
+-- flash is too easy to miss across rooms). 50 never occurs naturally —
+-- the switch reports only 0/100 — so the tile showing 50% is the bound
+-- one and static tiles are orphans. Pure display: sends no valve
+-- commands and preserves last_level. Self-restores on a timer because
+-- duplicate pushes skip the tile report: without it the mark would mask
+-- the true level indefinitely on a steady-state valve.
 local function flovalve_identify_tile()
   flovalve_log("identify tile: marking proxy level 50")
   flovalve_flash_proxy_level(50)
   flovalve_set_prop("Last Command", "Identify Tile: marked (50)")
+  flovalve_set_timer(FLOVALVE_IDENTIFY_RESTORE_S * 1000, function()
+    flovalve_report_level(flovalve_state.last_level)
+    flovalve_set_prop("Last Command", "Identify Tile: restored")
+  end, false)
 end
 
 -- Param shape follows the supports_target capability, which this switch
