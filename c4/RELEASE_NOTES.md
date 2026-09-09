@@ -1,5 +1,13 @@
 Control4 DriverWorks package for FloLogic Connect valves (OS 3.3.0+).
 
+Version **2026090829** fixes dead tile buttons on the bound tile: the
+50% mark proved taps arrive, so the release-only `BUTTON_ACTION`
+check was swallowing press-style button taps silently. The handler
+now acts on any action except long-release (ACTION 0, a dim gesture
+meaningless to a switch), with per-button debounce keeping
+press+release pairs to a single action. Lua-only: plain update, no
+re-add needed.
+
 Version **2026090828** replaces the Identify flash with a latching
 mark: a 3-second blink is too easy to miss across rooms, so Identify
 Tile now shows a persistent 50% on the bound tile (50 never occurs

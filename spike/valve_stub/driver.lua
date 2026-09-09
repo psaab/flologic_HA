@@ -20,6 +20,7 @@ print("[spike-valve] Lua loaded: " .. SPIKE_VALVE_VERSION)
 SPIKE_LINK_ID = 6000
 SPIKE_LIGHT_ID = 5001
 SPIKE_MAX_PAYLOAD = 16384
+SPIKE_BUTTON_DEBOUNCE_S = 0.75
 SPIKE_PERSIST_LEVEL = "spike_valve_level"
 
 -- Property names (must match driver.xml).
@@ -170,14 +171,20 @@ local function spike_on_light_message(strCommand, tParams)
       spike_apply_level(100, "TOGGLE")
     end
   elseif strCommand == "BUTTON_ACTION" then
+    -- Mirror production: press-style acts (tile buttons send no
+    -- release), long-release is ignored, per-button debounce eats
+    -- press+release pairs.
     local button = tostring(tParams.BUTTON_ID or "")
-    if tostring(tParams.ACTION or "") == "2" then
-      if button == "0" then
-        spike_apply_level(100, "BUTTON_ACTION 0")
-      elseif button == "1" then
-        spike_apply_level(0, "BUTTON_ACTION 1")
-      elseif button == "2" then
-        if st.level > 0 then
+    if tostring(tParams.ACTION or "") ~= "0" and (button == "0" or button == "1" or button == "2") then
+      local now = os.clock()
+      local damp = st.button_debounce
+      if damp == nil or damp.id ~= button or now - damp.at >= SPIKE_BUTTON_DEBOUNCE_S then
+        st.button_debounce = { id = button, at = now }
+        if button == "0" then
+          spike_apply_level(100, "BUTTON_ACTION 0")
+        elseif button == "1" then
+          spike_apply_level(0, "BUTTON_ACTION 1")
+        elseif st.level > 0 then
           spike_apply_level(0, "BUTTON_ACTION 2")
         else
           spike_apply_level(100, "BUTTON_ACTION 2")

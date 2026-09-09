@@ -26,7 +26,7 @@
 -- C4 calls (safe to load in tests with a stub C4). Lua 5.1 safe.
 -- ============================================================================
 
-FLOVALVE_DRIVER_VERSION = "2026090828"
+FLOVALVE_DRIVER_VERSION = "2026090829"
 print("[flologic-valve] Lua loaded: " .. FLOVALVE_DRIVER_VERSION)
 
 -- Static link consumer (binds to one cloud-driver FLOGIC_VALVE slot) and
@@ -72,6 +72,11 @@ FLOVALVE_HELLO_ATTEMPTS = 6
 -- without one the tile reconciles instead of displaying the unconfirmed
 -- request forever.
 FLOVALVE_OBSERVATION_TIMEOUT_S = 120
+
+-- Button debounce: press+release pairs (remotes, keypads) must fire once
+-- while press-only senders (Navigator on/off buttons) still act, so
+-- repeats of the same button inside this window are eaten.
+FLOVALVE_BUTTON_DEBOUNCE_S = 0.75
 
 -- First-state wait: identity alone does not establish a usable link.
 -- After the handshake a usable snapshot must arrive within the timeout
@@ -1315,10 +1320,12 @@ local function flovalve_link_has_provider()
 end
 
 -- --- Light proxy (app switch) -------------------------------------------------
--- Navigator clicks arrive as DYNAMIC_ON/DYNAMIC_OFF (OS 3.3.2+);
--- programming and scenes use TOGGLE and SET_BRIGHTNESS_TARGET (level > 0
--- on, 0 off); remotes/keypads use BUTTON_ACTION; older senders and
--- Composer actions use plain ON/OFF. OFF issues the shutoff mode; ON
+-- Navigator clicks arrive as DYNAMIC_ON/DYNAMIC_OFF (OS 3.3.2+), while
+-- the tile's on/off buttons send press-style BUTTON_ACTION with no
+-- release; programming and scenes use TOGGLE and SET_BRIGHTNESS_TARGET
+-- (level > 0 on, 0 off); remotes/keypads use BUTTON_ACTION pairs;
+-- older senders and Composer actions use plain ON/OFF. OFF issues the
+-- shutoff mode; ON
 -- restores the last non-shutoff mode tracked from state pushes (default
 -- Home). The tile level reports optimistically for responsiveness;
 -- contacts, properties, and events still change only on FLOGIC_STATE
@@ -1392,18 +1399,30 @@ function flovalve_on_light(strCommand, tParams)
     flovalve_toggle_valve("Toggle")
   elseif strCommand == "BUTTON_ACTION" then
     -- Neeo/Halo remotes and keypads drive light_v2 via BUTTON_ACTION,
-    -- not ON/OFF/TOGGLE: BUTTON_ID 0 on, 1 off, 2 toggle. Act on
-    -- release (ACTION 2) like the stock proxy so the press+release
-    -- pair fires once.
+    -- not ON/OFF/TOGGLE — and so do Navigator on/off buttons, which send
+    -- press-style actions with no release. So act on ANY action except
+    -- long-release (ACTION 0, a dim gesture meaningless to a switch);
+    -- per-button debounce keeps press+release pairs to a single action.
     local button = tostring(tParams ~= nil and tParams.BUTTON_ID or "")
     local action = tostring(tParams ~= nil and tParams.ACTION or "")
-    if action == "2" then
-      if button == "0" then
-        flovalve_open_valve("Open Valve")
-      elseif button == "1" then
-        flovalve_close_valve("Close Valve")
-      elseif button == "2" then
-        flovalve_toggle_valve("Toggle")
+    if button ~= "0" and button ~= "1" and button ~= "2" then
+      flovalve_log_warn("BUTTON_ACTION without a button id; ignored")
+      return false
+    end
+    if action ~= "0" then
+      local now = os.clock()
+      local damp = flovalve_state.button_debounce
+      if damp == nil or damp.id ~= button or now - damp.at >= FLOVALVE_BUTTON_DEBOUNCE_S then
+        flovalve_state.button_debounce = { id = button, at = now }
+        if button == "0" then
+          flovalve_open_valve("Open Valve")
+        elseif button == "1" then
+          flovalve_close_valve("Close Valve")
+        else
+          flovalve_toggle_valve("Toggle")
+        end
+      else
+        flovalve_log("button " .. button .. " debounced")
       end
     end
   elseif strCommand == "SET_BRIGHTNESS_TARGET" or strCommand == "RAMP_TO_LEVEL" then
