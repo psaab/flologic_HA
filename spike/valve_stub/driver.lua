@@ -5,8 +5,8 @@
 -- cloud stub plus a light_v2 proxy (binding 5001) with switch capabilities.
 -- Answers SPIKE_PING with SPIKE_PONG (multi-KB both directions), sends
 -- SPIKE_HELLO on bind, and applies DYNAMIC_ON / DYNAMIC_OFF / ON / OFF /
--- TOGGLE / BUTTON_ACTION / SET_BRIGHTNESS_TARGET / RAMP_TO_LEVEL while
--- reporting LIGHT_BRIGHTNESS_CHANGED 100/0
+-- TOGGLE / BUTTON_ACTION / SET_LEVEL / SET_BRIGHTNESS_TARGET /
+-- RAMP_TO_LEVEL while reporting LIGHT_BRIGHTNESS_CHANGED 100/0
 -- (the pre-3.3 LIGHT_LEVEL notify is silently discarded by light_v2
 -- proxies). A SendToDevice fallback path (ExecuteCommand + provider
 -- discovery) mirrors the cloud stub.
@@ -20,7 +20,6 @@ print("[spike-valve] Lua loaded: " .. SPIKE_VALVE_VERSION)
 SPIKE_LINK_ID = 6000
 SPIKE_LIGHT_ID = 5001
 SPIKE_MAX_PAYLOAD = 16384
-SPIKE_BUTTON_DEBOUNCE_S = 0.75
 SPIKE_PERSIST_LEVEL = "spike_valve_level"
 
 -- Property names (must match driver.xml).
@@ -33,6 +32,7 @@ spike_valve_state = {
   link_bound = false,
   level = 100,
   seq = 0,
+  button_gestures = {},
 }
 
 local function spike_log(message)
@@ -171,15 +171,17 @@ local function spike_on_light_message(strCommand, tParams)
       spike_apply_level(100, "TOGGLE")
     end
   elseif strCommand == "BUTTON_ACTION" then
-    -- Mirror production: press-style acts (tile buttons send no
-    -- release), long-release is ignored, per-button debounce eats
-    -- press+release pairs.
+    -- Mirror production: press (or a missing action) always acts and
+    -- marks the button pressed; release acts only with no press before
+    -- it; long-release is ignored. Every accepted receipt is echoed
+    -- back, and a pushed button is released again (press-only senders
+    -- never do, and the proxy stops accepting pushes until it sees the
+    -- release).
     local button = tostring(tParams.BUTTON_ID or "")
-    if tostring(tParams.ACTION or "") ~= "0" and (button == "0" or button == "1" or button == "2") then
-      local now = os.clock()
-      local damp = st.button_debounce
-      if damp == nil or damp.id ~= button or now - damp.at >= SPIKE_BUTTON_DEBOUNCE_S then
-        st.button_debounce = { id = button, at = now }
+    local action = tostring(tParams.ACTION or "")
+    if button == "0" or button == "1" or button == "2" then
+      if action == "" or action == "1" or (action == "2" and st.button_gestures[button] ~= "1") then
+        st.button_gestures[button] = action == "" and "1" or action
         if button == "0" then
           spike_apply_level(100, "BUTTON_ACTION 0")
         elseif button == "1" then
@@ -190,8 +192,15 @@ local function spike_on_light_message(strCommand, tParams)
           spike_apply_level(100, "BUTTON_ACTION 2")
         end
       end
+      if action == "" then
+        action = "1"
+      end
+      C4:SendToProxy(SPIKE_LIGHT_ID, "BUTTON_ACTION", { BUTTON_ID = button, ACTION = action }, "NOTIFY")
+      if action == "1" then
+        C4:SendToProxy(SPIKE_LIGHT_ID, "BUTTON_ACTION", { BUTTON_ID = button, ACTION = "0" }, "NOTIFY")
+      end
     end
-  elseif strCommand == "SET_BRIGHTNESS_TARGET" or strCommand == "RAMP_TO_LEVEL" then
+  elseif strCommand == "SET_LEVEL" or strCommand == "SET_BRIGHTNESS_TARGET" or strCommand == "RAMP_TO_LEVEL" then
     local target = tonumber(tParams.LIGHT_BRIGHTNESS_TARGET) or tonumber(tParams.LEVEL) or tonumber(tParams.level) or 0
     if target > 0 then
       spike_apply_level(100, strCommand .. " " .. target)

@@ -137,6 +137,10 @@ local function boot(env)
   -- sequence below asserts post-boot sends only, and boot
   -- establishment itself is pinned by its dedicated test.
   flovalve_state.last_level = 0
+  -- Gesture pairing likewise resets: production reloads rebuild the
+  -- state table, so a press must never pair with a release from an
+  -- earlier test sharing this Lua state.
+  flovalve_state.button_gestures = {}
   OnDriverLateInit("test")
   local kept = {}
   for _, send in ipairs(env.proxy_sends) do
@@ -208,6 +212,16 @@ local function light_levels(env)
   return found
 end
 
+local function button_notifies(env)
+  local found = {}
+  for _, send in ipairs(env.proxy_sends) do
+    if send.binding == LIGHT and send.command == "BUTTON_ACTION" then
+      found[#found + 1] = send
+    end
+  end
+  return found
+end
+
 local function handshake(env, id)
   id = id or "11"
   from_cloud(env, Link.build_identity(id))
@@ -263,7 +277,7 @@ end
 
 T.test("valve: version, link pin, updater asset, no selector (VALVE-U4)", function()
   valve_env()
-  T.check_equal(FLOVALVE_DRIVER_VERSION, "2026090830", "valve version lockstep with cloud")
+  T.check_equal(FLOVALVE_DRIVER_VERSION, "2026090831", "valve version lockstep with cloud")
   T.check_equal(FLOGIC_LINK_VERSION, 1, "protocol version is 1")
   T.check_equal(FloUpdate.ASSET, "flologic_water_valve.c4z", "updater tracks the valve package")
   T.check_equal(FloUpdate.FAMILY_ASSETS[1], "flologic_cloud.c4z", "updater requires the cloud sibling")
@@ -484,23 +498,113 @@ T.test("valve: plain ON/OFF, BUTTON_ACTION, and RAMP_TO_LEVEL route to open/clos
   check_list_equal(light_levels(env), { 100, 0, 100, 100, 0, 100, 0, 100 }, "each tap reports optimistically")
 end)
 
-T.test("valve: BUTTON_ACTION debounce eats pairs, expires, ignores long-release", function()
+T.test("valve: BUTTON_ACTION pairs gestures without any clock", function()
   local env = boot(valve_env())
   handshake(env, "11")
   push_state(env, base_state())
   local before = #commands_sent(env)
   ReceivedFromProxy(LIGHT, "BUTTON_ACTION", { BUTTON_ID = 1, ACTION = 1 })
-  T.check_equal(#commands_sent(env), before + 1, "first press acts")
+  T.check_equal(#commands_sent(env), before + 1, "press acts")
+  -- A pair-release stays eaten no matter how slowly it follows the press.
+  env.timers.advance(5000)
   ReceivedFromProxy(LIGHT, "BUTTON_ACTION", { BUTTON_ID = "1", ACTION = "2" })
-  T.check_equal(#commands_sent(env), before + 1, "immediate release eaten")
+  T.check_equal(#commands_sent(env), before + 1, "slow pair-release eaten")
+  -- A release with no preceding press still acts (release-only senders).
+  ReceivedFromProxy(LIGHT, "BUTTON_ACTION", { BUTTON_ID = 0, ACTION = 2 })
+  T.check_equal(#commands_sent(env), before + 2, "release without press acts")
   ReceivedFromProxy(LIGHT, "BUTTON_ACTION", { BUTTON_ID = 0, ACTION = 0 })
-  T.check_equal(#commands_sent(env), before + 1, "long-release ignored")
+  ReceivedFromProxy(LIGHT, "BUTTON_ACTION", { BUTTON_ID = 0, ACTION = 9 })
   ReceivedFromProxy(LIGHT, "BUTTON_ACTION", {})
-  T.check_equal(#commands_sent(env), before + 1, "missing button id sends nothing")
-  -- Expired window acts again (deterministic: backdate the stamp).
-  flovalve_state.button_debounce.at = os.clock() - 10
+  T.check_equal(#commands_sent(env), before + 2, "hold/malformed send nothing")
+end)
+
+T.test("valve: two toggle clicks with idle between send two commands", function()
+  local env = boot(valve_env())
+  handshake(env, "11")
+  push_state(env, base_state())
+  local before = #commands_sent(env)
+  ReceivedFromProxy(LIGHT, "BUTTON_ACTION", { BUTTON_ID = 2, ACTION = 1 })
+  env.timers.advance(2000)
+  ReceivedFromProxy(LIGHT, "BUTTON_ACTION", { BUTTON_ID = 2, ACTION = 1 })
+  T.check_equal(#commands_sent(env), before + 2, "distinct presses each act")
+  local first = Link.parse(commands_sent(env)[before + 1].params)
+  local second = Link.parse(commands_sent(env)[before + 2].params)
+  T.check_equal(first.fields.action, "mode_shutoff", "first toggle closes")
+  T.check_equal(second.fields.action, "mode_home", "second toggle opens")
+end)
+
+T.test("valve: interleaved buttons keep independent gestures", function()
+  local env = boot(valve_env())
+  handshake(env, "11")
+  push_state(env, base_state())
+  local before = #commands_sent(env)
+  ReceivedFromProxy(LIGHT, "BUTTON_ACTION", { BUTTON_ID = 2, ACTION = 1 })
+  ReceivedFromProxy(LIGHT, "BUTTON_ACTION", { BUTTON_ID = 0, ACTION = 1 })
+  ReceivedFromProxy(LIGHT, "BUTTON_ACTION", { BUTTON_ID = 2, ACTION = 2 })
+  T.check_equal(#commands_sent(env), before + 2, "paired release eaten despite interleave")
+  local first = Link.parse(commands_sent(env)[before + 1].params)
+  local second = Link.parse(commands_sent(env)[before + 2].params)
+  T.check_equal(first.fields.action, "mode_shutoff", "toggle press closes")
+  T.check_equal(second.fields.action, "mode_home", "top press opens")
+end)
+
+T.test("valve: legacy SET_LEVEL routes binary open/close", function()
+  local env = boot(valve_env())
+  handshake(env, "11")
+  push_state(env, base_state())
+  local before = #commands_sent(env)
+  ReceivedFromProxy(LIGHT, "SET_LEVEL", { LEVEL = "0" })
+  local shut = Link.parse(commands_sent(env)[#commands_sent(env)].params)
+  T.check_equal(shut.fields.action, "mode_shutoff", "level 0 closes")
+  ReceivedFromProxy(LIGHT, "SET_LEVEL", { LEVEL = 50 })
+  local open = Link.parse(commands_sent(env)[#commands_sent(env)].params)
+  T.check_equal(open.fields.action, "mode_home", "level > 0 opens")
+  ReceivedFromProxy(LIGHT, "SET_LEVEL", {})
+  T.check_equal(#commands_sent(env), before + 2, "missing level rejected, never a shutoff")
+end)
+
+T.test("valve: button receipts are acknowledged back to the proxy", function()
+  local env = boot(valve_env())
+  handshake(env, "11")
+  push_state(env, base_state())
+  ReceivedFromProxy(LIGHT, "BUTTON_ACTION", { BUTTON_ID = 1, ACTION = 1 })
+  local acks = button_notifies(env)
+  T.check_equal(#acks, 2, "press echoed plus synthetic release")
+  T.check_equal(acks[1].params.BUTTON_ID, "1", "echo carries the button")
+  T.check_equal(acks[1].params.ACTION, "1", "echo carries the press")
+  T.check_equal(acks[1].kind, "NOTIFY", "echo is a notification")
+  T.check_equal(acks[2].params.BUTTON_ID, "1", "release carries the button")
+  T.check_equal(acks[2].params.ACTION, "0", "push is released again")
   ReceivedFromProxy(LIGHT, "BUTTON_ACTION", { BUTTON_ID = "1", ACTION = "2" })
-  T.check_equal(#commands_sent(env), before + 2, "acts again after window")
+  acks = button_notifies(env)
+  T.check_equal(#acks, 3, "pair-release echoed verbatim")
+  T.check_equal(acks[3].params.ACTION, "2", "release echo keeps its value")
+  ReceivedFromProxy(LIGHT, "BUTTON_ACTION", {})
+  T.check_equal(#button_notifies(env), 3, "malformed receipt not echoed")
+end)
+
+T.test("valve: ingress trace names button and level params, nothing else", function()
+  local env = boot(valve_env())
+  handshake(env, "11")
+  push_state(env, base_state())
+  Properties["Debug Mode"] = "On"
+  local seen = {}
+  local old_print = print
+  print = function(msg)
+    seen[#seen + 1] = tostring(msg)
+  end
+  local ok, err = pcall(function()
+    ReceivedFromProxy(LIGHT, "BUTTON_ACTION", { BUTTON_ID = 1, ACTION = 1, PASSWORD = "secret" })
+    ReceivedFromProxy(LIGHT, "SET_LEVEL", { LEVEL = 0 })
+  end)
+  print = old_print
+  Properties["Debug Mode"] = nil
+  T.check(ok, "trace path raised: " .. tostring(err))
+  local joined = table.concat(seen, "\n")
+  T.check(joined:find("BUTTON_ACTION BUTTON_ID=1 ACTION=1", 1, true) ~= nil, "trace shows button params")
+  T.check(joined:find("SET_LEVEL LEVEL=0", 1, true) ~= nil, "trace shows level params")
+  T.check(joined:find("secret") == nil, "trace never dumps non-allowlisted params")
+  T.check(joined:find("PASSWORD") == nil, "trace never dumps non-allowlisted keys")
 end)
 
 T.test("valve: Identify Tile marks the proxy without moving the valve", function()

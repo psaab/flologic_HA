@@ -2239,7 +2239,7 @@ end
 -- C4 calls (safe to load in tests with a stub C4). Lua 5.1 safe.
 -- ============================================================================
 
-FLOVALVE_DRIVER_VERSION = "2026090830"
+FLOVALVE_DRIVER_VERSION = "2026090831"
 print("[flologic-valve] Lua loaded: " .. FLOVALVE_DRIVER_VERSION)
 
 -- Static link consumer (binds to one cloud-driver FLOGIC_VALVE slot) and
@@ -2285,11 +2285,6 @@ FLOVALVE_HELLO_ATTEMPTS = 6
 -- without one the tile reconciles instead of displaying the unconfirmed
 -- request forever.
 FLOVALVE_OBSERVATION_TIMEOUT_S = 120
-
--- Button debounce: press+release pairs (remotes, keypads) must fire once
--- while press-only senders (Navigator on/off buttons) still act, so
--- repeats of the same button inside this window are eaten.
-FLOVALVE_BUTTON_DEBOUNCE_S = 0.75
 
 -- Identify mark lifetime: duplicate pushes skip the tile report, so a
 -- mark with no self-restore would mask the true level indefinitely on a
@@ -3580,10 +3575,11 @@ local function flovalve_flash_proxy_level(level)
 end
 
 -- Identify Tile action: latch 50% on the bound tile so the field can
--- tell the live tile apart from orphaned proxies at leisure (a timed
--- flash is too easy to miss across rooms). 50 never occurs naturally —
--- the switch reports only 0/100 — so the tile showing 50% is the bound
--- one and static tiles are orphans. Pure display: sends no valve
+-- tell the live tile apart from other tiles at leisure (a timed flash
+-- is too easy to miss across rooms). 50 never occurs naturally — the
+-- switch reports only 0/100 — so the tile showing 50% is the bound one
+-- and static tiles are not bound to this driver (orphaned or owned by
+-- another instance). Pure display: sends no valve
 -- commands and preserves last_level. Self-restores on a timer because
 -- duplicate pushes skip the tile report: without it the mark would mask
 -- the true level indefinitely on a steady-state valve.
@@ -3600,8 +3596,8 @@ end
 -- Param shape follows the supports_target capability, which this switch
 -- leaves unset: targets-enabled proxies send LIGHT_BRIGHTNESS_TARGET,
 -- legacy ones send LEVEL (or LIGHT on the oldest API). Accept all
--- three, preferring the Level Target name. Shared by
--- SET_BRIGHTNESS_TARGET and RAMP_TO_LEVEL (a switch has no ramp: any
+-- three, preferring the Level Target name. Shared by SET_LEVEL,
+-- SET_BRIGHTNESS_TARGET, and RAMP_TO_LEVEL (a switch has no ramp: any
 -- target level routes to open/close).
 local function flovalve_target_level(tParams)
   local level = tParams ~= nil and tParams.LIGHT_BRIGHTNESS_TARGET or nil
@@ -3614,6 +3610,37 @@ local function flovalve_target_level(tParams)
   return tonumber(level)
 end
 
+-- Button acknowledgment, with values normalized to strings: echo the
+-- received id and action back so the proxy knows the press landed
+-- (without the pressed echo it synthesizes a second press). A pushed
+-- button is then released again: the proxy expects a Release after a
+-- Push, and press-only senders never deliver one, so without the
+-- synthetic release subsequent pushes stop working.
+local function flovalve_ack_button(button, action)
+  C4:SendToProxy(FLOVALVE_LIGHT_ID, "BUTTON_ACTION", { BUTTON_ID = button, ACTION = action }, "NOTIFY")
+  if action == "1" then
+    C4:SendToProxy(FLOVALVE_LIGHT_ID, "BUTTON_ACTION", { BUTTON_ID = button, ACTION = "0" }, "NOTIFY")
+  end
+end
+
+-- Ingress-trace parameter suffix, allowlist only: the trace must show
+-- which button/level a command carried without dumping whole tables
+-- (they can carry cloud payloads or credentials). Values are capped so
+-- a pathological param cannot flood the log.
+local function flovalve_trace_light_params(tParams)
+  local parts = {}
+  for _, key in ipairs({ "BUTTON_ID", "ACTION", "LIGHT_BRIGHTNESS_TARGET", "LEVEL", "LIGHT" }) do
+    local value = tParams ~= nil and tParams[key] or nil
+    if value ~= nil then
+      parts[#parts + 1] = key .. "=" .. tostring(value):sub(1, 64)
+    end
+  end
+  if #parts == 0 then
+    return ""
+  end
+  return " " .. table.concat(parts, " ")
+end
+
 function flovalve_on_light(strCommand, tParams)
   if strCommand == "DYNAMIC_ON" or strCommand == "ON" then
     flovalve_open_valve("Open Valve")
@@ -3624,32 +3651,49 @@ function flovalve_on_light(strCommand, tParams)
   elseif strCommand == "BUTTON_ACTION" then
     -- Neeo/Halo remotes and keypads drive light_v2 via BUTTON_ACTION,
     -- not ON/OFF/TOGGLE — and so do Navigator on/off buttons, which send
-    -- press-style actions with no release. So act on ANY action except
-    -- long-release (ACTION 0, a dim gesture meaningless to a switch);
-    -- per-button debounce keeps press+release pairs to a single action.
+    -- press-style actions with no release. Gesture policy, per button,
+    -- with no clock (os.clock is CPU time, not elapsed time, so a
+    -- time window cannot pair gestures): a press (or a missing action,
+    -- treated as a bare click) always acts and marks the button
+    -- pressed; a release acts only when no press preceded it, so a
+    -- press+release pair fires once no matter how slowly the release
+    -- follows, while a release-only sender still acts; long-release (a
+    -- dim gesture) is ignored. Only acted gestures update the record,
+    -- so a stray second release stays eaten too.
     local button = tostring(tParams ~= nil and tParams.BUTTON_ID or "")
     local action = tostring(tParams ~= nil and tParams.ACTION or "")
     if button ~= "0" and button ~= "1" and button ~= "2" then
       flovalve_log_warn("BUTTON_ACTION without a button id; ignored")
       return false
     end
-    if action ~= "0" then
-      local now = os.clock()
-      local damp = flovalve_state.button_debounce
-      if damp == nil or damp.id ~= button or now - damp.at >= FLOVALVE_BUTTON_DEBOUNCE_S then
-        flovalve_state.button_debounce = { id = button, at = now }
-        if button == "0" then
-          flovalve_open_valve("Open Valve")
-        elseif button == "1" then
-          flovalve_close_valve("Close Valve")
-        else
-          flovalve_toggle_valve("Toggle")
-        end
-      else
-        flovalve_log("button " .. button .. " debounced")
-      end
+    if action ~= "" and action ~= "1" and action ~= "2" and action ~= "0" then
+      flovalve_log_warn("BUTTON_ACTION with unknown action " .. action .. "; ignored")
+      return false
     end
-  elseif strCommand == "SET_BRIGHTNESS_TARGET" or strCommand == "RAMP_TO_LEVEL" then
+    if action == "" then
+      action = "1"
+    end
+    local gestures = flovalve_state.button_gestures
+    if gestures == nil then
+      gestures = {}
+      flovalve_state.button_gestures = gestures
+    end
+    if action == "1" or (action == "2" and gestures[button] ~= "1") then
+      gestures[button] = action
+      if button == "0" then
+        flovalve_open_valve("Open Valve")
+      elseif button == "1" then
+        flovalve_close_valve("Close Valve")
+      else
+        flovalve_toggle_valve("Toggle")
+      end
+    elseif action == "2" then
+      flovalve_log("button " .. button .. " release paired with its press; no repeat")
+    end
+    -- Acknowledge after handling (a driver failure first still surfaces
+    -- instead of being masked by a premature ack).
+    flovalve_ack_button(button, action)
+  elseif strCommand == "SET_LEVEL" or strCommand == "SET_BRIGHTNESS_TARGET" or strCommand == "RAMP_TO_LEVEL" then
     local level = flovalve_target_level(tParams)
     if level == nil then
       flovalve_log_warn(strCommand .. " without a level; ignored")
@@ -3689,8 +3733,10 @@ end
 function ReceivedFromProxy(idBinding, strCommand, tParams)
   if idBinding == FLOVALVE_LIGHT_ID then
     -- Debug-gated ingress trace (kasa parity): with Debug Mode on, every
-    -- tap/query is visible even when it is handled silently.
-    flovalve_log("light proxy command: " .. tostring(strCommand))
+    -- tap/query is visible even when it is handled silently. Includes
+    -- the relevant button/level params (allowlisted) so a press and a
+    -- release are distinguishable.
+    flovalve_log("light proxy command: " .. tostring(strCommand) .. flovalve_trace_light_params(tParams))
     flovalve_on_light(strCommand, tParams or {})
     return
   end

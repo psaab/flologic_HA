@@ -1,5 +1,21 @@
 Control4 DriverWorks package for FloLogic Connect valves (OS 3.3.0+).
 
+Version **2026090831** implements the findings in
+`c4/LIGHT_BUTTON_REVIEW.md` (no field trace of a failing press exists
+yet, so these are verified offline only — see the review's evidence
+section for the remaining field step). Button handling no longer uses
+`os.clock` (CPU time, not elapsed time): a clock-free per-button
+gesture policy acts on press, eats a paired release no matter how
+slowly it follows, still acts on a release with no preceding press,
+and ignores long-release. Every accepted button receipt is echoed
+back to the proxy per the button-action contract, with a synthetic
+release after each push (press-only senders never deliver one, and
+the proxy stops accepting pushes until it sees the release). Legacy
+`SET_LEVEL` routes binary open/close like the other level commands,
+rejecting missing levels. The Debug ingress trace now includes the
+relevant button/level params (allowlisted; never whole tables).
+Lua-only: plain update, no re-add needed.
+
 Version **2026090830** fixes the Identify mark masking the true tile
 state: duplicate pushes skip the tile report, so on a steady-state
 valve the 50% mark never cleared and the tile never showed the real

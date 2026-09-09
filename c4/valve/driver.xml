@@ -8,7 +8,7 @@
   <manufacturer>FloLogic</manufacturer>
   <driver>DriverWorks</driver>
   <control>lua_gen</control>
-  <version>2026090830</version>
+  <version>2026090831</version>
   <!-- Navigator clicks arrive as DYNAMIC_ON/DYNAMIC_OFF (OS 3.3.2+). -->
   <minimum_os_version>3.3.2</minimum_os_version>
   <created>09/08/2026 12:00 PM</created>
@@ -55,7 +55,7 @@
       <property>
         <name>Driver Version</name>
         <type>STRING</type>
-        <default>2026090830</default>
+        <default>2026090831</default>
         <readonly>true</readonly>
       </property>
       <property>
@@ -177,7 +177,7 @@
       </command>
       <command>
         <name>Identify Tile</name>
-        <description>Show 50% on the bound Navigator tile for 60 seconds (then the true level restores), to tell the live tile apart from orphaned proxies. Moves no water.</description>
+        <description>Show 50% on the bound Navigator tile for 60 seconds (then the true level restores). A static tile is not bound to this driver: orphaned, or owned by another instance. Moves no water.</description>
       </command>
       <command>
         <name>Set Mode Home</name>
