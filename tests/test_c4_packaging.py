@@ -139,7 +139,9 @@ def test_composer_identities_distinct_valve_asset_never_collides() -> None:
     valve_lua = (VALVE_DIR / "valve.lua").read_text(encoding="utf-8")
     assert 'FloUpdate.ASSET = "flologic_cloud.c4z"' in cloud_lua
     assert 'FloUpdate.ASSET = "flologic_water_valve.c4z"' in valve_lua
-    family = 'FloUpdate.FAMILY_ASSETS = { "flologic_cloud.c4z", "flologic_water_valve.c4z" }'
+    family = (
+        'FloUpdate.FAMILY_ASSETS = { "flologic_cloud.c4z", "flologic_water_valve.c4z" }'
+    )
     assert family in cloud_lua
     assert family in valve_lua
     # The installed-lookup keys may keep pre-rename flologic_valve.c4i /
@@ -162,7 +164,11 @@ def test_file_read_seeks_before_reading_in_all_adapters() -> None:
         "valve": (VALVE_DIR / "valve.lua").read_text(encoding="utf-8"),
         "monolith": (C4_DIR / "src" / "main.lua").read_text(encoding="utf-8"),
     }
-    fns = {"cloud": "flocloud_file_read", "valve": "flovalve_file_read", "monolith": "flogic_file_read"}
+    fns = {
+        "cloud": "flocloud_file_read",
+        "valve": "flovalve_file_read",
+        "monolith": "flogic_file_read",
+    }
     for driver, text in sources.items():
         fn = fns[driver]
         start = text.index(f"local function {fn}(")
@@ -200,3 +206,20 @@ def test_file_set_dir_unlocks_c4z_root_without_fallback_in_all_adapters() -> Non
         select = body.index("C4:FileSetDir(alias)")
         assert unlock < select, f"{driver} {fn} must pass the unlock key first"
         assert "candidates" not in body, f"{driver} {fn} must not try a fallback store"
+    helpers = {
+        "cloud": "flocloud_dir_accepted",
+        "valve": "flovalve_dir_accepted",
+        "monolith": "flogic_dir_accepted",
+    }
+    seen: set[str] = set()
+    for driver, text in sources.items():
+        helper = helpers[driver]
+        start = text.index(f"local function {helper}(ok, ret, err)")
+        body = text[start : text.index("\nend", start)]
+        # Every refusal shape with any precedent denies: a raise (the pcall
+        # status), an explicit false, -1 (Director sentinel style), or a
+        # (nil, err) pair. The three copies stay in sync by bundle design.
+        for fragment in ("ret ~= false", "ret ~= -1", "ret ~= nil or err == nil"):
+            assert fragment in body, f"{driver} {helper} must deny that shape"
+        seen.add(body.replace(helper, "dir_accepted"))
+    assert len(seen) == 1, "dir_accepted copies must stay in sync"

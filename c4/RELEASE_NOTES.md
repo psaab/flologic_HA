@@ -1,5 +1,29 @@
 Control4 DriverWorks package for FloLogic Connect valves (OS 3.3.0+).
 
+Version **2026090819** is a third adversarial-review remediation of the
+0812–0816 updater/watchdog changes (6 findings, all fixed and covered).
+
+- Watchdog calibration: the 180s bound equaled the session deadline it
+  supervises, so a healthy session's final second could be reaped as
+  "stuck". The bound is now 240s — past every legitimate session — and
+  the comment no longer claims detection is immediate (it fires on the
+  next poll tick past the bound).
+- Watchdog freshness: a claiming poll consumes the overdue flag at
+  claim time (no duplicate poll on completion, including the watchdog's
+  forced poll; breaker/config refusals preserve the debt exactly as
+  before), the busy age is clamped against clock steps, and a
+  fenced-out late settle can no longer release a fresh owner's busy
+  claim (ownership guard; busy stamps clear wherever busy clears).
+- Updater honesty: FileSetDir has no documented return convention, so
+  every refusal shape with any precedent denies — a raise, an explicit
+  false, -1 (Director's sentinel style), or a (nil, err) pair (a
+  non-raising denial would otherwise fake-select C4Z_ROOT and replay
+  the 0815 no-op) — and the unlock outcome is traced as
+  accepted/rejected for field diagnosis. Empty read-backs ("", the
+  documented FileRead no-bytes answer) with a verified size now report
+  read-back failure instead of "not a driver archive" at both the
+  candidate and replacement gates.
+
 Version **2026090818** is a version bump only (no functional change
 from 0817) as a further self-update target: run Check for Update /
 Install Latest Release from 0816+ and confirm the reload lands on

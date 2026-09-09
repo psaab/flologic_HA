@@ -1252,6 +1252,9 @@ local function install_fixtures(version)
       return files[name] and #files[name] or nil
     end,
     file_read = function(name, count)
+      if store.spoof_reads ~= nil and store.spoof_reads[name] ~= nil then
+        return store.spoof_reads[name]:sub(1, count)
+      end
       if store.spoof_read ~= nil then
         return store.spoof_read:sub(1, count)
       end
@@ -1386,6 +1389,31 @@ T.test("updates: install validates the candidate before replacing the package", 
   T.check_equal(magic_store.files["flologic_valve.c4z"], "OLD-DRIVER-BYTES", "installed package untouched")
   T.check_equal(magic_store.files["flologic_valve.c4z.new"], nil, "bad candidate cleaned up")
   T.check(trace:find("magic check failed", 1, true) ~= nil, "gate traced, got: " .. trace)
+  -- Empty read-back (FileRead's documented no-bytes answer) with a
+  -- verified size is a read artifact, not a non-archive: reported as a
+  -- read-back failure with the same guarantees.
+  local empty_err, _, empty_store = run(function(store)
+    store.spoof_read = ""
+  end)
+  T.check(
+    empty_err:find("read-back failed", 1, true) ~= nil,
+    "empty read-back fails loud as read-back, got " .. tostring(empty_err)
+  )
+  T.check_equal(empty_store.files["flologic_valve.c4z"], "OLD-DRIVER-BYTES", "installed package untouched")
+  T.check_equal(empty_store.files["flologic_valve.c4z.new"], nil, "bad candidate cleaned up")
+  T.check_equal(#empty_store.soap_packets, 0, "no trigger without a verified candidate")
+  -- Empty replacement read-back (targeted spoof: the candidate gate sees
+  -- real bytes): rolls back to the previous driver and reports the
+  -- read-back failure, never a verification failure.
+  local rb_err, _, rb_store = run(function(store)
+    store.spoof_reads = { ["flologic_valve.c4z"] = "" }
+  end)
+  T.check(
+    rb_err:find("read-back failed", 1, true) ~= nil and rb_err:find("rolled back", 1, true) ~= nil,
+    "empty replacement read-back rolls back loud, got " .. tostring(rb_err)
+  )
+  T.check_equal(rb_store.files["flologic_valve.c4z"], "OLD-DRIVER-BYTES", "rollback restores the old driver")
+  T.check_equal(#rb_store.soap_packets, 0, "no trigger after a rollback")
 end)
 
 T.test("updates: install rejects a download short of its published size", function()

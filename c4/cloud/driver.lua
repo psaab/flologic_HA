@@ -2406,7 +2406,11 @@ function FloUpdate.new_install(opts)
       return
     end
     local head = opts.file_read(candidate, 4)
-    if head == nil then
+    -- FileRead answers "" (not nil) when no bytes are read, so an empty
+    -- read-back with an already-verified size is a read artifact, not
+    -- proof the staged bytes aren't an archive. Report it as such: the
+    -- download was screened in memory before anything was written.
+    if head == nil or head == "" then
       log_warn("update stage: read-back failed for " .. candidate)
       opts.file_delete(candidate)
       finish("Staged package could not be verified (read-back failed); installed driver left intact")
@@ -2486,7 +2490,9 @@ function FloUpdate.new_install(opts)
       return
     end
     local installed_head = opts.file_read(filename, 4)
-    if installed_head == nil then
+    -- As above: "" is a read artifact (FileRead's documented no-bytes
+    -- answer), distinct from bytes that verify as a non-archive.
+    if installed_head == nil or installed_head == "" then
       log_warn("update stage: replacement read-back failed for " .. filename)
       roll_back("read-back failed")
       return
@@ -3468,7 +3474,7 @@ end
 -- favor of the slot->valve identity map below. Lua 5.1 safe.
 -- ============================================================================
 
-FLOCLOUD_DRIVER_VERSION = "2026090818"
+FLOCLOUD_DRIVER_VERSION = "2026090819"
 print("[flologic-cloud] Lua loaded: " .. FLOCLOUD_DRIVER_VERSION)
 
 FLOCLOUD_DEFAULT_HUB = "https://hub-cloudapps-prod.azurewebsites.net"
@@ -3494,9 +3500,11 @@ FLOCLOUD_REFRESH_POLL_MIN_S = 30
 FLOCLOUD_COMMAND_DEADLINE_S = 90
 -- Watchdog: a session (poll or command) holding busy longer than this
 -- never settled — force-clear it and poll fresh instead of wedging the
--- driver forever. Well above any legitimate session: polls finish in
--- seconds and commands settle inside the 90s transmit deadline.
-FLOCLOUD_BUSY_WATCHDOG_S = 180
+-- driver forever. Above the 180s session deadline (not equal to it), so
+-- a healthy session's own deadline always settles first and only a hung
+-- transport — one whose callbacks never run at all — trips the
+-- watchdog. Detection happens on the next poll tick past the bound.
+FLOCLOUD_BUSY_WATCHDOG_S = 240
 -- Freshness budget advertised on every snapshot: the configured poll
 -- cadence times the multiple, plus one worst-case session, clamped to
 -- the floor. The companion must not infer cadence from traffic (a
@@ -3568,6 +3576,7 @@ function flocloud_retire_runtime()
   local session = previous.session
   local binding, port = previous.binding, previous.hub_port
   previous.session, previous.busy, previous.tcp_callbacks = nil, false, nil
+  previous.busy_since, previous.busy_what, previous.busy_job = nil, nil, nil
   previous.command_queue = {}
   previous.pending_commands = {}
   for _, name in ipairs({
@@ -3935,6 +3944,17 @@ end
 -- The store file_set_dir selected: file_move stays within it.
 local flocloud_file_store = "C4Z"
 
+-- FileSetDir documents neither a return value nor an error convention,
+-- so every refusal shape with any precedent denies: a raise, an explicit
+-- false, -1 (Director's sentinel style, cf. FileOpen/FileWrite), or a
+-- (nil, err) pair (Lua C style). No success convention produces any of
+-- those shapes, so this only ever refuses. (A denial that silently
+-- succeeds is unverifiable — no getter exists — and is caught a cycle
+-- later by the version check, as the 0815 no-op was.)
+local function flocloud_dir_accepted(ok, ret, err)
+  return ok and ret ~= false and ret ~= -1 and (ret ~= nil or err == nil)
+end
+
 local function flocloud_file_set_dir(alias)
   -- Pass the C4Z_ROOT unlock key first (undocumented; pcall'd since not
   -- every OS accepts it), then select exactly the requested alias. There
@@ -3942,13 +3962,17 @@ local function flocloud_file_set_dir(alias)
   -- resolves the staged package in C4Z_ROOT only, so staging into the
   -- running driver's own directory verifies and triggers yet reloads
   -- the previously installed build. Denial refuses the install.
-  pcall(function()
-    C4:FileSetDir(FloUpdate.C4Z_ROOT_UNLOCK_KEY)
+  local unlock_ok, unlock_ret, unlock_err = pcall(function()
+    return C4:FileSetDir(FloUpdate.C4Z_ROOT_UNLOCK_KEY)
   end)
-  local ok = pcall(function()
-    C4:FileSetDir(alias)
+  flocloud_log_warn(
+    "update file store unlock key: "
+      .. (flocloud_dir_accepted(unlock_ok, unlock_ret, unlock_err) and "accepted" or "rejected")
+  )
+  local ok, ret, err = pcall(function()
+    return C4:FileSetDir(alias)
   end)
-  if ok then
+  if flocloud_dir_accepted(ok, ret, err) then
     flocloud_file_store = alias
     flocloud_log_warn("update file store: " .. alias)
     return true
@@ -5370,7 +5394,7 @@ local function flocloud_real_fetch_account(hub_url, cb)
     settled = true
     flocloud_note_session_end(session, err)
     st.session = nil
-    st.busy = false
+    st.busy, st.busy_since, st.busy_what, st.busy_job = false, nil, nil, nil
     session.cancel()
     cb(err, account)
   end
@@ -5547,7 +5571,7 @@ local function flocloud_real_send(job, cb)
     end
     flocloud_note_session_end(session, err)
     st.session = nil
-    st.busy = false
+    st.busy, st.busy_since, st.busy_what, st.busy_job = false, nil, nil, nil
     session.cancel()
     cb(err)
   end, { expected_uuid = job.expected_uuid, deadline = job.deadline_at })
@@ -5656,12 +5680,18 @@ function flocloud_run_next()
   local function settled(err)
     local slot_pending = st.pending_commands[job.slot]
     if slot_pending == nil or slot_pending[job.cmd_id] == nil then
-      st.busy = false
-      flocloud_run_next()
+      -- Fenced-out late settle (watchdog or cancel already nacked this
+      -- job): never release another owner's claim. Reclaim only when we
+      -- still own busy or nobody does (watchdog refused its fresh poll,
+      -- post-cancel idle), so the queue still drains in those cases.
+      if st.busy_job == job or not st.busy then
+        st.busy, st.busy_since, st.busy_what, st.busy_job = false, nil, nil, nil
+        flocloud_run_next()
+      end
       return
     end
     slot_pending[job.cmd_id] = nil
-    st.busy = false
+    st.busy, st.busy_since, st.busy_what, st.busy_job = false, nil, nil, nil
     if err ~= nil then
       flocloud_set_prop("Last Command", job.name .. ": failed (" .. flocloud_describe_error(err) .. ")")
       flocloud_nack(job.slot, job.cmd_id, flocloud_describe_error(err))
@@ -5717,6 +5747,9 @@ function flocloud_poll_now()
   end
   if st.busy then
     local age = os.time() - (st.busy_since or os.time())
+    if age < 0 then
+      age = 0
+    end
     if age < FLOCLOUD_BUSY_WATCHDOG_S then
       -- A session is running: remember the due poll so the next run_next
       -- executes it before further commands instead of dropping
@@ -5768,6 +5801,11 @@ function flocloud_poll_now()
     flocloud_set_connection(false, "no SHA1 digest available")
     return
   end
+  -- This poll IS any overdue poll: consume the flag at claim time (not in
+  -- the watchdog above) so breaker/config/sha1 refusals preserve the debt
+  -- exactly as before, while a poll that actually starts never completes
+  -- into an immediate duplicate through run_next.
+  st.poll_overdue = false
   st.busy = true
   st.busy_since = os.time()
   st.busy_what = "poll"
@@ -5781,7 +5819,7 @@ function flocloud_poll_now()
     if flocloud_state ~= st or not st.initialized or st.poll_seq ~= seq then
       return
     end
-    st.busy = false
+    st.busy, st.busy_since, st.busy_what, st.busy_job = false, nil, nil, nil
     if err ~= nil then
       flocloud_on_session_error("poll", err)
     else
@@ -5976,6 +6014,7 @@ local function flocloud_cancel_work()
   local st = flocloud_state
   local session = st.session
   st.session, st.busy = nil, false
+  st.busy_since, st.busy_what, st.busy_job = nil, nil, nil
   st.poll_seq = (st.poll_seq or 0) + 1
   if session then
     session.cancel()

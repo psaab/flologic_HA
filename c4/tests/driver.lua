@@ -124,6 +124,18 @@ local function director()
   end
   function C4:FileSetDir(alias)
     env.dir_attempts[#env.dir_attempts + 1] = alias
+    -- FileSetDir documents neither a return value nor an error
+    -- convention: model every non-raising refusal shape ("false", "-1",
+    -- "nilerr") alongside the raising one, so the adapter must deny
+    -- them all instead of mistaking one for selection.
+    local denial = env.dir_denials ~= nil and env.dir_denials[alias] or nil
+    if denial == "false" then
+      return false
+    elseif denial == "minus1" then
+      return -1
+    elseif denial == "nilerr" then
+      return nil, "Restricted path specified"
+    end
     if alias == FloUpdate.C4Z_ROOT_UNLOCK_KEY then
       -- The unlock key itself arms the alias; denial here models an OS
       -- that rejects the key, leaving C4Z_ROOT locked.
@@ -676,6 +688,32 @@ D.test("director: denied C4Z_ROOT refuses the install even after unlocking", fun
     "denial points at the manual path, got " .. tostring(Properties["Update Status"])
   )
   OnDriverDestroyed()
+end)
+
+D.test("director: non-raising C4Z_ROOT denials refuse the install without staging", function()
+  -- Every refusal shape without a raise: explicit false, -1 (Director
+  -- sentinel style), and (nil, err) (Lua C style). The adapter must
+  -- treat each as denial, not selection — otherwise staging lands in
+  -- the previous store and the trigger reloads the old build (the 0815
+  -- no-op shape). The raising denial is covered by the tests above.
+  for _, shape in ipairs({ "false", "minus1", "nilerr" }) do
+    local env = director()
+    env.installed["flologic_valve.c4i"] = { [1] = true }
+    env.files["flologic_valve.c4z"] = "OLD-DRIVER-BYTES"
+    env.dir_denials = { C4Z_ROOT = shape }
+    ExecuteCommand("Install Latest Release", {})
+    env.transfers[1].done(nil, { { code = 200, body = director_release("2026090808") } }, 0)
+    env.transfers[2].done(nil, { { code = 200, body = "PK\003\004NEW-C4Z-BYTES" } }, 0)
+    D.check(env.dir_unlocked, "key accepted before the refusal (" .. shape .. ")")
+    D.check_equal(env.files["flologic_valve.c4z"], "OLD-DRIVER-BYTES", "refusal keeps the old build (" .. shape .. ")")
+    D.check_equal(#env.soap_packets, 0, "refusal triggers no install (" .. shape .. ")")
+    D.check(
+      Properties["Update Status"]:find("Install failed", 1, true) ~= nil
+        and Properties["Update Status"]:find("Composer", 1, true) ~= nil,
+      "refusal points at the manual path (" .. shape .. "), got " .. tostring(Properties["Update Status"])
+    )
+    OnDriverDestroyed()
+  end
 end)
 
 D.test("director: install without a store entry reports not-installed", function()

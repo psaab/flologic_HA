@@ -421,7 +421,11 @@ function FloUpdate.new_install(opts)
       return
     end
     local head = opts.file_read(candidate, 4)
-    if head == nil then
+    -- FileRead answers "" (not nil) when no bytes are read, so an empty
+    -- read-back with an already-verified size is a read artifact, not
+    -- proof the staged bytes aren't an archive. Report it as such: the
+    -- download was screened in memory before anything was written.
+    if head == nil or head == "" then
       log_warn("update stage: read-back failed for " .. candidate)
       opts.file_delete(candidate)
       finish("Staged package could not be verified (read-back failed); installed driver left intact")
@@ -501,7 +505,9 @@ function FloUpdate.new_install(opts)
       return
     end
     local installed_head = opts.file_read(filename, 4)
-    if installed_head == nil then
+    -- As above: "" is a read artifact (FileRead's documented no-bytes
+    -- answer), distinct from bytes that verify as a non-archive.
+    if installed_head == nil or installed_head == "" then
       log_warn("update stage: replacement read-back failed for " .. filename)
       roll_back("read-back failed")
       return

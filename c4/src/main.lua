@@ -326,6 +326,17 @@ end
 -- The store file_set_dir selected: file_move stays within it.
 local flogic_file_store = "C4Z"
 
+-- FileSetDir documents neither a return value nor an error convention,
+-- so every refusal shape with any precedent denies: a raise, an explicit
+-- false, -1 (Director's sentinel style, cf. FileOpen/FileWrite), or a
+-- (nil, err) pair (Lua C style). No success convention produces any of
+-- those shapes, so this only ever refuses. (A denial that silently
+-- succeeds is unverifiable — no getter exists — and is caught a cycle
+-- later by the version check, as the 0815 no-op was.)
+local function flogic_dir_accepted(ok, ret, err)
+  return ok and ret ~= false and ret ~= -1 and (ret ~= nil or err == nil)
+end
+
 local function flogic_file_set_dir(alias)
   -- Pass the C4Z_ROOT unlock key first (undocumented; pcall'd since not
   -- every OS accepts it), then select exactly the requested alias. There
@@ -333,13 +344,17 @@ local function flogic_file_set_dir(alias)
   -- resolves the staged package in C4Z_ROOT only, so staging into the
   -- running driver's own directory verifies and triggers yet reloads
   -- the previously installed build. Denial refuses the install.
-  pcall(function()
-    C4:FileSetDir(FloUpdate.C4Z_ROOT_UNLOCK_KEY)
+  local unlock_ok, unlock_ret, unlock_err = pcall(function()
+    return C4:FileSetDir(FloUpdate.C4Z_ROOT_UNLOCK_KEY)
   end)
-  local ok = pcall(function()
-    C4:FileSetDir(alias)
+  flogic_log_warn(
+    "update file store unlock key: "
+      .. (flogic_dir_accepted(unlock_ok, unlock_ret, unlock_err) and "accepted" or "rejected")
+  )
+  local ok, ret, err = pcall(function()
+    return C4:FileSetDir(alias)
   end)
-  if ok then
+  if flogic_dir_accepted(ok, ret, err) then
     flogic_file_store = alias
     flogic_log_warn("update file store: " .. alias)
     return true

@@ -1155,7 +1155,11 @@ function FloUpdate.new_install(opts)
       return
     end
     local head = opts.file_read(candidate, 4)
-    if head == nil then
+    -- FileRead answers "" (not nil) when no bytes are read, so an empty
+    -- read-back with an already-verified size is a read artifact, not
+    -- proof the staged bytes aren't an archive. Report it as such: the
+    -- download was screened in memory before anything was written.
+    if head == nil or head == "" then
       log_warn("update stage: read-back failed for " .. candidate)
       opts.file_delete(candidate)
       finish("Staged package could not be verified (read-back failed); installed driver left intact")
@@ -1235,7 +1239,9 @@ function FloUpdate.new_install(opts)
       return
     end
     local installed_head = opts.file_read(filename, 4)
-    if installed_head == nil then
+    -- As above: "" is a read artifact (FileRead's documented no-bytes
+    -- answer), distinct from bytes that verify as a non-archive.
+    if installed_head == nil or installed_head == "" then
       log_warn("update stage: replacement read-back failed for " .. filename)
       roll_back("read-back failed")
       return
@@ -2233,7 +2239,7 @@ end
 -- C4 calls (safe to load in tests with a stub C4). Lua 5.1 safe.
 -- ============================================================================
 
-FLOVALVE_DRIVER_VERSION = "2026090818"
+FLOVALVE_DRIVER_VERSION = "2026090819"
 print("[flologic-valve] Lua loaded: " .. FLOVALVE_DRIVER_VERSION)
 
 -- Static link consumer (binds to one cloud-driver FLOGIC_VALVE slot) and
@@ -3758,6 +3764,17 @@ end
 -- The store file_set_dir selected: file_move stays within it.
 local flovalve_file_store = "C4Z"
 
+-- FileSetDir documents neither a return value nor an error convention,
+-- so every refusal shape with any precedent denies: a raise, an explicit
+-- false, -1 (Director's sentinel style, cf. FileOpen/FileWrite), or a
+-- (nil, err) pair (Lua C style). No success convention produces any of
+-- those shapes, so this only ever refuses. (A denial that silently
+-- succeeds is unverifiable — no getter exists — and is caught a cycle
+-- later by the version check, as the 0815 no-op was.)
+local function flovalve_dir_accepted(ok, ret, err)
+  return ok and ret ~= false and ret ~= -1 and (ret ~= nil or err == nil)
+end
+
 local function flovalve_file_set_dir(alias)
   -- Pass the C4Z_ROOT unlock key first (undocumented; pcall'd since not
   -- every OS accepts it), then select exactly the requested alias. There
@@ -3765,13 +3782,17 @@ local function flovalve_file_set_dir(alias)
   -- resolves the staged package in C4Z_ROOT only, so staging into the
   -- running driver's own directory verifies and triggers yet reloads
   -- the previously installed build. Denial refuses the install.
-  pcall(function()
-    C4:FileSetDir(FloUpdate.C4Z_ROOT_UNLOCK_KEY)
+  local unlock_ok, unlock_ret, unlock_err = pcall(function()
+    return C4:FileSetDir(FloUpdate.C4Z_ROOT_UNLOCK_KEY)
   end)
-  local ok = pcall(function()
-    C4:FileSetDir(alias)
+  flovalve_log_warn(
+    "update file store unlock key: "
+      .. (flovalve_dir_accepted(unlock_ok, unlock_ret, unlock_err) and "accepted" or "rejected")
+  )
+  local ok, ret, err = pcall(function()
+    return C4:FileSetDir(alias)
   end)
-  if ok then
+  if flovalve_dir_accepted(ok, ret, err) then
     flovalve_file_store = alias
     flovalve_log_warn("update file store: " .. alias)
     return true

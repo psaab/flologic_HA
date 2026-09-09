@@ -193,7 +193,7 @@ local function discover(env, devices, accesses)
 end
 
 T.test("cloud: version, link pin, updater asset, no picker (CLOUD-U6)", function()
-  T.check_equal(FLOCLOUD_DRIVER_VERSION, "2026090818", "cloud version")
+  T.check_equal(FLOCLOUD_DRIVER_VERSION, "2026090819", "cloud version")
   T.check_equal(FLOGIC_LINK_VERSION, 1, "protocol version is 1")
   T.check_equal(FloUpdate.ASSET, "flologic_cloud.c4z", "updater tracks the cloud package")
   T.check_equal(FloUpdate.FAMILY_ASSETS[1], "flologic_cloud.c4z", "updater requires its own package")
@@ -1614,6 +1614,17 @@ T.test("cloud: skip message distinguishes busy from not-ready", function()
   OnDriverDestroyed()
 end)
 
+T.test("cloud: busy watchdog sits above the session deadline", function()
+  -- The watchdog must only ever reap transports whose own deadline
+  -- machinery failed: sessions settle themselves by 180s (the whole-
+  -- session budget in flologic.lua), so a bound at or below that would
+  -- race healthy sessions in their final second and nack them "stuck".
+  T.check(
+    FLOCLOUD_BUSY_WATCHDOG_S > 180,
+    "watchdog bound clears the 180s session deadline, got " .. tostring(FLOCLOUD_BUSY_WATCHDOG_S)
+  )
+end)
+
 T.test("cloud: busy watchdog clears a stuck poll and polls fresh", function()
   local env = boot(cloud_env())
   discover(env, { make_valve() }, {})
@@ -1627,8 +1638,10 @@ T.test("cloud: busy watchdog clears a stuck poll and polls fresh", function()
   T.check(flocloud_state.busy, "stuck poll holds busy")
   local calls = #env.fetch_calls
   -- Age past the watchdog and poll again: the orphan is force-cleared and
-  -- a fresh poll starts in the same call.
+  -- a fresh poll starts in the same call. A real stuck session accumulates
+  -- busy-skips first, so arm the overdue flag the watchdog must consume.
   flocloud_state.busy_since = os.time() - FLOCLOUD_BUSY_WATCHDOG_S - 1
+  flocloud_state.poll_overdue = true
   local lines = capture_print(flocloud_poll_now)
   T.check(printed(lines, "busy watchdog: poll stuck"), "watchdog announces the stuck poll")
   T.check_equal(#env.fetch_calls, calls + 1, "fresh poll starts after the clear")
@@ -1639,6 +1652,12 @@ T.test("cloud: busy watchdog clears a stuck poll and polls fresh", function()
   orphans[1](nil, { user = { id = 7 }, devices = { make_valve({ id = 99 }) }, accesses = {} })
   T.check(flocloud_state.busy, "orphan reply does not clear the fresh poll")
   T.check(flocloud_state.last_devices == devices_before, "orphan account ignored")
+  -- Completing the fresh poll must not fire a duplicate: the watchdog
+  -- consumed the overdue flag when it started the fresh poll.
+  local fresh_calls = #env.fetch_calls
+  orphans[2](nil, { user = { id = 7 }, devices = { make_valve() }, accesses = {} })
+  T.check_equal(#env.fetch_calls, fresh_calls, "no duplicate poll after the watchdog poll")
+  T.check(not flocloud_state.busy, "fresh poll completion releases busy")
   OnDriverDestroyed()
 end)
 
@@ -1655,9 +1674,17 @@ T.test("cloud: busy watchdog nacks an orphaned command job", function()
   T.check(flocloud_state.busy, "command holds busy")
   T.check_equal(flocloud_state.busy_what, "command:mode_home", "busy names the command")
   -- Hang the send, age past the watchdog, then poll: the stuck job is
-  -- nacked and the poll proceeds.
+  -- nacked and the poll proceeds. The fresh poll hangs too, so the
+  -- orphan's late settle lands while another owner holds busy.
   flocloud_state.busy_since = os.time() - FLOCLOUD_BUSY_WATCHDOG_S - 1
-  script_account(env, { make_valve() }, {})
+  -- As in the stuck-poll test: arm the overdue flag a real stuck session
+  -- would have accumulated, so the no-duplicate pin below is non-vacuous.
+  flocloud_state.poll_overdue = true
+  local fresh = {}
+  flocloud_account_fetch = function(hub, cb)
+    env.fetch_calls[#env.fetch_calls + 1] = { hub = hub }
+    fresh[#fresh + 1] = cb
+  end
   local calls = #env.fetch_calls
   local lines = capture_print(flocloud_poll_now)
   T.check(printed(lines, "busy watchdog: command:mode_home stuck"), "watchdog announces the stuck command")
@@ -1666,9 +1693,19 @@ T.test("cloud: busy watchdog nacks an orphaned command job", function()
   T.check_equal(Link.parse(nacks[1].params).error_reason, "stuck", "stuck reason")
   T.check(flocloud_state.pending_commands[2001]["run-1"] == nil, "orphaned pending cleared")
   T.check_equal(#env.fetch_calls, calls + 1, "poll proceeds after the clear")
-  -- The orphan's late settle is fenced: no second ack.
+  T.check(flocloud_state.busy, "fresh poll holds busy")
+  T.check_equal(flocloud_state.busy_what, "poll", "fresh poll owns busy")
+  -- The orphan's late settle is fenced: no second ack, and the fresh
+  -- poll keeps busy — a fenced-out settle must never release another
+  -- owner's claim.
   held()
   T.check_equal(#sends_to(env, 2001, Link.MSG_CMD_ACK), 0, "late settle sends no ack")
+  T.check(flocloud_state.busy, "late settle does not release the fresh poll")
+  T.check_equal(flocloud_state.busy_what, "poll", "fresh poll still owns busy")
+  -- Completing the fresh poll releases busy without a duplicate poll.
+  fresh[1](nil, { user = { id = 7 }, devices = { make_valve() }, accesses = {} })
+  T.check_equal(#env.fetch_calls, calls + 1, "no duplicate poll after the watchdog poll")
+  T.check(not flocloud_state.busy, "fresh poll completion releases busy")
   OnDriverDestroyed()
 end)
 
