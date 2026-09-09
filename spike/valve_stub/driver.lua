@@ -4,8 +4,9 @@
 -- Static CONTROL consumer link (binding 6000, class FLOGIC_VALVE) toward the
 -- cloud stub plus a light_v2 proxy (binding 5001) with switch capabilities.
 -- Answers SPIKE_PING with SPIKE_PONG (multi-KB both directions), sends
--- SPIKE_HELLO on bind, and applies DYNAMIC_ON / DYNAMIC_OFF / TOGGLE /
--- SET_BRIGHTNESS_TARGET while reporting LIGHT_BRIGHTNESS_CHANGED 100/0
+-- SPIKE_HELLO on bind, and applies DYNAMIC_ON / DYNAMIC_OFF / ON / OFF /
+-- TOGGLE / BUTTON_ACTION / SET_BRIGHTNESS_TARGET / RAMP_TO_LEVEL while
+-- reporting LIGHT_BRIGHTNESS_CHANGED 100/0
 -- (the pre-3.3 LIGHT_LEVEL notify is silently discarded by light_v2
 -- proxies). A SendToDevice fallback path (ExecuteCommand + provider
 -- discovery) mirrors the cloud stub.
@@ -158,22 +159,37 @@ end
 local function spike_on_light_message(strCommand, tParams)
   local st = spike_valve_state
   tParams = tParams or {}
-  if strCommand == "DYNAMIC_ON" then
-    spike_apply_level(100, "DYNAMIC_ON")
-  elseif strCommand == "DYNAMIC_OFF" then
-    spike_apply_level(0, "DYNAMIC_OFF")
+  if strCommand == "DYNAMIC_ON" or strCommand == "ON" then
+    spike_apply_level(100, strCommand)
+  elseif strCommand == "DYNAMIC_OFF" or strCommand == "OFF" then
+    spike_apply_level(0, strCommand)
   elseif strCommand == "TOGGLE" then
     if st.level > 0 then
       spike_apply_level(0, "TOGGLE")
     else
       spike_apply_level(100, "TOGGLE")
     end
-  elseif strCommand == "SET_BRIGHTNESS_TARGET" then
+  elseif strCommand == "BUTTON_ACTION" then
+    local button = tostring(tParams.BUTTON_ID or "")
+    if tostring(tParams.ACTION or "") == "2" then
+      if button == "0" then
+        spike_apply_level(100, "BUTTON_ACTION 0")
+      elseif button == "1" then
+        spike_apply_level(0, "BUTTON_ACTION 1")
+      elseif button == "2" then
+        if st.level > 0 then
+          spike_apply_level(0, "BUTTON_ACTION 2")
+        else
+          spike_apply_level(100, "BUTTON_ACTION 2")
+        end
+      end
+    end
+  elseif strCommand == "SET_BRIGHTNESS_TARGET" or strCommand == "RAMP_TO_LEVEL" then
     local target = tonumber(tParams.LIGHT_BRIGHTNESS_TARGET) or tonumber(tParams.LEVEL) or tonumber(tParams.level) or 0
     if target > 0 then
-      spike_apply_level(100, "SET_BRIGHTNESS_TARGET " .. target)
+      spike_apply_level(100, strCommand .. " " .. target)
     else
-      spike_apply_level(0, "SET_BRIGHTNESS_TARGET 0")
+      spike_apply_level(0, strCommand .. " 0")
     end
   end
 end

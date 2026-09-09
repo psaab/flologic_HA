@@ -35,10 +35,27 @@ def test_spike_light_form_matches_production() -> None:
     """
     stubs = _manifest("valve_stub")
     production = ElementTree.parse(REPO / "c4" / "valve" / "driver.xml").getroot()
+    expected_combo = {
+        "dimmer": "False",
+        "set_level": "False",
+        "ramp_level": "False",
+        "click_rates": "False",
+        "hold_rates": "False",
+        "has_preset": "False",
+        "on_off": "True",
+        "has_leds": "False",
+        "hide_proxy_events": "False",
+        "hide_proxy_properties": "True",
+        "load_group_support": "True",
+        "advanced_scene_support": "False",
+        "reduced_als_support": "True",
+        "supports_multichannel_scenes": "False",
+    }
     for manifest in (stubs, production):
         proxy = manifest.find("proxies/proxy")
         assert proxy is not None and proxy.text == "light_v2"
         assert proxy.get("proxybindingid") == "5001"
+        assert manifest.find("proxies").get("qty") == "1"
         connections = {
             entry.findtext("id"): entry
             for entry in manifest.findall("connections/connection")
@@ -47,8 +64,10 @@ def test_spike_light_form_matches_production() -> None:
         assert light.findtext("type") == "2"
         assert light.findtext("consumer") == "False"
         assert light.findtext("classes/class/classname") == "LIGHT_V2"
-        assert light.find("capabilities") is None, "switch combo is the default set"
-        assert manifest.find("capabilities") is None, "no top-level capabilities"
+        assert light.find("capabilities") is None
+        capabilities = manifest.find("capabilities")
+        assert capabilities is not None, "explicit top-level switch combo"
+        assert {c.tag: (c.text or "").strip() for c in capabilities} == expected_combo
 
 
 def test_spike_link_ids_match_procedure() -> None:

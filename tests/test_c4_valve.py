@@ -81,16 +81,15 @@ def test_valve_manifest_links_switch_contacts_and_identity() -> None:
     assert manifest.findtext("name") == "FloLogic Water Valve"
     version = manifest.findtext("version")
     assert f'FLOVALVE_DRIVER_VERSION = "{version}"' in _read("valve/valve.lua")
-    assert version == "2026090822"
+    assert version == "2026090823"
     # Switch-only light proxy on 5001.
     assert len(manifest.findall("proxies/proxy")) == 1
+    assert manifest.find("proxies").get("qty") == "1"
     proxy = manifest.find("proxies/proxy")
     assert proxy.text == "light_v2"
     assert proxy.get("proxybindingid") == "5001"
     # Proxy connection: type 2 is Proxy (type 1 is Control); a v2 light
-    # connection declared as type 1 never routes proxy state. No
-    # capabilities block: the switch combo is the documented default set
-    # (dimmer/set_level/supports_target false).
+    # connection declared as type 1 never routes proxy state.
     light = next(
         entry
         for entry in manifest.findall("connections/connection")
@@ -122,8 +121,27 @@ def test_valve_manifest_links_switch_contacts_and_identity() -> None:
     assert connections[5001].findtext("type") == "2"
     assert connections[5001].findtext("consumer") == "False"
     assert connections[5001].find("capabilities") is None
-    # Switch combo is the documented default set (dimmer/set_level false).
-    assert manifest.find("capabilities") is None, "no top-level capabilities"
+    # Switch combo is an explicit top-level block: on_off renders the
+    # tile buttons (without it the tile is blank and taps go nowhere).
+    # Mirrors the field-working Hue Scenes switch declaration.
+    capabilities = manifest.find("capabilities")
+    assert capabilities is not None
+    assert {child.tag: (child.text or "").strip() for child in capabilities} == {
+        "dimmer": "False",
+        "set_level": "False",
+        "ramp_level": "False",
+        "click_rates": "False",
+        "hold_rates": "False",
+        "has_preset": "False",
+        "on_off": "True",
+        "has_leds": "False",
+        "hide_proxy_events": "False",
+        "hide_proxy_properties": "True",
+        "load_group_support": "True",
+        "advanced_scene_support": "False",
+        "reduced_als_support": "True",
+        "supports_multichannel_scenes": "False",
+    }
     expected_contacts = {
         101: "Valve Closed",
         102: "Away Mode",

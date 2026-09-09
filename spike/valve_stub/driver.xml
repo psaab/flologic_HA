@@ -87,7 +87,7 @@
     </actions>
     <script file="driver.lua" encryption="0" jit="1"></script>
   </config>
-  <proxies>
+  <proxies qty="1">
     <proxy proxybindingid="5001">light_v2</proxy>
   </proxies>
   <connections>
@@ -106,9 +106,10 @@
         </class>
       </classes>
     </connection>
-    <!-- Proxy connection: type 2 is Proxy (type 1 is Control). No
-         capabilities block: the switch combo is the documented default
-         set, matching field-working switch drivers. -->
+    <!-- Proxy connection: type 2 is Proxy (type 1 is Control). The
+         switch combo lives in the top-level <capabilities> block below
+         (on_off is required: without it the proxy renders no on/off
+         buttons at all). -->
     <connection>
       <id>5001</id>
       <facing>6</facing>
@@ -125,5 +126,24 @@
       </classes>
     </connection>
   </connections>
+  <!-- Switch combo for the light_v2 proxy. Must stay identical to the
+       production valve manifest (H2): a passing spike run only retires
+       the production risk when both declare the same form. -->
+  <capabilities>
+    <dimmer>False</dimmer>
+    <set_level>False</set_level>
+    <ramp_level>False</ramp_level>
+    <click_rates>False</click_rates>
+    <hold_rates>False</hold_rates>
+    <has_preset>False</has_preset>
+    <on_off>True</on_off>
+    <has_leds>False</has_leds>
+    <hide_proxy_events>False</hide_proxy_events>
+    <hide_proxy_properties>True</hide_proxy_properties>
+    <load_group_support>True</load_group_support>
+    <advanced_scene_support>False</advanced_scene_support>
+    <reduced_als_support>True</reduced_als_support>
+    <supports_multichannel_scenes>False</supports_multichannel_scenes>
+  </capabilities>
   <events/>
 </devicedata>

@@ -1,5 +1,21 @@
 Control4 DriverWorks package for FloLogic Connect valves (OS 3.3.0+).
 
+Version **2026090823** fixes the valve tile still dead (blank state, dead
+taps) after a fresh add on 0822. Root cause: the valve manifest declared
+no top-level `<capabilities>` block, so the light_v2 proxy instantiated
+with no `on_off` combo and rendered no on/off buttons at all. The 0821
+review had removed `on_off` as "fictional" by trusting the proxy-protocol
+reference, which documents no such capability — but two field-working
+switch drivers (kasa-cloud, Hue Scenes) both declare `on_off` true, with
+the comment "without this, the light wouldn't show on/off buttons." This
+release restores the explicit switch combo (mirroring Hue Scenes), adds
+`qty="1"` to `<proxies>`, and extends the light handler with the
+remaining kasa-proven commands: plain `ON`/`OFF`, `BUTTON_ACTION`
+(remotes/keypads, acting on release), and `RAMP_TO_LEVEL` (routed to
+open/close like `SET_BRIGHTNESS_TARGET`). After updating, remove and
+re-add the valve driver instance so the new proxy combo takes effect,
+then re-pair the cloud link.
+
 Version **2026090822** fixes the valve tile state still not showing
 after the 0821 vocabulary fix, with three further proxy-leg repairs
 (all cross-checked against the official proxy protocol docs and a

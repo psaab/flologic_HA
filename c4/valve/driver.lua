@@ -2239,7 +2239,7 @@ end
 -- C4 calls (safe to load in tests with a stub C4). Lua 5.1 safe.
 -- ============================================================================
 
-FLOVALVE_DRIVER_VERSION = "2026090822"
+FLOVALVE_DRIVER_VERSION = "2026090823"
 print("[flologic-valve] Lua loaded: " .. FLOVALVE_DRIVER_VERSION)
 
 -- Static link consumer (binds to one cloud-driver FLOGIC_VALVE slot) and
@@ -3527,10 +3527,12 @@ end
 -- --- Light proxy (app switch) -------------------------------------------------
 -- Navigator clicks arrive as DYNAMIC_ON/DYNAMIC_OFF (OS 3.3.2+);
 -- programming and scenes use TOGGLE and SET_BRIGHTNESS_TARGET (level > 0
--- on, 0 off). OFF issues the shutoff mode; ON restores the last
--- non-shutoff mode tracked from state pushes (default Home). The tile
--- level reports optimistically for responsiveness; contacts, properties,
--- and events still change only on FLOGIC_STATE pushes.
+-- on, 0 off); remotes/keypads use BUTTON_ACTION; older senders and
+-- Composer actions use plain ON/OFF. OFF issues the shutoff mode; ON
+-- restores the last non-shutoff mode tracked from state pushes (default
+-- Home). The tile level reports optimistically for responsiveness;
+-- contacts, properties, and events still change only on FLOGIC_STATE
+-- pushes.
 
 local function flovalve_open_valve(label)
   if flovalve_send_command(flovalve_state.restore_action, nil, label or "Open Valve") then
@@ -3555,28 +3557,50 @@ local function flovalve_toggle_valve(label)
   return flovalve_open_valve(label or "Toggle")
 end
 
+-- Param shape follows the supports_target capability, which this switch
+-- leaves unset: targets-enabled proxies send LIGHT_BRIGHTNESS_TARGET,
+-- legacy ones send LEVEL (or LIGHT on the oldest API). Accept all
+-- three, preferring the Level Target name. Shared by
+-- SET_BRIGHTNESS_TARGET and RAMP_TO_LEVEL (a switch has no ramp: any
+-- target level routes to open/close).
+local function flovalve_target_level(tParams)
+  local level = tParams ~= nil and tParams.LIGHT_BRIGHTNESS_TARGET or nil
+  if level == nil then
+    level = tParams ~= nil and tParams.LEVEL or nil
+  end
+  if level == nil then
+    level = tParams ~= nil and tParams.LIGHT or nil
+  end
+  return tonumber(level)
+end
+
 function flovalve_on_light(strCommand, tParams)
-  if strCommand == "DYNAMIC_ON" then
+  if strCommand == "DYNAMIC_ON" or strCommand == "ON" then
     flovalve_open_valve("Open Valve")
-  elseif strCommand == "DYNAMIC_OFF" then
+  elseif strCommand == "DYNAMIC_OFF" or strCommand == "OFF" then
     flovalve_close_valve("Close Valve")
   elseif strCommand == "TOGGLE" then
     flovalve_toggle_valve("Toggle")
-  elseif strCommand == "SET_BRIGHTNESS_TARGET" then
-    -- Param shape follows the supports_target capability, which this
-    -- switch leaves unset: targets-enabled proxies send
-    -- LIGHT_BRIGHTNESS_TARGET, legacy ones send LEVEL (or LIGHT on the
-    -- oldest API). Accept all three, preferring the Level Target name.
-    local level = tParams ~= nil and tParams.LIGHT_BRIGHTNESS_TARGET or nil
-    if level == nil then
-      level = tParams ~= nil and tParams.LEVEL or nil
+  elseif strCommand == "BUTTON_ACTION" then
+    -- Neeo/Halo remotes and keypads drive light_v2 via BUTTON_ACTION,
+    -- not ON/OFF/TOGGLE: BUTTON_ID 0 on, 1 off, 2 toggle. Act on
+    -- release (ACTION 2) like the stock proxy so the press+release
+    -- pair fires once.
+    local button = tostring(tParams ~= nil and tParams.BUTTON_ID or "")
+    local action = tostring(tParams ~= nil and tParams.ACTION or "")
+    if action == "2" then
+      if button == "0" then
+        flovalve_open_valve("Open Valve")
+      elseif button == "1" then
+        flovalve_close_valve("Close Valve")
+      elseif button == "2" then
+        flovalve_toggle_valve("Toggle")
+      end
     end
+  elseif strCommand == "SET_BRIGHTNESS_TARGET" or strCommand == "RAMP_TO_LEVEL" then
+    local level = flovalve_target_level(tParams)
     if level == nil then
-      level = tParams ~= nil and tParams.LIGHT or nil
-    end
-    level = tonumber(level)
-    if level == nil then
-      flovalve_log_warn("SET_BRIGHTNESS_TARGET without a level; ignored")
+      flovalve_log_warn(strCommand .. " without a level; ignored")
       return false
     end
     if level > 0 then
