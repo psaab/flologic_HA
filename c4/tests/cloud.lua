@@ -111,8 +111,10 @@ local function cloud_env()
   end
   function C4:SetTimer(ms, callback, repeating)
     -- Mirror Director: a nil repeat flag raises on hardware ("repeat
-    -- should be a boolean"). Fail here instead of only in the field.
+    -- should be a boolean"), as does a zero interval ("Invalid argument
+    -- value"). Fail here instead of only in the field.
     assert(type(repeating) == "boolean", "C4:SetTimer repeating must be a boolean")
+    assert(type(ms) == "number" and ms > 0, "C4:SetTimer ms must be positive")
     local timer = {}
     function timer:Cancel()
       self.cancelled = true
@@ -196,7 +198,7 @@ local function discover(env, devices, accesses)
 end
 
 T.test("cloud: version, link pin, updater asset, no picker (CLOUD-U6)", function()
-  T.check_equal(FLOCLOUD_DRIVER_VERSION, "2026090826", "cloud version")
+  T.check_equal(FLOCLOUD_DRIVER_VERSION, "2026090827", "cloud version")
   T.check_equal(FLOGIC_LINK_VERSION, 1, "protocol version is 1")
   T.check_equal(FloUpdate.ASSET, "flologic_cloud.c4z", "updater tracks the cloud package")
   T.check_equal(FloUpdate.FAMILY_ASSETS[1], "flologic_cloud.c4z", "updater requires its own package")

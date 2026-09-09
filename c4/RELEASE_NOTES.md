@@ -1,5 +1,12 @@
 Control4 DriverWorks package for FloLogic Connect valves (OS 3.3.0+).
 
+Version **2026090827** fixes the follow-on Identify crash ("Invalid
+argument value"): Director also rejects 0ms timers, and the first
+flash step scheduled one. The first step now fires immediately with
+the rest scheduled from 600ms, and all three `C4:SetTimer` test stubs
+also assert a positive interval (mutation-proved: the 0ms shape now
+fails the suite). Lua-only: plain update, no re-add needed.
+
 Version **2026090826** fixes Identify Tile crashing on hardware with
 "repeat should be a boolean": Director rejects a nil `repeating` flag
 to `C4:SetTimer`, and the two new identify timers were the only

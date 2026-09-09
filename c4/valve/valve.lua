@@ -26,7 +26,7 @@
 -- C4 calls (safe to load in tests with a stub C4). Lua 5.1 safe.
 -- ============================================================================
 
-FLOVALVE_DRIVER_VERSION = "2026090826"
+FLOVALVE_DRIVER_VERSION = "2026090827"
 print("[flologic-valve] Lua loaded: " .. FLOVALVE_DRIVER_VERSION)
 
 -- Static link consumer (binds to one cloud-driver FLOGIC_VALVE slot) and
@@ -1364,8 +1364,12 @@ local function flovalve_identify_tile()
   local seq = st.identify_seq
   flovalve_log("identify tile: flashing proxy level 0/100")
   flovalve_set_prop("Last Command", "Identify Tile: flashing")
+  -- Director rejects 0ms timers ("Invalid argument value"), so the first
+  -- step fires immediately and the rest are scheduled from 600ms.
   local steps = { 0, 100, 0, 100 }
-  for i, level in ipairs(steps) do
+  flovalve_flash_proxy_level(steps[1])
+  for i = 2, #steps do
+    local level = steps[i]
     flovalve_set_timer((i - 1) * 600, function()
       if flovalve_state ~= st or st.identify_seq ~= seq then
         return

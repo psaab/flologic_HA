@@ -60,8 +60,10 @@ local function director()
   end
   function C4:SetTimer(ms, callback, repeating)
     -- Mirror Director: a nil repeat flag raises on hardware ("repeat
-    -- should be a boolean"). Fail here instead of only in the field.
+    -- should be a boolean"), as does a zero interval ("Invalid argument
+    -- value"). Fail here instead of only in the field.
     assert(type(repeating) == "boolean", "C4:SetTimer repeating must be a boolean")
+    assert(type(ms) == "number" and ms > 0, "C4:SetTimer ms must be positive")
     local timer = {}
     function timer:Cancel()
       self.cancelled = true
