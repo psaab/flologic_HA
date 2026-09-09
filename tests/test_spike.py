@@ -44,14 +44,10 @@ def test_spike_light_form_matches_production() -> None:
             for entry in manifest.findall("connections/connection")
         }
         light = connections["5001"]
-        assert light.findtext("type") == "1"
+        assert light.findtext("type") == "2"
         assert light.findtext("consumer") == "False"
         assert light.findtext("classes/class/classname") == "LIGHT_V2"
-        capabilities = light.find("capabilities")
-        assert capabilities is not None, "switch capabilities live on 5001"
-        assert capabilities.findtext("dimmer") == "false"
-        assert capabilities.findtext("set_level") == "false"
-        assert capabilities.findtext("on_off") == "True"
+        assert light.find("capabilities") is None, "switch combo is the default set"
         assert manifest.find("capabilities") is None, "no top-level capabilities"
 
 

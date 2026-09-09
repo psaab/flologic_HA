@@ -8,7 +8,7 @@
   <manufacturer>FloLogic</manufacturer>
   <driver>DriverWorks</driver>
   <control>lua_gen</control>
-  <version>2026090821</version>
+  <version>2026090822</version>
   <!-- Navigator clicks arrive as DYNAMIC_ON/DYNAMIC_OFF (OS 3.3.2+). -->
   <minimum_os_version>3.3.2</minimum_os_version>
   <created>09/08/2026 12:00 PM</created>
@@ -18,11 +18,11 @@
   <auto_update>false</auto_update>
   <minimum_auto_update_version>1</minimum_auto_update_version>
   <states/>
-  <!-- Switch-only light capabilities (plan D4) live on connection 5001
-       below, matching the spike-validated form: no dimmer, no set-level
-       slider, on/off tile only. The driver reports
+  <!-- Switch-only light proxy (plan D4) on connection 5001 below: no
+       dimmer, no set-level slider, on/off tile only. The driver reports
        LIGHT_BRIGHTNESS_CHANGED 100/0 and handles DYNAMIC_ON/DYNAMIC_OFF,
-       TOGGLE, and SET_BRIGHTNESS_TARGET. -->
+       TOGGLE, SET_BRIGHTNESS_TARGET, and the GET_* state queries plus
+       OnRequestData so connecting navigators never time out to 0. -->
   <config>
     <properties>
       <property>
@@ -55,7 +55,7 @@
       <property>
         <name>Driver Version</name>
         <type>STRING</type>
-        <default>2026090821</default>
+        <default>2026090822</default>
         <readonly>true</readonly>
       </property>
       <property>
@@ -381,11 +381,16 @@
         </class>
       </classes>
     </connection>
+    <!-- Proxy connection: type 2 is Proxy (type 1 is Control). A v2 light
+         connection declared as type 1 never routes proxy state, so the
+         tile stays blank. No capabilities block: the switch combo is the
+         documented default set (dimmer/set_level/supports_target false),
+         matching field-working switch drivers. -->
     <connection>
       <id>5001</id>
       <facing>6</facing>
       <connectionname>Valve Switch</connectionname>
-      <type>1</type>
+      <type>2</type>
       <consumer>False</consumer>
       <audiosource>False</audiosource>
       <videosource>False</videosource>
@@ -395,11 +400,6 @@
           <classname>LIGHT_V2</classname>
         </class>
       </classes>
-      <capabilities>
-        <dimmer>false</dimmer>
-        <set_level>false</set_level>
-        <on_off>True</on_off>
-      </capabilities>
     </connection>
     <connection>
       <id>101</id>

@@ -106,11 +106,14 @@
         </class>
       </classes>
     </connection>
+    <!-- Proxy connection: type 2 is Proxy (type 1 is Control). No
+         capabilities block: the switch combo is the documented default
+         set, matching field-working switch drivers. -->
     <connection>
       <id>5001</id>
       <facing>6</facing>
       <connectionname>Light</connectionname>
-      <type>1</type>
+      <type>2</type>
       <consumer>False</consumer>
       <audiosource>False</audiosource>
       <videosource>False</videosource>
@@ -120,11 +123,6 @@
           <classname>LIGHT_V2</classname>
         </class>
       </classes>
-      <capabilities>
-        <dimmer>false</dimmer>
-        <set_level>false</set_level>
-        <on_off>True</on_off>
-      </capabilities>
     </connection>
   </connections>
   <events/>

@@ -2239,7 +2239,7 @@ end
 -- C4 calls (safe to load in tests with a stub C4). Lua 5.1 safe.
 -- ============================================================================
 
-FLOVALVE_DRIVER_VERSION = "2026090821"
+FLOVALVE_DRIVER_VERSION = "2026090822"
 print("[flologic-valve] Lua loaded: " .. FLOVALVE_DRIVER_VERSION)
 
 -- Static link consumer (binds to one cloud-driver FLOGIC_VALVE slot) and
@@ -3565,11 +3565,14 @@ function flovalve_on_light(strCommand, tParams)
   elseif strCommand == "SET_BRIGHTNESS_TARGET" then
     -- Param shape follows the supports_target capability, which this
     -- switch leaves unset: targets-enabled proxies send
-    -- LIGHT_BRIGHTNESS_TARGET, legacy ones send LEVEL. Accept either,
-    -- preferring the Level Target name.
+    -- LIGHT_BRIGHTNESS_TARGET, legacy ones send LEVEL (or LIGHT on the
+    -- oldest API). Accept all three, preferring the Level Target name.
     local level = tParams ~= nil and tParams.LIGHT_BRIGHTNESS_TARGET or nil
     if level == nil then
       level = tParams ~= nil and tParams.LEVEL or nil
+    end
+    if level == nil then
+      level = tParams ~= nil and tParams.LIGHT or nil
     end
     level = tonumber(level)
     if level == nil then
@@ -3581,11 +3584,25 @@ function flovalve_on_light(strCommand, tParams)
     else
       flovalve_close_valve("Close Valve")
     end
+  elseif strCommand == "GET_LIGHT_LEVEL" or strCommand == "GET_STATE" or strCommand == "GET_BRIGHTNESS_TARGET" then
+    -- Navigator queries current state on load: reply with the best-known
+    -- level or the query times out and the tile resets to 0. Never
+    -- commands the valve; a pure state serve.
+    flovalve_report_level(flovalve_state.last_level)
   else
     flovalve_log("light proxy command ignored: " .. tostring(strCommand))
     return false
   end
   return true
+end
+
+-- Director asks for current proxy state when a navigator connects (and at
+-- other sync points): serve the best-known level. The v2 tile protocol
+-- has no "unknown" state — missing data renders as 0 — so always answer.
+function OnRequestData(idBinding, strGet, strSet)
+  if idBinding == FLOVALVE_LIGHT_ID then
+    flovalve_report_level(flovalve_state.last_level)
+  end
 end
 
 -- --- Director ingress ---------------------------------------------------------
@@ -3626,11 +3643,12 @@ function OnBindingChanged(idBinding, strClass, bIsBound)
   end
   if idBinding == FLOVALVE_LIGHT_ID then
     -- A freshly bound tile (new Navigator session) would otherwise sit
-    -- dark until the next cloud push: replay the last confirmed level.
-    -- With no state yet there is nothing truthful to show, so stay
-    -- quiet rather than report the default.
-    if bIsBound and flovalve_state.last_state ~= nil then
-      flovalve_report_level(flovalve_level_for(flovalve_state.last_state))
+    -- dark until the next cloud push: always serve the best-known level
+    -- (0 default). The v2 protocol has no "unknown" — missing data
+    -- renders as 0 — so quiet and default-zero are UI-identical, and
+    -- serving keeps the proxy established.
+    if bIsBound then
+      flovalve_report_level(flovalve_state.last_level)
     end
     return
   end
@@ -4218,9 +4236,10 @@ end
 
 -- --- Lifecycle ----------------------------------------------------------------
 
--- Prefill display continuity from persistence. Contacts, events, and the
--- tile level report nothing derived here except the last-known tile
--- level: only a full FLOGIC_STATE push may move programming or edges.
+-- Prefill display continuity from persistence. Contacts and events move
+-- only on a full FLOGIC_STATE push; props restore from validated persist;
+-- the tile level always reports (last-known, 0 default) so the proxy
+-- binding carries a value before the first push.
 local function flovalve_restore_display()
   local st = flovalve_state
   local saved_id = C4:PersistGetValue(FLOVALVE_PERSIST_ID)
@@ -4233,6 +4252,7 @@ local function flovalve_restore_display()
     st.valve_uuid_persisted = saved_uuid
   end
   local saved_body = C4:PersistGetValue(FLOVALVE_PERSIST_STATE)
+  local boot_level = nil
   if type(saved_body) == "string" and saved_body ~= "" then
     local fields = FloLogicLink.parse_state_body(saved_body)
     -- Identity and state restore as ONE validated association: the body
@@ -4246,9 +4266,13 @@ local function flovalve_restore_display()
       flovalve_set_prop(FLOVALVE_PROP_VALVE_NAME, fields.name or ("Valve " .. tostring(fields.id)))
       flovalve_set_prop("Mode", FloModel.mode_status_name({ mode = fields.mode }))
       flovalve_track_restore(fields)
-      flovalve_report_level(flovalve_level_for(fields))
+      boot_level = flovalve_level_for(fields)
     end
   end
+  -- Always establish the tile: persisted level when a validated body
+  -- exists, else the best-known default. Boot must speak first — a
+  -- binding with no value leaves every tile dark until a push lands.
+  flovalve_report_level(boot_level or st.last_level)
 end
 
 function OnDriverInit(driver_init_type)

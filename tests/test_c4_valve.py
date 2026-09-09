@@ -81,15 +81,23 @@ def test_valve_manifest_links_switch_contacts_and_identity() -> None:
     assert manifest.findtext("name") == "FloLogic Water Valve"
     version = manifest.findtext("version")
     assert f'FLOVALVE_DRIVER_VERSION = "{version}"' in _read("valve/valve.lua")
-    assert version == "2026090821"
+    assert version == "2026090822"
     # Switch-only light proxy on 5001.
     assert len(manifest.findall("proxies/proxy")) == 1
     proxy = manifest.find("proxies/proxy")
     assert proxy.text == "light_v2"
     assert proxy.get("proxybindingid") == "5001"
-    assert "<dimmer>false</dimmer>" in text
-    assert "<set_level>false</set_level>" in text
-    assert "<on_off>True</on_off>" in text
+    # Proxy connection: type 2 is Proxy (type 1 is Control); a v2 light
+    # connection declared as type 1 never routes proxy state. No
+    # capabilities block: the switch combo is the documented default set
+    # (dimmer/set_level/supports_target false).
+    light = next(
+        entry
+        for entry in manifest.findall("connections/connection")
+        if entry.findtext("id") == "5001"
+    )
+    assert light.findtext("type") == "2"
+    assert light.find("capabilities") is None
     # Tile clicks need DYNAMIC_ON/DYNAMIC_OFF (OS 3.3.2+).
     assert manifest.findtext("minimum_os_version") == "3.3.2"
     # Composer discovery: category declared; no combo element (the UI goes
@@ -111,13 +119,10 @@ def test_valve_manifest_links_switch_contacts_and_identity() -> None:
     # Light form must match the spike-validated declaration exactly, or a
     # passing spike run proves nothing about the shipped tile (H2).
     assert connections[5001].findtext("classes/class/classname") == "LIGHT_V2"
-    assert connections[5001].findtext("type") == "1"
+    assert connections[5001].findtext("type") == "2"
     assert connections[5001].findtext("consumer") == "False"
-    capabilities = connections[5001].find("capabilities")
-    assert capabilities is not None, "switch capabilities live on 5001"
-    assert capabilities.findtext("dimmer") == "false"
-    assert capabilities.findtext("set_level") == "false"
-    assert capabilities.findtext("on_off") == "True"
+    assert connections[5001].find("capabilities") is None
+    # Switch combo is the documented default set (dimmer/set_level false).
     assert manifest.find("capabilities") is None, "no top-level capabilities"
     expected_contacts = {
         101: "Valve Closed",

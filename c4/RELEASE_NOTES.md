@@ -1,5 +1,22 @@
 Control4 DriverWorks package for FloLogic Connect valves (OS 3.3.0+).
 
+Version **2026090822** fixes the valve tile state still not showing
+after the 0821 vocabulary fix, with three further proxy-leg repairs
+(all cross-checked against the official proxy protocol docs and a
+field-working light_v2 switch driver): the 5001 light connection was
+declared as type 1 (Control) instead of type 2 (Proxy), so proxy
+state never routed — now type 2 with the capabilities block removed
+(the switch combo is the documented default set; the previous
+`on_off` element is not a real light_v2 capability); the driver now
+answers `OnRequestData` and the `GET_LIGHT_LEVEL` / `GET_STATE` /
+`GET_BRIGHTNESS_TARGET` queries with the best-known level, since a
+connecting navigator that gets no reply times out and resets the
+tile to 0; and boot plus light-bind always serve the best-known
+level (0 default) so the binding carries a value before the first
+push. `SET_BRIGHTNESS_TARGET` also accepts the oldest-API `LIGHT`
+param shape. The spike stub carries the same proxy-leg fixes. Cloud
+package is a lockstep version bump only.
+
 Version **2026090821** fixes the valve tile state never showing in
 Navigator: the driver reported the pre-3.3 `LIGHT_LEVEL` notify, which
 light_v2 proxies silently discard. The tile now reports the Level

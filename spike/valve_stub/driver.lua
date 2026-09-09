@@ -178,6 +178,12 @@ local function spike_on_light_message(strCommand, tParams)
   end
 end
 
+function OnRequestData(idBinding, strGet, strSet)
+  if idBinding == SPIKE_LIGHT_ID then
+    spike_apply_level(spike_valve_state.level, "OnRequestData")
+  end
+end
+
 function ReceivedFromProxy(idBinding, strCommand, tParams)
   if idBinding == SPIKE_LINK_ID then
     spike_on_link_message(strCommand, tParams)

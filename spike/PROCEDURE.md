@@ -11,8 +11,9 @@ Artifacts:
   (Composer-indexing shim, class `FLOGIC_VALVE`) plus the dynamic test
   link 2002 of the same class, persisted and restored on init. Bind and
   ping over the dynamic `Spike Valve 1` (2002), never the static shim.
-- `spike/valve_stub/` — static link consumer (6000) + `light_v2` proxy (5001,
-  switch capabilities: dimmer/set_level false, on_off true).
+- `spike/valve_stub/` — static link consumer (6000) + `light_v2` proxy
+  (5001, type 2, no capabilities block: the switch combo is the
+  documented default set).
 - `spike/cloud_stub.c4z`, `spike/valve_stub.c4z` — packaged drivers.
 
 Lua logs are prefixed `[spike-cloud]` / `[spike-valve]` (Director Lua output

@@ -124,7 +124,22 @@ end
 
 local function boot(env)
   OnDriverInit("test")
+  -- Deterministic tile baseline: last_level intentionally survives
+  -- in-process reloads in production, which would leak across tests
+  -- sharing one Lua state. Reset before LateInit so restore recomputes
+  -- from persist (or 0), then wipe boot's own *light* sends (link
+  -- traffic such as the startup hello is untouched): every level
+  -- sequence below asserts post-boot sends only, and boot
+  -- establishment itself is pinned by its dedicated test.
+  flovalve_state.last_level = 0
   OnDriverLateInit("test")
+  local kept = {}
+  for _, send in ipairs(env.proxy_sends) do
+    if send.binding ~= LIGHT then
+      kept[#kept + 1] = send
+    end
+  end
+  env.proxy_sends = kept
   return env
 end
 
@@ -243,7 +258,7 @@ end
 
 T.test("valve: version, link pin, updater asset, no selector (VALVE-U4)", function()
   valve_env()
-  T.check_equal(FLOVALVE_DRIVER_VERSION, "2026090821", "valve version lockstep with cloud")
+  T.check_equal(FLOVALVE_DRIVER_VERSION, "2026090822", "valve version lockstep with cloud")
   T.check_equal(FLOGIC_LINK_VERSION, 1, "protocol version is 1")
   T.check_equal(FloUpdate.ASSET, "flologic_water_valve.c4z", "updater tracks the valve package")
   T.check_equal(FloUpdate.FAMILY_ASSETS[1], "flologic_cloud.c4z", "updater requires the cloud sibling")
@@ -419,10 +434,17 @@ T.test("valve: Navigator click sends open/close and reports optimistically", fun
   ReceivedFromProxy(LIGHT, "SET_BRIGHTNESS_TARGET", { LIGHT_BRIGHTNESS_TARGET = 100, LEVEL = 0 })
   local pref = Link.parse(commands_sent(env)[#commands_sent(env)].params)
   T.check_equal(pref.fields.action, "mode_home", "v2 target wins over legacy LEVEL")
+  -- Oldest-API shape: bare LIGHT.
+  ReceivedFromProxy(LIGHT, "SET_BRIGHTNESS_TARGET", { LIGHT = 0 })
+  local leg0 = Link.parse(commands_sent(env)[#commands_sent(env)].params)
+  T.check_equal(leg0.fields.action, "mode_shutoff", "legacy LIGHT 0 closes")
+  ReceivedFromProxy(LIGHT, "SET_BRIGHTNESS_TARGET", { LIGHT = 50 })
+  local leg50 = Link.parse(commands_sent(env)[#commands_sent(env)].params)
+  T.check_equal(leg50.fields.action, "mode_home", "legacy LIGHT > 0 opens")
   ReceivedFromProxy(LIGHT, "SET_BRIGHTNESS_TARGET", {})
-  T.check_equal(#commands_sent(env), 8, "level-less brightness target sends nothing")
+  T.check_equal(#commands_sent(env), 10, "level-less brightness target sends nothing")
   ReceivedFromProxy(LIGHT, "BOGUS", {})
-  T.check_equal(#commands_sent(env), 8, "unknown light command sends nothing")
+  T.check_equal(#commands_sent(env), 10, "unknown light command sends nothing")
 end)
 
 T.test("valve: tile off means closed, on means everything else", function()
@@ -791,7 +813,9 @@ end)
 T.test("valve: light bind replays the confirmed level (L8)", function()
   local env = boot(valve_env())
   OnBindingChanged(LIGHT, "LIGHT_V2", true)
-  T.check_equal(#light_levels(env), 0, "no level invented before first state")
+  -- The v2 protocol has no "unknown": missing data renders as 0, so the
+  -- bind serves the best-known level (0 default) rather than quiet.
+  check_list_equal(light_levels(env), { 0 }, "bind serves best-known level before first state")
   handshake(env, "11")
   push_state(env, base_state({ mode = 8 }))
   env.proxy_sends = {}
@@ -799,6 +823,51 @@ T.test("valve: light bind replays the confirmed level (L8)", function()
   check_list_equal(light_levels(env), { 0 }, "rebound tile replays the confirmed level")
   OnBindingChanged(LIGHT, "LIGHT_V2", false)
   T.check_equal(#light_levels(env), 1, "unbind replays nothing")
+end)
+
+T.test("valve: boot establishes the tile before the first push", function()
+  -- Manual boot (no send wipe): a binding with no value leaves every
+  -- tile dark, so boot must speak first even with no persist and no
+  -- state yet.
+  local env = valve_env()
+  OnDriverInit("test")
+  flovalve_state.last_level = 0
+  OnDriverLateInit("test")
+  check_list_equal(light_levels(env), { 0 }, "fresh boot establishes 0")
+  -- Persisted closed state boots to 0 (not the default path): the
+  -- restore expression must survive a falsy-looking 0 level.
+  local env2 = valve_env()
+  env2.saved["flovalve_valve_id"] = "11"
+  env2.saved["flovalve_last_state"] = Link.build_state_body(base_state({ id = "11", mode = 8 }))
+  OnDriverInit("test")
+  flovalve_state.last_level = 100
+  OnDriverLateInit("test")
+  check_list_equal(light_levels(env2), { 0 }, "persisted closed boots to 0")
+  T.check_equal(flovalve_state.last_level, 0, "boot level latched, stale 100 dropped")
+end)
+
+T.test("valve: navigator state queries are served, never command", function()
+  local env = boot(valve_env())
+  -- Unknown state: serve the default, command nothing. Silence would
+  -- time the query out and reset the tile to 0 anyway.
+  OnRequestData(LIGHT)
+  check_list_equal(light_levels(env), { 0 }, "request-data serves 0 with no state")
+  T.check_equal(#commands_sent(env), 0, "request-data commands nothing")
+  OnRequestData(600)
+  T.check_equal(#light_levels(env), 1, "request-data answers the light binding only")
+  for _, cmd in ipairs({ "GET_LIGHT_LEVEL", "GET_STATE", "GET_BRIGHTNESS_TARGET" }) do
+    ReceivedFromProxy(LIGHT, cmd, {})
+  end
+  check_list_equal(light_levels(env), { 0, 0, 0, 0 }, "each query is answered")
+  T.check_equal(#commands_sent(env), 0, "queries command nothing")
+  -- Known state: serve it, still commanding nothing.
+  handshake(env, "11")
+  push_state(env, base_state({ mode = 1 }))
+  env.proxy_sends = {}
+  OnRequestData(LIGHT)
+  ReceivedFromProxy(LIGHT, "GET_STATE", {})
+  check_list_equal(light_levels(env), { 100, 100 }, "queries serve the observed level")
+  T.check_equal(#commands_sent(env), 0, "queries never command the valve")
 end)
 
 T.test("valve: program table actions resolve", function()
