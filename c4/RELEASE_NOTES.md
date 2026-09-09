@@ -1,5 +1,19 @@
 Control4 DriverWorks package for FloLogic Connect valves (OS 3.3.0+).
 
+Version **2026090902** implements the proxy-availability lifecycle in
+`c4/LIGHT_TILE_SDK_OSS_FINDINGS.md`. The driver now reports
+ONLINE_CHANGED with a boolean STATE on connection/state transitions:
+online exactly when a valve is linked, observed, and fresh; offline on
+unavailable, stale, unlinked, rebind, identity change, and boot with no
+state. GET_CONNECTED_STATE answers the same live availability, and the
+missing SYNCHRONIZE state query is served; all three are pure serves
+that never command the valve. A consumed press/release pair now clears
+its gesture latch so a later click-only release from another sender
+acts. Display mapping is untouched (100/0 by closed state). Verified
+offline only: field confirmation needs the proxy GET_SETUP before/after
+plus the first received tap trace.
+Lua-only: plain update, no re-add needed.
+
 Version **2026090901** fixes Proxy Bound sticking at Unknown: the
 property stamped only on bind events, which fire on transitions alone,
 so a proxy bound before the driver loaded never re-fired. Startup now

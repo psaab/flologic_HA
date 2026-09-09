@@ -230,6 +230,16 @@ local function button_notifies(env)
   return found
 end
 
+local function online_notifies(env)
+  local found = {}
+  for _, send in ipairs(env.proxy_sends) do
+    if send.binding == LIGHT and send.command == "ONLINE_CHANGED" then
+      found[#found + 1] = send
+    end
+  end
+  return found
+end
+
 local function handshake(env, id)
   id = id or "11"
   from_cloud(env, Link.build_identity(id))
@@ -285,7 +295,7 @@ end
 
 T.test("valve: version, link pin, updater asset, no selector (VALVE-U4)", function()
   valve_env()
-  T.check_equal(FLOVALVE_DRIVER_VERSION, "2026090901", "valve version lockstep with cloud")
+  T.check_equal(FLOVALVE_DRIVER_VERSION, "2026090902", "valve version lockstep with cloud")
   T.check_equal(FLOGIC_LINK_VERSION, 1, "protocol version is 1")
   T.check_equal(FloUpdate.ASSET, "flologic_water_valve.c4z", "updater tracks the valve package")
   T.check_equal(FloUpdate.FAMILY_ASSETS[1], "flologic_cloud.c4z", "updater requires the cloud sibling")
@@ -524,6 +534,21 @@ T.test("valve: BUTTON_ACTION pairs gestures without any clock", function()
   ReceivedFromProxy(LIGHT, "BUTTON_ACTION", { BUTTON_ID = 0, ACTION = 9 })
   ReceivedFromProxy(LIGHT, "BUTTON_ACTION", {})
   T.check_equal(#commands_sent(env), before + 2, "hold/malformed send nothing")
+end)
+
+T.test("valve: a finished pair releases the latch for later click-only senders", function()
+  -- Mixed-sender defect from the SDK review: press, paired
+  -- click-release, later click-only release on the SAME button must act
+  -- twice — the consumed pair must not suppress the later release.
+  local env = boot(valve_env())
+  handshake(env, "11")
+  push_state(env, base_state())
+  local before = #commands_sent(env)
+  ReceivedFromProxy(LIGHT, "BUTTON_ACTION", { BUTTON_ID = 2, ACTION = 1 })
+  ReceivedFromProxy(LIGHT, "BUTTON_ACTION", { BUTTON_ID = "2", ACTION = "2" })
+  T.check_equal(#commands_sent(env), before + 1, "paired release fires once")
+  ReceivedFromProxy(LIGHT, "BUTTON_ACTION", { BUTTON_ID = 2, ACTION = 2 })
+  T.check_equal(#commands_sent(env), before + 2, "later click-only release acts")
 end)
 
 T.test("valve: two toggle clicks with idle between send two commands", function()
@@ -1072,6 +1097,156 @@ T.test("valve: boot establishes the tile before the first push", function()
   T.check_equal(flovalve_state.last_level, 0, "boot level latched, stale 100 dropped")
 end)
 
+T.test("valve: boot with no valve state reports offline first", function()
+  -- Manual boot (no send wipe): availability speaks before the level
+  -- establish, and with no linked valve it honestly says offline.
+  local env = valve_env()
+  OnDriverInit("test")
+  flovalve_state.last_level = 0
+  OnDriverLateInit("test")
+  local online = online_notifies(env)
+  T.check_equal(#online, 1, "boot sends one ONLINE_CHANGED")
+  T.check_equal(online[1].params.STATE, false, "no state means offline")
+  T.check_equal(online[1].kind, "NOTIFY", "offline is a notification")
+  local online_at, level_at = nil, nil
+  for i, send in ipairs(env.proxy_sends) do
+    if send.binding == LIGHT and send.command == "ONLINE_CHANGED" and online_at == nil then
+      online_at = i
+    end
+    if send.binding == LIGHT and send.command == "LIGHT_BRIGHTNESS_CHANGED" and level_at == nil then
+      level_at = i
+    end
+  end
+  T.check(online_at ~= nil and level_at ~= nil and online_at < level_at, "availability precedes the level establish")
+end)
+
+T.test("valve: first valid update brings the proxy online, repeats stay silent", function()
+  local env = boot(valve_env())
+  handshake(env, "11")
+  T.check_equal(#online_notifies(env), 0, "identity alone is not enough")
+  push_state(env, base_state())
+  local online = online_notifies(env)
+  T.check_equal(#online, 1, "first update publishes online")
+  T.check_equal(online[1].params.STATE, true, "boolean true, per the SDK contract")
+  push_state(env, base_state())
+  T.check_equal(#online_notifies(env), 1, "steady state stays silent")
+end)
+
+T.test("valve: unavailable and stale mark the proxy offline until recovery", function()
+  local env = boot(valve_env())
+  handshake(env, "11")
+  push_state(env, base_state())
+  push_unavailable(env, "11", "gone")
+  local online = online_notifies(env)
+  T.check_equal(#online, 2, "unavailable publishes offline")
+  T.check_equal(online[2].params.STATE, false, "unavailable means offline")
+  push_state(env, base_state())
+  online = online_notifies(env)
+  T.check_equal(#online, 3, "recovery publishes online")
+  T.check_equal(online[3].params.STATE, true, "fresh data means online")
+  flovalve_state.last_slice_at = os.time() - FLOVALVE_STALE_MIN_S - 1
+  flovalve_check_freshness()
+  online = online_notifies(env)
+  T.check_equal(#online, 4, "staleness publishes offline")
+  T.check_equal(online[4].params.STATE, false, "stale means offline")
+  push_state(env, base_state())
+  online = online_notifies(env)
+  T.check_equal(#online, 5, "next slice publishes online")
+  T.check_equal(online[5].params.STATE, true, "recovery means online")
+end)
+
+T.test("valve: link loss marks the proxy offline until re-link", function()
+  local env = boot(valve_env())
+  handshake(env, "11")
+  push_state(env, base_state())
+  OnBindingChanged(LINK, "FLOGIC_VALVE", false)
+  local online = online_notifies(env)
+  T.check_equal(#online, 2, "unbind publishes offline")
+  T.check_equal(online[2].params.STATE, false, "unlinked means offline")
+  OnBindingChanged(LINK, "FLOGIC_VALVE", true)
+  handshake(env, "11")
+  T.check_equal(#online_notifies(env), 2, "re-link without state stays silent")
+  push_state(env, base_state())
+  online = online_notifies(env)
+  T.check_equal(#online, 3, "re-linked state publishes online")
+  T.check_equal(online[3].params.STATE, true, "re-linked means online")
+end)
+
+T.test("valve: rebind without unbind marks the proxy offline", function()
+  -- A rebind may arrive with no preceding unbind event while the old
+  -- link was healthy: the cleared identity must offline the proxy even
+  -- though the connection was never marked down.
+  local env = boot(valve_env())
+  handshake(env, "11")
+  push_state(env, base_state())
+  OnBindingChanged(LINK, "FLOGIC_VALVE", true)
+  local online = online_notifies(env)
+  T.check_equal(#online, 2, "rebind publishes offline")
+  T.check_equal(online[2].params.STATE, false, "cleared identity means offline")
+end)
+
+T.test("valve: identity change marks the proxy offline until the new state", function()
+  local env = boot(valve_env())
+  handshake(env, "11")
+  push_state(env, base_state())
+  handshake(env, "22")
+  local online = online_notifies(env)
+  T.check_equal(#online, 2, "identity change publishes offline")
+  T.check_equal(online[2].params.STATE, false, "new identity without state means offline")
+  push_state(env, base_state({ id = "22" }))
+  online = online_notifies(env)
+  T.check_equal(#online, 3, "new valve state publishes online")
+  T.check_equal(online[3].params.STATE, true, "new valve observed means online")
+end)
+
+T.test("valve: connected-state queries answer live availability, never command", function()
+  local env = boot(valve_env())
+  ReceivedFromProxy(LIGHT, "GET_CONNECTED_STATE", {})
+  local online = online_notifies(env)
+  T.check_equal(#online, 1, "query answered with ONLINE_CHANGED")
+  T.check_equal(online[1].params.STATE, false, "no state answers offline")
+  handshake(env, "11")
+  push_state(env, base_state())
+  env.proxy_sends = {}
+  ReceivedFromProxy(LIGHT, "GET_CONNECTED_STATE", {})
+  online = online_notifies(env)
+  T.check_equal(#online, 1, "query answered again")
+  T.check_equal(online[1].params.STATE, true, "linked state answers online")
+  T.check_equal(#commands_sent(env), 0, "availability query commands nothing")
+  T.check_equal(#light_levels(env), 0, "availability query reports no level")
+end)
+
+T.test("valve: unexpected proxy bindings trace in debug, never command", function()
+  local env = boot(valve_env())
+  handshake(env, "11")
+  push_state(env, base_state())
+  env.proxy_sends = {}
+  local old_print = print
+  local seen = {}
+  print = function(...)
+    local parts = {}
+    for i = 1, select("#", ...) do
+      parts[#parts + 1] = tostring(select(i, ...))
+    end
+    seen[#seen + 1] = table.concat(parts, " ")
+  end
+  local ok, err = pcall(function()
+    Properties["Debug Mode"] = "On"
+    ReceivedFromProxy(9999, "ON", {})
+  end)
+  print = old_print
+  T.check(ok, "catchall path raised: " .. tostring(err))
+  T.check_equal(#commands_sent(env), 0, "catchall commands nothing")
+  T.check_equal(#light_levels(env), 0, "catchall reports no level")
+  local joined = table.concat(seen, "\n")
+  T.check(joined:find("unexpected binding 9999", 1, true) ~= nil, "catchall names the binding")
+  -- Debug off: silence, still commanding nothing.
+  env.proxy_sends = {}
+  Properties["Debug Mode"] = "Off"
+  ReceivedFromProxy(9999, "ON", {})
+  T.check_equal(#commands_sent(env), 0, "silent catchall commands nothing")
+end)
+
 T.test("valve: navigator state queries are served, never command", function()
   local env = boot(valve_env())
   -- Unknown state: serve the default, command nothing. Silence would
@@ -1081,10 +1256,10 @@ T.test("valve: navigator state queries are served, never command", function()
   T.check_equal(#commands_sent(env), 0, "request-data commands nothing")
   OnRequestData(600)
   T.check_equal(#light_levels(env), 1, "request-data answers the light binding only")
-  for _, cmd in ipairs({ "GET_LIGHT_LEVEL", "GET_STATE", "GET_BRIGHTNESS_TARGET" }) do
+  for _, cmd in ipairs({ "GET_LIGHT_LEVEL", "GET_STATE", "GET_BRIGHTNESS_TARGET", "SYNCHRONIZE" }) do
     ReceivedFromProxy(LIGHT, cmd, {})
   end
-  check_list_equal(light_levels(env), { 0, 0, 0, 0 }, "each query is answered")
+  check_list_equal(light_levels(env), { 0, 0, 0, 0, 0 }, "each query is answered")
   T.check_equal(#commands_sent(env), 0, "queries command nothing")
   -- Known state: serve it, still commanding nothing.
   handshake(env, "11")

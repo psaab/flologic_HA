@@ -1,5 +1,9 @@
 # Control4 valve light-button review
 
+> Historical review of build 0829. For the current SDK, OSS driver comparison,
+> availability finding, and corrections to earlier diagnostic assumptions,
+> see [Light tile SDK and OSS findings](LIGHT_TILE_SDK_OSS_FINDINGS.md).
+
 Reviewed: 2026-09-09  
 Baseline: `8ad0160`, driver build `2026090829`  
 Scope: light-proxy configuration, button handling, relevant commit history,

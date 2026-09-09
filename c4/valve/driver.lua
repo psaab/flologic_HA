@@ -2239,7 +2239,7 @@ end
 -- C4 calls (safe to load in tests with a stub C4). Lua 5.1 safe.
 -- ============================================================================
 
-FLOVALVE_DRIVER_VERSION = "2026090901"
+FLOVALVE_DRIVER_VERSION = "2026090902"
 print("[flologic-valve] Lua loaded: " .. FLOVALVE_DRIVER_VERSION)
 
 -- Static link consumer (binds to one cloud-driver FLOGIC_VALVE slot) and
@@ -2470,6 +2470,7 @@ local function flovalve_fresh_state()
     last_warning = nil,
     last_critical = nil,
     last_connection_ok = nil,
+    light_online_published = nil,
     restore_action = (flovalve_state and flovalve_state.restore_action) or FLOVALVE_RESTORE_DEFAULT,
     last_level = (flovalve_state and flovalve_state.last_level) or 0,
     pending_commands = {},
@@ -2523,6 +2524,39 @@ local function flovalve_fire(name)
   C4:FireEvent(name)
 end
 
+-- --- Light-proxy availability -------------------------------------------------
+-- Placed before flovalve_set_connection, which publishes transitions.
+--
+-- Explicit policy (SDK + OSS review): the light proxy is available
+-- exactly when this driver can observe and command the selected valve:
+-- a linked handshake identity, at least one applied snapshot, and a
+-- healthy connection. Freshness feeds in through the connection term:
+-- the unavailable and stale paths mark it false. Identity and
+-- observation are checked directly because rebind and identity-change
+-- clear them without marking the connection. Display (100/0 by closed
+-- state) is independent and never carries availability. The SDK
+-- declares STATE a boolean and starts proxies online; an offline proxy
+-- has its UI functionality disabled.
+local function flovalve_light_available()
+  local st = flovalve_state
+  return st.valve_id ~= nil and st.last_state ~= nil and st.last_connection_ok == true
+end
+
+local function flovalve_report_online(online)
+  C4:SendToProxy(FLOVALVE_LIGHT_ID, "ONLINE_CHANGED", { STATE = online }, "NOTIFY")
+end
+
+-- Transition-gated publish: connection/state edges report, steady
+-- state stays silent. The nil cache means boot always speaks once.
+local function flovalve_publish_light_online()
+  local st = flovalve_state
+  local online = flovalve_light_available()
+  if st.light_online_published ~= online then
+    st.light_online_published = online
+    flovalve_report_online(online)
+  end
+end
+
 local function flovalve_set_connection(ok, detail)
   local st = flovalve_state
   if ok then
@@ -2538,6 +2572,7 @@ local function flovalve_set_connection(ok, detail)
     end
   end
   st.last_connection_ok = ok
+  flovalve_publish_light_online()
 end
 
 -- --- Contact outputs --------------------------------------------------------
@@ -3245,6 +3280,9 @@ flovalve_reset_valve_history = function()
   if dropped > 0 then
     flovalve_set_prop("Last Command", "Link changed: " .. dropped .. " command(s) dropped")
   end
+  -- Observed state was dropped above without marking the connection:
+  -- re-evaluate proxy availability explicitly.
+  flovalve_publish_light_online()
 end
 
 local function flovalve_on_identity(valve_id)
@@ -3499,6 +3537,9 @@ local function flovalve_on_link_bound()
   st.valve_id = nil
   flovalve_set_prop(FLOVALVE_PROP_CONNECTION, "Linking...")
   flovalve_send_hello()
+  -- Identity cleared above without marking the connection (a rebind
+  -- may arrive with no preceding unbind): re-evaluate explicitly.
+  flovalve_publish_light_online()
 end
 
 local function flovalve_on_link_unbound()
@@ -3704,8 +3745,9 @@ function flovalve_on_light(strCommand, tParams)
     -- pressed; a release acts only when no press preceded it, so a
     -- press+release pair fires once no matter how slowly the release
     -- follows, while a release-only sender still acts; long-release (a
-    -- dim gesture) is ignored. Only acted gestures update the record,
-    -- so a stray second release stays eaten too.
+    -- dim gesture) is ignored. A consumed paired release clears the
+    -- record, so a later click-only release from another sender acts
+    -- instead of staying latched behind the finished pair.
     local button = tostring(tParams ~= nil and tParams.BUTTON_ID or "")
     local action = tostring(tParams ~= nil and tParams.ACTION or "")
     if button ~= "0" and button ~= "1" and button ~= "2" then
@@ -3735,6 +3777,7 @@ function flovalve_on_light(strCommand, tParams)
       end
     elseif action == "2" then
       flovalve_log("button " .. button .. " release paired with its press; no repeat")
+      gestures[button] = nil
     end
     -- Acknowledge after handling (a driver failure first still surfaces
     -- instead of being masked by a premature ack).
@@ -3750,11 +3793,20 @@ function flovalve_on_light(strCommand, tParams)
     else
       flovalve_close_valve("Close Valve")
     end
-  elseif strCommand == "GET_LIGHT_LEVEL" or strCommand == "GET_STATE" or strCommand == "GET_BRIGHTNESS_TARGET" then
-    -- Navigator queries current state on load: reply with the best-known
-    -- level or the query times out and the tile resets to 0. Never
-    -- commands the valve; a pure state serve.
+  elseif
+    strCommand == "GET_LIGHT_LEVEL"
+    or strCommand == "GET_STATE"
+    or strCommand == "GET_BRIGHTNESS_TARGET"
+    or strCommand == "SYNCHRONIZE"
+  then
+    -- Navigator/proxy queries for current state: reply with the
+    -- best-known level or the query times out and the tile resets to 0.
+    -- Never commands the valve; a pure state serve.
     flovalve_report_level(flovalve_state.last_level)
+  elseif strCommand == "GET_CONNECTED_STATE" then
+    -- The proxy asks whether the device is online: answer from live
+    -- availability (linked, observed, fresh). Never commands the valve.
+    flovalve_report_online(flovalve_light_available())
   else
     -- Always visible (not debug-gated): an unknown command is the exact
     -- signal that a sender uses vocabulary this driver does not speak,
@@ -3800,6 +3852,10 @@ function ReceivedFromProxy(idBinding, strCommand, tParams)
       return
     end
   end
+  -- Debug-gated catchall: proxy traffic on any other binding would
+  -- otherwise vanish without a trace — the undiagnosable silence this
+  -- driver has suffered before. Never commands the valve.
+  flovalve_log("proxy command on unexpected binding " .. tostring(idBinding) .. ": " .. tostring(strCommand))
 end
 
 function OnBindingChanged(idBinding, strClass, bIsBound)
@@ -4484,6 +4540,7 @@ function OnDriverLateInit(driver_init_type)
   flovalve_state = flovalve_fresh_state()
   C4:UpdateProperty("Driver Version", FLOVALVE_DRIVER_VERSION)
   pcall(flovalve_log_version_transition)
+  flovalve_publish_light_online()
   flovalve_restore_display()
   flovalve_reconcile_proxy_bound()
   flovalve_set_prop(FLOVALVE_PROP_CONNECTION, "Initializing")
