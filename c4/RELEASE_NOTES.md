@@ -336,6 +336,11 @@ findings, all fixed and covered; see `c4/ADVERSARIAL_REVIEW.md`).
   session and drop on auth failure; hub frame logs are scrubbed and
   retired bindings drain safely.
 
+Version **2026090809** fixes the self-update install gate rejecting
+valid packages: Director strips the zip magic's control bytes on
+read-back, so the gate now checks the surviving "PK" prefix (plus the
+exact size match) instead of the full 4-byte magic.
+
 Version **2026090808** removes the phantom `Valve Link 16` connection and
 fixes valve instances installing as `Light v2`. The static slot is gone:
 Composer indexes the proxy-less cloud via combo + category (the proven

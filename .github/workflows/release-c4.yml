@@ -41,6 +41,31 @@ jobs:
         run: |
           sh c4/scripts/package.sh
           python -m pytest -q
+      - name: Extract this release's notes
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          tag = os.environ["GITHUB_REF_NAME"]
+          version = tag.removeprefix("c4-v")
+          text = open("c4/RELEASE_NOTES.md", encoding="utf-8").read()
+          # The release carries the header plus ONLY this tag's section,
+          # never the whole changelog.
+          parts = re.split(r"(?m)^(?=Version \*\*[0-9]{10}\*\*)", text)
+          header, sections = parts[0], parts[1:]
+          assert sections, "No version sections in c4/RELEASE_NOTES.md"
+          section = next(
+              (p for p in sections if p.startswith(f"Version **{version}**")),
+              None,
+          )
+          assert section is not None, f"No RELEASE_NOTES section for {version}"
+          body = section.rstrip() + "\n"
+          if header.strip():
+              body = header.rstrip() + "\n\n" + body
+          out = os.path.join(os.environ["RUNNER_TEMP"], "c4-release-notes.md")
+          open(out, "w", encoding="utf-8").write(body)
+          print(f"wrote {out}")
+          PY
       - name: Publish C4 assets without replacing the HA latest release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -55,4 +80,4 @@ jobs:
           gh release create "$GITHUB_REF_NAME" c4/flologic_cloud.c4z c4/flologic_water_valve.c4z \
             --verify-tag --latest=false \
             --title "FloLogic Control4 ${GITHUB_REF_NAME#c4-v}" \
-            --notes-file c4/RELEASE_NOTES.md
+            --notes-file "$RUNNER_TEMP/c4-release-notes.md"
