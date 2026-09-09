@@ -176,8 +176,13 @@ end
 local function light_levels(env)
   local found = {}
   for _, send in ipairs(env.proxy_sends) do
-    if send.binding == LIGHT and send.command == "LIGHT_LEVEL" then
-      found[#found + 1] = send.params.LEVEL
+    -- Level Target API: the tile follows LIGHT_BRIGHTNESS_CHANGED with
+    -- LIGHT_BRIGHTNESS_CURRENT. The pre-3.3 LIGHT_LEVEL notify is
+    -- silently discarded by light_v2 proxies, so the helper matches
+    -- ONLY the new vocabulary: any LIGHT_LEVEL regression shows up as
+    -- missing levels here.
+    if send.binding == LIGHT and send.command == "LIGHT_BRIGHTNESS_CHANGED" then
+      found[#found + 1] = send.params.LIGHT_BRIGHTNESS_CURRENT
     end
   end
   return found
@@ -238,7 +243,7 @@ end
 
 T.test("valve: version, link pin, updater asset, no selector (VALVE-U4)", function()
   valve_env()
-  T.check_equal(FLOVALVE_DRIVER_VERSION, "2026090820", "valve version lockstep with cloud")
+  T.check_equal(FLOVALVE_DRIVER_VERSION, "2026090821", "valve version lockstep with cloud")
   T.check_equal(FLOGIC_LINK_VERSION, 1, "protocol version is 1")
   T.check_equal(FloUpdate.ASSET, "flologic_water_valve.c4z", "updater tracks the valve package")
   T.check_equal(FloUpdate.FAMILY_ASSETS[1], "flologic_cloud.c4z", "updater requires the cloud sibling")
@@ -403,10 +408,21 @@ T.test("valve: Navigator click sends open/close and reports optimistically", fun
   ReceivedFromProxy(LIGHT, "SET_BRIGHTNESS_TARGET", { LEVEL = 50 })
   local bright_body = Link.parse(commands_sent(env)[#commands_sent(env)].params)
   T.check_equal(bright_body.fields.action, "mode_home", "level > 0 opens")
+  -- Level Target param shape (supports_target proxies): preferred over
+  -- the legacy LEVEL fallback when both are present.
+  ReceivedFromProxy(LIGHT, "SET_BRIGHTNESS_TARGET", { LIGHT_BRIGHTNESS_TARGET = 0 })
+  local v2dim = Link.parse(commands_sent(env)[#commands_sent(env)].params)
+  T.check_equal(v2dim.fields.action, "mode_shutoff", "v2 target 0 closes")
+  ReceivedFromProxy(LIGHT, "SET_BRIGHTNESS_TARGET", { LIGHT_BRIGHTNESS_TARGET = 75 })
+  local v2bright = Link.parse(commands_sent(env)[#commands_sent(env)].params)
+  T.check_equal(v2bright.fields.action, "mode_home", "v2 target > 0 opens")
+  ReceivedFromProxy(LIGHT, "SET_BRIGHTNESS_TARGET", { LIGHT_BRIGHTNESS_TARGET = 100, LEVEL = 0 })
+  local pref = Link.parse(commands_sent(env)[#commands_sent(env)].params)
+  T.check_equal(pref.fields.action, "mode_home", "v2 target wins over legacy LEVEL")
   ReceivedFromProxy(LIGHT, "SET_BRIGHTNESS_TARGET", {})
-  T.check_equal(#commands_sent(env), 5, "level-less brightness target sends nothing")
+  T.check_equal(#commands_sent(env), 8, "level-less brightness target sends nothing")
   ReceivedFromProxy(LIGHT, "BOGUS", {})
-  T.check_equal(#commands_sent(env), 5, "unknown light command sends nothing")
+  T.check_equal(#commands_sent(env), 8, "unknown light command sends nothing")
 end)
 
 T.test("valve: tile off means closed, on means everything else", function()

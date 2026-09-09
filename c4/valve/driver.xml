@@ -8,7 +8,7 @@
   <manufacturer>FloLogic</manufacturer>
   <driver>DriverWorks</driver>
   <control>lua_gen</control>
-  <version>2026090820</version>
+  <version>2026090821</version>
   <!-- Navigator clicks arrive as DYNAMIC_ON/DYNAMIC_OFF (OS 3.3.2+). -->
   <minimum_os_version>3.3.2</minimum_os_version>
   <created>09/08/2026 12:00 PM</created>
@@ -20,8 +20,9 @@
   <states/>
   <!-- Switch-only light capabilities (plan D4) live on connection 5001
        below, matching the spike-validated form: no dimmer, no set-level
-       slider, on/off tile only. The driver reports LIGHT_LEVEL 100/0 and
-       handles DYNAMIC_ON/DYNAMIC_OFF, TOGGLE, and SET_BRIGHTNESS_TARGET. -->
+       slider, on/off tile only. The driver reports
+       LIGHT_BRIGHTNESS_CHANGED 100/0 and handles DYNAMIC_ON/DYNAMIC_OFF,
+       TOGGLE, and SET_BRIGHTNESS_TARGET. -->
   <config>
     <properties>
       <property>
@@ -54,7 +55,7 @@
       <property>
         <name>Driver Version</name>
         <type>STRING</type>
-        <default>2026090820</default>
+        <default>2026090821</default>
         <readonly>true</readonly>
       </property>
       <property>

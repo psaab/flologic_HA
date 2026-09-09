@@ -1,5 +1,18 @@
 Control4 DriverWorks package for FloLogic Connect valves (OS 3.3.0+).
 
+Version **2026090821** fixes the valve tile state never showing in
+Navigator: the driver reported the pre-3.3 `LIGHT_LEVEL` notify, which
+light_v2 proxies silently discard. The tile now reports the Level
+Target API `LIGHT_BRIGHTNESS_CHANGED` notify (`LIGHT_BRIGHTNESS_CURRENT`
+0/100), which the v2 proxy documents as the switch vocabulary, and
+`SET_BRIGHTNESS_TARGET` accepts the v2 `LIGHT_BRIGHTNESS_TARGET` param
+(with the legacy `LEVEL` fallback kept for targets-unset proxies).
+Display restore also moved out of `OnDriverInit` (SendToProxy/Persist
+calls violate Director's Safe Usage table there; `OnDriverLateInit`
+already re-ran it on the fresh state, so nothing is lost). The spike
+stub carries the same protocol fix. Cloud package is a lockstep version
+bump only.
+
 Version **2026090820** wires the valve on/off switch to the valve's
 closed state: the tile reports OFF exactly when the valve is closed
 (a water-off mode flag or flow state 8, "Valve closed") and ON for

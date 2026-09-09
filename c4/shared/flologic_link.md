@@ -19,8 +19,8 @@ Primary transport is peer-driver BindMessages (plan D1): the cloud calls
 all strings. The `SendToDevice` + `ExecuteCommand` fallback carries the
 identical params table, so transport changes never alter this contract.
 
-`NOTIFY` is never used on the link leg. The `LIGHT_LEVEL` notify vocabulary
-belongs to the valve's light proxy, not to this protocol.
+`NOTIFY` is never used on the link leg. The `LIGHT_BRIGHTNESS_CHANGED`
+notify vocabulary belongs to the valve's light proxy, not to this protocol.
 
 ## 2. Envelope
 

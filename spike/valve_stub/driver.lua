@@ -5,8 +5,10 @@
 -- cloud stub plus a light_v2 proxy (binding 5001) with switch capabilities.
 -- Answers SPIKE_PING with SPIKE_PONG (multi-KB both directions), sends
 -- SPIKE_HELLO on bind, and applies DYNAMIC_ON / DYNAMIC_OFF / TOGGLE /
--- SET_BRIGHTNESS_TARGET while reporting LIGHT_LEVEL 100/0. A SendToDevice
--- fallback path (ExecuteCommand + provider discovery) mirrors the cloud stub.
+-- SET_BRIGHTNESS_TARGET while reporting LIGHT_BRIGHTNESS_CHANGED 100/0
+-- (the pre-3.3 LIGHT_LEVEL notify is silently discarded by light_v2
+-- proxies). A SendToDevice fallback path (ExecuteCommand + provider
+-- discovery) mirrors the cloud stub.
 --
 -- Director entry points only; no top-level C4 calls. Lua 5.1 safe.
 -- ============================================================================
@@ -53,8 +55,9 @@ local function spike_payload(num_bytes)
   return string.rep("V", math.floor(num_bytes))
 end
 
--- Single place that applies a level change: persist, report LIGHT_LEVEL on
--- the proxy, and tell the cloud stub so its log shows the round trip.
+-- Single place that applies a level change: persist, report
+-- LIGHT_BRIGHTNESS_CHANGED on the proxy, and tell the cloud stub so its
+-- log shows the round trip.
 local function spike_apply_level(level, source)
   local st = spike_valve_state
   if level > 0 then
@@ -65,8 +68,8 @@ local function spike_apply_level(level, source)
   st.level = level
   C4:PersistSetValue(SPIKE_PERSIST_LEVEL, tostring(level))
   C4:UpdateProperty(SPIKE_PROP_LEVEL, tostring(level))
-  C4:SendToProxy(SPIKE_LIGHT_ID, "LIGHT_LEVEL", { LEVEL = level }, "NOTIFY")
-  spike_log("level -> " .. level .. " (" .. tostring(source) .. "); reported LIGHT_LEVEL")
+  C4:SendToProxy(SPIKE_LIGHT_ID, "LIGHT_BRIGHTNESS_CHANGED", { LIGHT_BRIGHTNESS_CURRENT = level }, "NOTIFY")
+  spike_log("level -> " .. level .. " (" .. tostring(source) .. "); reported LIGHT_BRIGHTNESS_CHANGED")
   if st.link_bound then
     local ok, err = pcall(function()
       C4:SendToProxy(SPIKE_LINK_ID, "SPIKE_LEVEL", { SENDER = "valve", LEVEL = level }, "COMMAND")
@@ -166,7 +169,7 @@ local function spike_on_light_message(strCommand, tParams)
       spike_apply_level(100, "TOGGLE")
     end
   elseif strCommand == "SET_BRIGHTNESS_TARGET" then
-    local target = tonumber(tParams.LEVEL) or tonumber(tParams.level) or 0
+    local target = tonumber(tParams.LIGHT_BRIGHTNESS_TARGET) or tonumber(tParams.LEVEL) or tonumber(tParams.level) or 0
     if target > 0 then
       spike_apply_level(100, "SET_BRIGHTNESS_TARGET " .. target)
     else

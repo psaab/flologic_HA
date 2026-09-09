@@ -2239,7 +2239,7 @@ end
 -- C4 calls (safe to load in tests with a stub C4). Lua 5.1 safe.
 -- ============================================================================
 
-FLOVALVE_DRIVER_VERSION = "2026090820"
+FLOVALVE_DRIVER_VERSION = "2026090821"
 print("[flologic-valve] Lua loaded: " .. FLOVALVE_DRIVER_VERSION)
 
 -- Static link consumer (binds to one cloud-driver FLOGIC_VALVE slot) and
@@ -2636,7 +2636,12 @@ end
 
 local function flovalve_report_level(level)
   flovalve_state.last_level = level
-  C4:SendToProxy(FLOVALVE_LIGHT_ID, "LIGHT_LEVEL", { LEVEL = level }, "NOTIFY")
+  -- Level Target API (light_v2): the tile follows BRIGHTNESS_CHANGED.
+  -- The pre-3.3 LIGHT_LEVEL notify is silently discarded by v2 proxies,
+  -- so reporting it leaves the switch state blank in Navigator. Switch
+  -- drivers need only CHANGED (no CHANGING ramp prelude); the param is
+  -- the raw 0-100 brightness, 0 = off.
+  C4:SendToProxy(FLOVALVE_LIGHT_ID, "LIGHT_BRIGHTNESS_CHANGED", { LIGHT_BRIGHTNESS_CURRENT = level }, "NOTIFY")
 end
 
 -- Track the last non-shutoff mode so Open/Toggle restores it (plan:
@@ -3558,9 +3563,17 @@ function flovalve_on_light(strCommand, tParams)
   elseif strCommand == "TOGGLE" then
     flovalve_toggle_valve("Toggle")
   elseif strCommand == "SET_BRIGHTNESS_TARGET" then
-    local level = tonumber(tParams ~= nil and tParams.LEVEL or nil)
+    -- Param shape follows the supports_target capability, which this
+    -- switch leaves unset: targets-enabled proxies send
+    -- LIGHT_BRIGHTNESS_TARGET, legacy ones send LEVEL. Accept either,
+    -- preferring the Level Target name.
+    local level = tParams ~= nil and tParams.LIGHT_BRIGHTNESS_TARGET or nil
     if level == nil then
-      flovalve_log_warn("SET_BRIGHTNESS_TARGET without LEVEL; ignored")
+      level = tParams ~= nil and tParams.LEVEL or nil
+    end
+    level = tonumber(level)
+    if level == nil then
+      flovalve_log_warn("SET_BRIGHTNESS_TARGET without a level; ignored")
       return false
     end
     if level > 0 then
@@ -4242,7 +4255,9 @@ function OnDriverInit(driver_init_type)
   -- Publish the running version even if Composer already shows the XML default.
   C4:UpdateProperty("Driver Version", FLOVALVE_DRIVER_VERSION)
   print("[flologic-valve] OnDriverInit: " .. FLOVALVE_DRIVER_VERSION .. " (" .. tostring(driver_init_type) .. ")")
-  flovalve_restore_display()
+  -- Display restore lives in OnDriverLateInit only: it calls SendToProxy
+  -- and Persist APIs, which Director's Safe Usage table forbids during
+  -- OnDriverInit, and LateInit re-runs it on the fresh state anyway.
 end
 
 local function flovalve_log_version_transition()

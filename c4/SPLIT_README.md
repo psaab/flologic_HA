@@ -88,7 +88,7 @@ dimmer slider).
   (default Home).
 - Navigator taps arrive as `DYNAMIC_OFF` / `DYNAMIC_ON`; scenes and
   programming use `TOGGLE` and `SET_BRIGHTNESS_TARGET` (level > 0 on,
-  0 off). The tile reports `LIGHT_LEVEL` 100/0 optimistically for
+  0 off). The tile reports `LIGHT_BRIGHTNESS_CHANGED` 100/0 optimistically for
   responsiveness; contacts, properties, and events always follow the
   cloud's next `FLOGIC_STATE` push, never the tile tap alone.
 - Reported level is 0 exactly when the valve is closed — a water-off
@@ -217,7 +217,7 @@ architecture's two risky assumptions:
 3. Ping/pong both directions at 4096 then 16384 bytes; confirm full
    byte counts and matching sequence numbers.
 4. Tap the Navigator tile off/on; confirm level 0/100 with matching
-   `LIGHT_LEVEL`, and exercise `Turn Off` / `Turn On` (the
+   `LIGHT_BRIGHTNESS_CHANGED`, and exercise `Turn Off` / `Turn On` (the
    `TOGGLE` / `SET_BRIGHTNESS_TARGET` path).
 5. Restart Director: the connection must restore with no manual
    rebind; record whether bind events re-fire (decides whether the

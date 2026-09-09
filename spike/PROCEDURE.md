@@ -78,10 +78,10 @@ numbers; no truncation or script errors. Record the byte counts observed.
    the level path directly; only a real scene sends TOGGLE /
    SET_BRIGHTNESS_TARGET — test those from a scene if available).
 
-Expected: every tap changes the tile state and the reported `LIGHT_LEVEL`
-tracks it (0 when off, 100 when on). Note which proxy commands arrived
-(`DYNAMIC_ON`/`DYNAMIC_OFF` from taps; test TOGGLE and
-SET_BRIGHTNESS_TARGET from a scene if available).
+Expected: every tap changes the tile state and the reported
+`LIGHT_BRIGHTNESS_CHANGED` tracks it (0 when off, 100 when on). Note
+which proxy commands arrived (`DYNAMIC_ON`/`DYNAMIC_OFF` from taps;
+test TOGGLE and SET_BRIGHTNESS_TARGET from a scene if available).
 
 ## 5. Director restart: persistence + event re-fire
 
@@ -138,8 +138,8 @@ the fallback and units 1-3 use `SendToDevice` + `ExecuteCommand` with
 
 - GO: bind incl. custom class works, multi-KB ping/pong works both
   directions over BindMessages, Navigator tap toggles with correct
-  `LIGHT_LEVEL`, restart restores the binding (re-fire noted either way),
-  and Lua reload keeps the link without rebind.
+  `LIGHT_BRIGHTNESS_CHANGED`, restart restores the binding (re-fire
+  noted either way), and Lua reload keeps the link without rebind.
 - GO WITH FALLBACK: primary BindMessages fail but the SendToDevice variant
   passes in both directions; restart still restores the connection.
 - NO-GO: neither transport delivers peer messages, or the binding does not
@@ -163,8 +163,8 @@ Composer version:
 3b. Valve -> cloud ping bytes observed:
 3c. Sequence numbers matched both ways: YES / NO
 4a. Tile renders as switch (not slider): YES / NO
-4b. DYNAMIC_OFF -> level 0 + LIGHT_LEVEL 0: PASS / FAIL
-4c. DYNAMIC_ON -> level 100 + LIGHT_LEVEL 100: PASS / FAIL
+4b. DYNAMIC_OFF -> level 0 + LIGHT_BRIGHTNESS_CHANGED 0: PASS / FAIL
+4c. DYNAMIC_ON -> level 100 + LIGHT_BRIGHTNESS_CHANGED 100: PASS / FAIL
 4d. Proxy commands seen (list):
 5a. Connection restored after restart without rebind: YES / NO
 5b. Cloud log showed restore line: YES / NO
