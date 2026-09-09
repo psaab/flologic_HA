@@ -59,6 +59,9 @@ local function director()
     return D.b64encode(value)
   end
   function C4:SetTimer(ms, callback, repeating)
+    -- Mirror Director: a nil repeat flag raises on hardware ("repeat
+    -- should be a boolean"). Fail here instead of only in the field.
+    assert(type(repeating) == "boolean", "C4:SetTimer repeating must be a boolean")
     local timer = {}
     function timer:Cancel()
       self.cancelled = true

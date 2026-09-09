@@ -1,5 +1,16 @@
 Control4 DriverWorks package for FloLogic Connect valves (OS 3.3.0+).
 
+Version **2026090826** fixes Identify Tile crashing on hardware with
+"repeat should be a boolean": Director rejects a nil `repeating` flag
+to `C4:SetTimer`, and the two new identify timers were the only
+callers in either driver that omitted it (every pre-existing caller
+passes an explicit boolean, which is why nothing else crashed). The
+identify timers now pass `false`, both timer wrappers default a
+missing flag to `false` so no future caller can reintroduce this, and
+all three `C4:SetTimer` test stubs now assert a boolean flag so the
+suite fails here instead of only in the field (mutation-proved both
+ways). Lua-only: plain update, no re-add needed.
+
 Version **2026090825** answers the orphan-tile trap: after a delete +
 re-add the old proxy can linger next to the live one, and the two tiles
 look identical while only the bound one works. New "Identify Tile"

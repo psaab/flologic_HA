@@ -10,7 +10,7 @@
 -- favor of the slot->valve identity map below. Lua 5.1 safe.
 -- ============================================================================
 
-FLOCLOUD_DRIVER_VERSION = "2026090825"
+FLOCLOUD_DRIVER_VERSION = "2026090826"
 print("[flologic-cloud] Lua loaded: " .. FLOCLOUD_DRIVER_VERSION)
 
 FLOCLOUD_DEFAULT_HUB = "https://hub-cloudapps-prod.azurewebsites.net"
@@ -186,11 +186,13 @@ flocloud_state = flocloud_fresh_state()
 --- Timer closures belong to this load, even if Director delivers a cancelled tick.
 local function flocloud_set_timer(ms, callback, repeating)
   local owner = flocloud_state
+  -- Director rejects a nil repeat flag ("repeat should be a boolean"),
+  -- so default it: every existing caller already passes one explicitly.
   return C4:SetTimer(ms, function(timer)
     if flocloud_state == owner and owner.initialized then
       callback(timer)
     end
-  end, repeating)
+  end, repeating or false)
 end
 
 local function flocloud_log(message)

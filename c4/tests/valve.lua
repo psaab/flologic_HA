@@ -75,6 +75,9 @@ local function valve_env()
     return "12345678-1234-4234-8234-123456789abc"
   end
   function C4:SetTimer(ms, callback, repeating)
+    -- Mirror Director: a nil repeat flag raises on hardware ("repeat
+    -- should be a boolean"). Fail here instead of only in the field.
+    assert(type(repeating) == "boolean", "C4:SetTimer repeating must be a boolean")
     local timer = {}
     function timer:Cancel()
       self.cancelled = true
@@ -258,7 +261,7 @@ end
 
 T.test("valve: version, link pin, updater asset, no selector (VALVE-U4)", function()
   valve_env()
-  T.check_equal(FLOVALVE_DRIVER_VERSION, "2026090825", "valve version lockstep with cloud")
+  T.check_equal(FLOVALVE_DRIVER_VERSION, "2026090826", "valve version lockstep with cloud")
   T.check_equal(FLOGIC_LINK_VERSION, 1, "protocol version is 1")
   T.check_equal(FloUpdate.ASSET, "flologic_water_valve.c4z", "updater tracks the valve package")
   T.check_equal(FloUpdate.FAMILY_ASSETS[1], "flologic_cloud.c4z", "updater requires the cloud sibling")

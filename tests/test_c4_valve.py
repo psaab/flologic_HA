@@ -81,7 +81,7 @@ def test_valve_manifest_links_switch_contacts_and_identity() -> None:
     assert manifest.findtext("name") == "FloLogic Water Valve"
     version = manifest.findtext("version")
     assert f'FLOVALVE_DRIVER_VERSION = "{version}"' in _read("valve/valve.lua")
-    assert version == "2026090825"
+    assert version == "2026090826"
     # Switch-only light proxy on 5001.
     assert len(manifest.findall("proxies/proxy")) == 1
     assert manifest.find("proxies").get("qty") == "1"

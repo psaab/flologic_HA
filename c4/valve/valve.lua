@@ -26,7 +26,7 @@
 -- C4 calls (safe to load in tests with a stub C4). Lua 5.1 safe.
 -- ============================================================================
 
-FLOVALVE_DRIVER_VERSION = "2026090825"
+FLOVALVE_DRIVER_VERSION = "2026090826"
 print("[flologic-valve] Lua loaded: " .. FLOVALVE_DRIVER_VERSION)
 
 -- Static link consumer (binds to one cloud-driver FLOGIC_VALVE slot) and
@@ -263,11 +263,13 @@ flovalve_state = flovalve_fresh_state()
 --- Timer closures belong to this load, even if Director delivers a cancelled tick.
 local function flovalve_set_timer(ms, callback, repeating)
   local owner = flovalve_state
+  -- Director rejects a nil repeat flag ("repeat should be a boolean"),
+  -- so default it: every existing caller already passes one explicitly.
   return C4:SetTimer(ms, function(timer)
     if flovalve_state == owner and owner.initialized then
       callback(timer)
     end
-  end, repeating)
+  end, repeating or false)
 end
 
 local function flovalve_log(message)
@@ -1369,7 +1371,7 @@ local function flovalve_identify_tile()
         return
       end
       flovalve_flash_proxy_level(level)
-    end)
+    end, false)
   end
   flovalve_set_timer(#steps * 600, function()
     if flovalve_state ~= st or st.identify_seq ~= seq then
@@ -1377,7 +1379,7 @@ local function flovalve_identify_tile()
     end
     flovalve_report_level(st.last_level)
     flovalve_set_prop("Last Command", "Identify Tile: done")
-  end)
+  end, false)
 end
 
 -- Param shape follows the supports_target capability, which this switch
