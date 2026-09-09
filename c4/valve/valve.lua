@@ -26,7 +26,7 @@
 -- C4 calls (safe to load in tests with a stub C4). Lua 5.1 safe.
 -- ============================================================================
 
-FLOVALVE_DRIVER_VERSION = "2026090823"
+FLOVALVE_DRIVER_VERSION = "2026090824"
 print("[flologic-valve] Lua loaded: " .. FLOVALVE_DRIVER_VERSION)
 
 -- Static link consumer (binds to one cloud-driver FLOGIC_VALVE slot) and
@@ -1401,7 +1401,10 @@ function flovalve_on_light(strCommand, tParams)
     -- commands the valve; a pure state serve.
     flovalve_report_level(flovalve_state.last_level)
   else
-    flovalve_log("light proxy command ignored: " .. tostring(strCommand))
+    -- Always visible (not debug-gated): an unknown command is the exact
+    -- signal that a sender uses vocabulary this driver does not speak,
+    -- and silent taps are otherwise undiagnosable in the field.
+    flovalve_log_warn("light proxy command ignored: " .. tostring(strCommand))
     return false
   end
   return true
@@ -1420,6 +1423,9 @@ end
 
 function ReceivedFromProxy(idBinding, strCommand, tParams)
   if idBinding == FLOVALVE_LIGHT_ID then
+    -- Debug-gated ingress trace (kasa parity): with Debug Mode on, every
+    -- tap/query is visible even when it is handled silently.
+    flovalve_log("light proxy command: " .. tostring(strCommand))
     flovalve_on_light(strCommand, tParams or {})
     return
   end

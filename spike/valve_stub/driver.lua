@@ -191,6 +191,8 @@ local function spike_on_light_message(strCommand, tParams)
     else
       spike_apply_level(0, strCommand .. " 0")
     end
+  else
+    spike_log("ignored light command: " .. tostring(strCommand))
   end
 end
 

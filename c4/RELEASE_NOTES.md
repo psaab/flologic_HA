@@ -1,5 +1,15 @@
 Control4 DriverWorks package for FloLogic Connect valves (OS 3.3.0+).
 
+Version **2026090824** is a Lua-only diagnostic follow-up to 0823 (no
+manifest change, so no re-add is needed for 0823 installs — but installs
+coming from 0822 or older still need the remove + re-add + re-pair from
+the 0823 notes). An adversarial review found the tile path could still
+fail silently: unknown light-proxy commands were debug-gated, so a
+sender using unexpected vocabulary left no trace with Debug Mode off.
+Unknown light commands now always warn, and every light-proxy arrival is
+traced with Debug Mode on (kasa parity). The spike stub logs ignored
+light commands the same way. Open/close logic is unchanged.
+
 Version **2026090823** fixes the valve tile still dead (blank state, dead
 taps) after a fresh add on 0822. Root cause: the valve manifest declared
 no top-level `<capabilities>` block, so the light_v2 proxy instantiated
