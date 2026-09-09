@@ -26,7 +26,7 @@
 -- C4 calls (safe to load in tests with a stub C4). Lua 5.1 safe.
 -- ============================================================================
 
-FLOVALVE_DRIVER_VERSION = "2026090831"
+FLOVALVE_DRIVER_VERSION = "2026090901"
 print("[flologic-valve] Lua loaded: " .. FLOVALVE_DRIVER_VERSION)
 
 -- Static link consumer (binds to one cloud-driver FLOGIC_VALVE slot) and
@@ -1332,6 +1332,52 @@ end
 -- contacts, properties, and events still change only on FLOGIC_STATE
 -- pushes.
 
+-- Best-effort read of the light proxy's bound state. Mirrors the cloud
+-- driver's consumer discovery: nil when Director cannot answer (API
+-- missing or raised), empty when observed unbound (Director documents
+-- null as the SUCCESSFUL no-bindings result), decoded by key. The
+-- field proxy is a separate light_v2.c4i device consuming our 5001
+-- provider binding, so consumers — not providers — answer here.
+local function flovalve_bound_light_consumers()
+  if C4.GetBoundConsumerDevices == nil then
+    return nil
+  end
+  local ok, found = pcall(function()
+    return C4:GetBoundConsumerDevices(0, FLOVALVE_LIGHT_ID)
+  end)
+  if not ok then
+    return nil
+  end
+  if found == nil then
+    return {}
+  end
+  local ids = {}
+  if type(found) == "table" then
+    for id in pairs(found) do
+      local num = tonumber(id)
+      if num ~= nil then
+        ids[#ids + 1] = num
+      end
+    end
+  elseif tonumber(found) ~= nil then
+    -- Defensive: a scalar answer carries one id, never a name.
+    ids[#ids + 1] = tonumber(found)
+  end
+  return ids
+end
+
+-- Startup truth for the Proxy Bound property (plan D3): bind events
+-- fire on transitions only, so a proxy bound before this load would
+-- otherwise sit at Unknown forever. Indeterminate answers leave the
+-- property alone — Unknown stays honest instead of guessing.
+local function flovalve_reconcile_proxy_bound()
+  local consumers = flovalve_bound_light_consumers()
+  if consumers == nil then
+    return
+  end
+  flovalve_set_prop(FLOVALVE_PROP_PROXY_BOUND, #consumers > 0 and "Bound" or "Unbound")
+end
+
 local function flovalve_open_valve(label)
   if flovalve_send_command(flovalve_state.restore_action, nil, label or "Open Valve") then
     flovalve_report_level(100)
@@ -1558,8 +1604,8 @@ function OnBindingChanged(idBinding, strClass, bIsBound)
   end
   if idBinding == FLOVALVE_LIGHT_ID then
     -- Expose the bind state for tile diagnosis: an Unbound proxy explains
-    -- taps that never arrive (orphaned tile). Unknown means no bind event
-    -- has fired yet this load.
+    -- taps that never arrive (orphaned tile). Unknown means the startup
+    -- query could not answer and no bind event has fired yet this load.
     flovalve_set_prop(FLOVALVE_PROP_PROXY_BOUND, bIsBound and "Bound" or "Unbound")
     -- A freshly bound tile (new Navigator session) would otherwise sit
     -- dark until the next cloud push: always serve the best-known level
@@ -2226,6 +2272,7 @@ function OnDriverLateInit(driver_init_type)
   C4:UpdateProperty("Driver Version", FLOVALVE_DRIVER_VERSION)
   pcall(flovalve_log_version_transition)
   flovalve_restore_display()
+  flovalve_reconcile_proxy_bound()
   flovalve_set_prop(FLOVALVE_PROP_CONNECTION, "Initializing")
   flovalve_state.initialized = true
   OnPropertyChanged(FLOVALVE_PROP_DEBUG)

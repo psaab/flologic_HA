@@ -23,6 +23,8 @@ local function valve_env()
     device_sends = {},
     providers = { [77] = "FloLogic Cloud" },
     provider_lookup = true,
+    consumers = { [1349] = "Light (v2)" },
+    consumer_lookup = true,
     saved = {},
     events = {},
     proxy_fail_link = false,
@@ -55,6 +57,12 @@ local function valve_env()
       error("no discovery")
     end
     return env.providers
+  end
+  function C4:GetBoundConsumerDevices(_, binding)
+    if not env.consumer_lookup then
+      error("no discovery")
+    end
+    return env.consumers
   end
   function C4:FireEvent(name)
     env.events[#env.events + 1] = name
@@ -277,7 +285,7 @@ end
 
 T.test("valve: version, link pin, updater asset, no selector (VALVE-U4)", function()
   valve_env()
-  T.check_equal(FLOVALVE_DRIVER_VERSION, "2026090831", "valve version lockstep with cloud")
+  T.check_equal(FLOVALVE_DRIVER_VERSION, "2026090901", "valve version lockstep with cloud")
   T.check_equal(FLOGIC_LINK_VERSION, 1, "protocol version is 1")
   T.check_equal(FloUpdate.ASSET, "flologic_water_valve.c4z", "updater tracks the valve package")
   T.check_equal(FloUpdate.FAMILY_ASSETS[1], "flologic_cloud.c4z", "updater requires the cloud sibling")
@@ -627,11 +635,42 @@ end)
 
 T.test("valve: proxy bind state is exposed for tile diagnosis", function()
   local env = boot(valve_env())
+  T.check_equal(Properties["Proxy Bound"], "Bound", "boot stamps bound from discovery")
   handshake(env, "11")
   OnBindingChanged(LIGHT, "LIGHT_V2", true)
   T.check_equal(Properties["Proxy Bound"], "Bound", "bind stamps bound")
   OnBindingChanged(LIGHT, "LIGHT_V2", false)
   T.check_equal(Properties["Proxy Bound"], "Unbound", "unbind stamps unbound")
+end)
+
+T.test("valve: startup proxy query reports unbound honestly", function()
+  local env = valve_env()
+  env.consumers = {}
+  boot(env)
+  T.check_equal(Properties["Proxy Bound"], "Unbound", "empty discovery stamps unbound")
+  local env_nil = valve_env()
+  env_nil.consumers = nil
+  boot(env_nil)
+  T.check_equal(Properties["Proxy Bound"], "Unbound", "null discovery stamps unbound")
+  local env_scalar = valve_env()
+  env_scalar.consumers = 1349
+  boot(env_scalar)
+  T.check_equal(Properties["Proxy Bound"], "Bound", "scalar discovery stamps bound")
+  local env_name = valve_env()
+  env_name.consumers = "Light (v2)"
+  boot(env_name)
+  T.check_equal(Properties["Proxy Bound"], "Unbound", "name-only discovery stamps unbound")
+end)
+
+T.test("valve: startup proxy query leaves Unknown when Director cannot answer", function()
+  local env = valve_env()
+  env.consumer_lookup = false
+  boot(env)
+  T.check_equal(Properties["Proxy Bound"], nil, "failed discovery leaves the property alone")
+  local env_missing = valve_env()
+  C4.GetBoundConsumerDevices = nil
+  boot(env_missing)
+  T.check_equal(Properties["Proxy Bound"], nil, "missing API leaves the property alone")
 end)
 
 T.test("valve: tile off means closed, on means everything else", function()

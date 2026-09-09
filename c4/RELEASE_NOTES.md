@@ -1,5 +1,14 @@
 Control4 DriverWorks package for FloLogic Connect valves (OS 3.3.0+).
 
+Version **2026090901** fixes Proxy Bound sticking at Unknown: the
+property stamped only on bind events, which fire on transitions alone,
+so a proxy bound before the driver loaded never re-fired. Startup now
+queries the 5001 consumer list directly (same discovery shape as the
+cloud driver's plan-D3 reconcile) and stamps Bound/Unbound; Unknown
+now means Director could not answer. If the tile reads Unbound, bind
+it in Connections — no bound proxy means taps never arrive.
+Lua-only: plain update, no re-add needed.
+
 Version **2026090831** implements the findings in
 `c4/LIGHT_BUTTON_REVIEW.md` (no field trace of a failing press exists
 yet, so these are verified offline only — see the review's evidence
