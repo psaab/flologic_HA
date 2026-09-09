@@ -91,8 +91,9 @@ dimmer slider).
   0 off). The tile reports `LIGHT_LEVEL` 100/0 optimistically for
   responsiveness; contacts, properties, and events always follow the
   cloud's next `FLOGIC_STATE` push, never the tile tap alone.
-- Reported level is 0 exactly when a water-off flag is active, else
-  100 — the inverse of the Valve Closed contact.
+- Reported level is 0 exactly when the valve is closed — a water-off
+  flag or flow state 8 ("Valve closed") — else 100: off means closed,
+  on is everything else. The inverse of the Valve Closed contact.
 
 ## Contacts list
 
@@ -103,7 +104,7 @@ programming on startup; later changes use `CLOSED`/`OPENED`.
 
 | ID | Name | Closed means |
 | --- | --- | --- |
-| 101 | Valve Closed | Any shutoff flag (flow-limit trip, manual shutoff, leak, emergency, temperature shutoff) |
+| 101 | Valve Closed | Any shutoff flag (flow-limit trip, manual shutoff, leak, emergency, temperature shutoff) or flow state 8 ("Valve closed") |
 | 102 | Away Mode | Away, automatic-away, or external-away flag active |
 | 103 | Flowing | Water is flowing |
 | 104 | Leak Detected | External or sensor leak flag |

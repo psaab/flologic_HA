@@ -238,7 +238,7 @@ end
 
 T.test("valve: version, link pin, updater asset, no selector (VALVE-U4)", function()
   valve_env()
-  T.check_equal(FLOVALVE_DRIVER_VERSION, "2026090819", "valve version lockstep with cloud")
+  T.check_equal(FLOVALVE_DRIVER_VERSION, "2026090820", "valve version lockstep with cloud")
   T.check_equal(FLOGIC_LINK_VERSION, 1, "protocol version is 1")
   T.check_equal(FloUpdate.ASSET, "flologic_water_valve.c4z", "updater tracks the valve package")
   T.check_equal(FloUpdate.FAMILY_ASSETS[1], "flologic_cloud.c4z", "updater requires the cloud sibling")
@@ -316,6 +316,8 @@ T.test("valve: contact truth table across all seven sensors", function()
   local home = values(1, true, 1)
   T.check(home[101] == false and home[107] == true, "home idle: open, online")
   T.check(values(8, true, 1)[101] == true, "shutoff closes 101")
+  T.check(values(1, true, 8)[101] == true, "valve-closed flow state closes 101 without flags")
+  T.check(values(1, true, 4)[101] == false, "flowing home leaves 101 open")
   T.check(values(2, true, 1)[102] == true, "away closes 102")
   T.check(values(128, true, 1)[102] == true, "auto_away closes 102")
   T.check(values(1024, true, 1)[102] == true, "external_away closes 102")
@@ -405,6 +407,52 @@ T.test("valve: Navigator click sends open/close and reports optimistically", fun
   T.check_equal(#commands_sent(env), 5, "level-less brightness target sends nothing")
   ReceivedFromProxy(LIGHT, "BOGUS", {})
   T.check_equal(#commands_sent(env), 5, "unknown light command sends nothing")
+end)
+
+T.test("valve: tile off means closed, on means everything else", function()
+  local env = boot(valve_env())
+  handshake(env, "11")
+  push_state(env, base_state({ mode = 1, flow_state = 1 }))
+  check_list_equal(light_levels(env), { 100 }, "idle home reports on")
+  -- Flow-state 8 ("Valve closed") with no mode flags: tile off, contact
+  -- 101 closed, water-off edge fires — the switch follows the valve's
+  -- closed state, not just its mode flags.
+  push_state(env, base_state({ mode = 1, flow_state = 8 }))
+  local sends101 = contact_sends(env, 101)
+  T.check_equal(sends101[#sends101], "CLOSED", "101 closes on valve-closed flow state")
+  check_list_equal(light_levels(env), { 100, 0 }, "tile reports off when closed")
+  local saw_off = false
+  for _, name in ipairs(env.events) do
+    if name == "Water Off Detected" then
+      saw_off = true
+    end
+  end
+  T.check(saw_off, "water-off edge fires on valve-closed flow state")
+  T.check_equal(Properties["Water Flowing"], "No", "closed valve never flows")
+  -- Reopening clears everything together.
+  push_state(env, base_state({ mode = 1, flow_state = 4 }))
+  sends101 = contact_sends(env, 101)
+  T.check_equal(sends101[#sends101], "OPENED", "101 reopens with flow")
+  check_list_equal(light_levels(env), { 100, 0, 100 }, "tile reports on when not closed")
+  local saw_cleared = false
+  for _, name in ipairs(env.events) do
+    if name == "Water Off Cleared" then
+      saw_cleared = true
+    end
+  end
+  T.check(saw_cleared, "water-off clear edge fires on reopen")
+end)
+
+T.test("valve: restore tracking follows the mode even when closed", function()
+  local env = boot(valve_env())
+  handshake(env, "11")
+  -- A closed valve still has a mode: ON must restore the actual current
+  -- mode, never a stale one frozen by the closure.
+  push_state(env, base_state({ mode = 2, flow_state = 8 }))
+  check_list_equal(light_levels(env), { 0 }, "closed away reports off")
+  ReceivedFromProxy(LIGHT, "DYNAMIC_ON", {})
+  local body = Link.parse(commands_sent(env)[#commands_sent(env)].params)
+  T.check_equal(body.fields.action, "mode_away", "on restores current away despite closure")
 end)
 
 T.test("valve: open restores the last non-shutoff mode from pushes", function()

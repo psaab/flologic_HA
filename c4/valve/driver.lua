@@ -2239,7 +2239,7 @@ end
 -- C4 calls (safe to load in tests with a stub C4). Lua 5.1 safe.
 -- ============================================================================
 
-FLOVALVE_DRIVER_VERSION = "2026090819"
+FLOVALVE_DRIVER_VERSION = "2026090820"
 print("[flologic-valve] Lua loaded: " .. FLOVALVE_DRIVER_VERSION)
 
 -- Static link consumer (binds to one cloud-driver FLOGIC_VALVE slot) and
@@ -2562,7 +2562,7 @@ function flovalve_contact_values(fields)
   local flow_state = tonumber(fields.flow_state)
   local flags = FloModel.VALVE_MODE_FLAGS
   return {
-    [FLOVALVE_CONTACT_CLOSED] = FloModel.has_any_flag(mode, FloModel.WATER_OFF_MODE_FLAGS),
+    [FLOVALVE_CONTACT_CLOSED] = FloModel.has_any_flag(mode, FloModel.WATER_OFF_MODE_FLAGS) or flow_state == 8,
     [FLOVALVE_CONTACT_AWAY] = FloModel.has_any_flag(mode, { flags.away, flags.auto_away, flags.external_away }),
     [FLOVALVE_CONTACT_FLOWING] = online and flow_state ~= nil and flow_state ~= 1 and flow_state ~= 8,
     [FLOVALVE_CONTACT_LEAK] = FloModel.has_any_flag(mode, { flags.external_leak, flags.sensor_leak }),
@@ -2605,6 +2605,15 @@ local function flovalve_is_water_off(fields)
   return fields ~= nil and FloModel.has_any_flag(fields.mode, FloModel.WATER_OFF_MODE_FLAGS)
 end
 
+-- Valve-closed for the on/off switch: a water-off mode flag OR flow_state 8
+-- ("Valve closed"). The tile is OFF exactly when this holds and ON for
+-- everything else — the inverse of the Valve Closed contact. Link
+-- validation guarantees flow_state is an integer on this path; the
+-- defensive contact helper above re-checks it for unvalidated input.
+local function flovalve_is_valve_closed(fields)
+  return flovalve_is_water_off(fields) or (fields ~= nil and fields.flow_state == 8)
+end
+
 -- Snapshot readers below use link-validated fields directly: the link
 -- validator is the single numeric conversion path (types and domains
 -- checked atomically at parse), so re-converting here would only add a
@@ -2619,7 +2628,7 @@ local function flovalve_is_flowing(fields)
 end
 
 local function flovalve_level_for(fields)
-  if flovalve_is_water_off(fields) then
+  if flovalve_is_valve_closed(fields) then
     return 0
   end
   return 100
@@ -2632,6 +2641,9 @@ end
 
 -- Track the last non-shutoff mode so Open/Toggle restores it (plan:
 -- default Home). Water-off pushes never overwrite the restore target.
+-- Deliberately mode-flags-only, NOT the valve-closed predicate: a closed
+-- valve still has a mode, and ON must restore the actual current mode —
+-- freezing on flow_state 8 would restore a stale mode instead.
 local function flovalve_track_restore(fields)
   local st = flovalve_state
   if fields == nil or flovalve_is_water_off(fields) then
@@ -3036,7 +3048,7 @@ local function flovalve_process_edges(fields)
   local mode = FloModel.mode_status_name({ mode = fields.mode })
   local flowing = flovalve_is_flowing(fields)
   local raw_mode = fields.mode
-  local water_off = raw_mode ~= nil and FloModel.has_any_flag(raw_mode, FloModel.WATER_OFF_MODE_FLAGS)
+  local water_off = flovalve_is_valve_closed(fields)
   local warning = raw_mode ~= nil and FloModel.has_any_flag(raw_mode, FloModel.WARNING_ALERT_MODE_FLAGS)
   local critical = raw_mode ~= nil and FloModel.has_any_flag(raw_mode, FloModel.CRITICAL_MODE_FLAGS)
   local first = st.last_mode == nil
@@ -3168,8 +3180,9 @@ local function flovalve_apply_state(env)
   flovalve_track_restore(fields)
   flovalve_update_display(fields)
   flovalve_update_contacts(fields)
-  -- Reported level is 0 iff a water-off flag is active, else 100: the
-  -- inverse of the Valve Closed contact (plan).
+  -- Reported level is 0 iff the valve is closed (a water-off flag or
+  -- flow_state 8, "Valve closed"), else 100: the inverse of the Valve
+  -- Closed contact (plan).
   flovalve_report_level(flovalve_level_for(fields))
   flovalve_process_edges(fields)
   flovalve_set_connection(true)

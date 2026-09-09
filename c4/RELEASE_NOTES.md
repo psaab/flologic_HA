@@ -1,5 +1,17 @@
 Control4 DriverWorks package for FloLogic Connect valves (OS 3.3.0+).
 
+Version **2026090820** wires the valve on/off switch to the valve's
+closed state: the tile reports OFF exactly when the valve is closed
+(a water-off mode flag or flow state 8, "Valve closed") and ON for
+everything else. Previously flow state 8 without mode flags showed ON
+(and left the Valve Closed contact open) while the Flow State property
+literally read "Valve closed". The Valve Closed contact and the Water
+Off Detected/Cleared events follow the same closed predicate, so the
+tile stays the exact inverse of the contact. Restore tracking stays
+mode-based on purpose: a closed valve still has a mode, and ON must
+restore the actual current mode rather than a stale one frozen by the
+closure. Cloud package is a lockstep version bump only.
+
 Version **2026090819** is a third adversarial-review remediation of the
 0812–0816 updater/watchdog changes (6 findings, all fixed and covered).
 

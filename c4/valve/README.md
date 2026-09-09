@@ -16,7 +16,7 @@ in the app as a switch that shuts water off or turns it on when tapped.
 4. On bind the valve sends `FLOGIC_HELLO`; the cloud replies with that
    slot's valve id and starts pushing state. `Valve ID` / `Valve Name`
    fill in, `Connection` goes `Online`, and the app tile follows the
-   valve (on = water may flow, off = shut off). The tile click needs
+   valve (on = open, off = closed). The tile click needs
    Director OS 3.3.2+ (`DYNAMIC_ON`/`DYNAMIC_OFF`).
 
 No per-instance configuration is needed or available: the binding selects
@@ -35,7 +35,7 @@ handshake re-learns the identity.
 - **Contacts 101–107** (all `CONTACT_SENSOR`, `CLOSED` = named state
   true; first push reports steady `STATE_*` so binding never fires
   transition programming):
-  101 Valve Closed (any shutoff flag), 102 Away Mode (away flags),
+  101 Valve Closed (any shutoff flag or flow state 8), 102 Away Mode (away flags),
   103 Flowing, 104 Leak Detected, 105 Warning Active, 106 Critical Fault,
   107 Valve Online.
 - **Events.** Flow Started/Stopped, Water Off Detected/Cleared, Warning
